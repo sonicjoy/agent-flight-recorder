@@ -13,6 +13,26 @@ An open-source tool that records every AI agent run, replays it as a timeline, f
 - **Guard**: an eval harness and red-team set that run in CI so regressions fail the build.
 - **Query**: an MCP server so agents can search past runs and ask "why did run X fail?"
 
+## Development
+
+Requires [uv](https://docs.astral.sh/uv/) and Python 3.12+.
+
+```bash
+uv sync                          # create .venv and install dependencies
+uv run pre-commit install        # run checks on every commit
+cp .env.example .env             # then fill in your keys
+uv run afr --help
+```
+
+Checks (the same ones CI runs on every pull request):
+
+```bash
+uv run pre-commit run --all-files   # everything, including gitleaks
+uv run ruff check && uv run ruff format --check
+uv run pyright
+uv run pytest
+```
+
 ## Roadmap
 
 See the [project plan](docs/PLAN.md) and [milestones](https://github.com/sonicjoy/agent-flight-recorder/milestones).
