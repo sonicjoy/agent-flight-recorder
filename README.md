@@ -15,7 +15,10 @@ An open-source tool that records every AI agent run, replays it as a timeline, f
 
 ## Roadmap
 
+See the [project plan](docs/PLAN.md) and [milestones](https://github.com/sonicjoy/agent-flight-recorder/milestones).
+
+- [ ] Demo agent: provider-switchable LangGraph issue triager
 - [ ] Recorder core: trace schema, ingest API, redaction, pgvector search, replay CLI
 - [ ] Evals and guardrails: eval harness, golden cases, LLM-as-judge, red-team set, CI
 - [ ] Analyst agent, MCP server, Docker + Terraform deployment to Cloud Run
-- [ ] Replay UI and dashboard
+- [ ] Replay UI and launch
