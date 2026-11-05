@@ -1,0 +1,27 @@
+# USD per 1M tokens, keyed by model spec (<provider>:<model>).
+# Sources and the date each price was checked: docs/llm-providers.md
+# A model missing from this file has an unknown cost (reported as None, never as $0).
+
+models:
+  anthropic:claude-opus-5-5:
+    input: 4.00
+    output: 20.00
+  anthropic:claude-sonnet-5-5:
+    input: 2.00
+    output: 10.00
+  anthropic:claude-haiku-5-5:
+    input: 0.10
+    output: 0.50
+    # Prompts over 100K input tokens are billed at a higher rate.
+    long_context:
+      above_input_tokens: 100000
+      input: 0.50
+      output: 2.50
+
+  # Gemini free tier: no charge (Google may use inputs to improve its products).
+  google_genai:gemini-3.8-flash:
+    input: 0.00
+    output: 0.00
+  google_genai:gemini-3.5-flash-lite:
+    input: 0.00
+    output: 0.00
