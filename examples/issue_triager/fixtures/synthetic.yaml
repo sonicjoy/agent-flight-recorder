@@ -9,6 +9,7 @@
 #                   unless duplicate_of says so; near-duplicates are deliberate
 #                   hard negatives.
 # truth.week: null  means the work is outside the plan and gets no milestone.
+#                   Such a case can't be stretch: stretch means 'cut first from its week'.
 #
 # Duplicate vs regression (both point at an earlier issue, never both at once):
 # truth.duplicate_of   asks for the same work again, whether or not it's done.
@@ -476,7 +477,7 @@ cases:
     title: Slack bot that posts failed runs
     body: |
       Post a message to a Slack channel whenever a run fails, with a link to replay it.
-    truth: {areas: [analyst], stretch: true, week: null}
+    truth: {areas: [analyst], stretch: false, week: null}
 
   - id: s51
     kind: tricky
@@ -484,7 +485,7 @@ cases:
     title: User accounts and teams
     body: |
       Let several people sign up, belong to teams and only see their team's runs.
-    truth: {areas: [infra, recorder], stretch: true, week: null}
+    truth: {areas: [infra, recorder], stretch: false, week: null}
 
   - id: s52
     kind: tricky

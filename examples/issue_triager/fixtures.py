@@ -59,6 +59,8 @@ class GroundTruth(_Frozen):
     def _one_relation(self) -> Self:
         if self.duplicate_of and self.regression_of:
             raise ValueError("an issue is a duplicate or a regression, not both")
+        if self.stretch and self.week is None:
+            raise ValueError("stretch means 'cut first from its week', so it needs a week")
         return self
 
 

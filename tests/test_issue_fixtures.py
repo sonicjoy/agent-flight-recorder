@@ -79,6 +79,11 @@ def test_synthetic_set_separates_duplicates_from_regressions() -> None:
     assert len(dupes_of_done_work) >= 3
 
 
+def test_stretch_needs_a_week() -> None:
+    with pytest.raises(ValueError, match="needs a week"):
+        GroundTruth(areas=frozenset({"ui"}), stretch=True, week=None)
+
+
 def test_duplicate_and_regression_are_exclusive() -> None:
     with pytest.raises(ValueError, match="not both"):
         GroundTruth(
