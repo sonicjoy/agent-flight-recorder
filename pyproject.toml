@@ -43,15 +43,17 @@ select = [
 ]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "examples", "scripts"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
-strict = ["src"]
+strict = ["src", "examples"]
+extraPaths = ["examples"]
 venvPath = "."
 venv = ".venv"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["examples"]
 addopts = "-ra --strict-markers -m 'not smoke'"
 markers = [
     "smoke: real calls to LLM providers; run with `pytest -m smoke` (skipped without keys)",
