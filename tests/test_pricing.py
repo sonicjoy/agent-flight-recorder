@@ -14,6 +14,11 @@ def test_haiku_long_context_rate_applies_above_threshold() -> None:
     assert cost_usd("anthropic:claude-haiku-5-5", 100_001, 0) == pytest.approx(0.0500005)
 
 
+def test_openai_gpt_5_5_long_context_rate() -> None:
+    assert cost_usd("openai:gpt-5.5", 272_000, 1_000) == pytest.approx(1.39)
+    assert cost_usd("openai:gpt-5.5", 272_001, 1_000) == pytest.approx(2.76501)
+
+
 def test_gemini_free_tier_costs_nothing() -> None:
     assert cost_usd("google_genai:gemini-3.5-flash-lite", 10_000, 10_000) == 0.0
 

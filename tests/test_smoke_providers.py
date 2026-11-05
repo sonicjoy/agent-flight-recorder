@@ -14,6 +14,7 @@ PROMPT = "Reply with exactly the word: pong"
 SMOKE_MODELS = [
     "anthropic:claude-haiku-5-5",
     "google_genai:gemini-3.5-flash-lite",
+    "openai:gpt-5.4-nano",
 ]
 
 

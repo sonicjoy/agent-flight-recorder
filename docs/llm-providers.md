@@ -17,7 +17,7 @@ Provider names are LangChain's, so a spec maps straight onto `init_chat_model`:
 |---|---|---|
 | `anthropic` | `ANTHROPIC_API_KEY` | Local development and bulk runs. The key stays in the local `.env` only. |
 | `google_genai` | `GOOGLE_API_KEY` | Gemini free tier: evals in CI and the second provider in the comparison. |
-| `openai` | `OPENAI_API_KEY` | Optional; supported but not used by default. |
+| `openai` | `OPENAI_API_KEY` | Optional third provider (paid, personal key); not a default. |
 
 In code:
 
@@ -51,6 +51,9 @@ uv run pytest -m smoke -v -rs
 | `anthropic:claude-opus-5-5` | $4.00 | $20.00 | Anthropic API reference, 5 Nov 2026 |
 | `anthropic:claude-sonnet-5-5` | $2.00 | $10.00 | Anthropic API reference, 5 Nov 2026 |
 | `anthropic:claude-haiku-5-5` | $0.10 ($0.50 above 100K input tokens) | $0.50 ($2.50 above 100K) | Anthropic API reference, 5 Nov 2026 |
+| `openai:gpt-5.4-nano` | $0.20 | $1.25 | [OpenAI pricing](https://developers.openai.com/api/docs/pricing), 5 Nov 2026 |
+| `openai:gpt-5.4-mini` | $0.75 | $4.50 | [OpenAI pricing](https://developers.openai.com/api/docs/pricing), 5 Nov 2026 |
+| `openai:gpt-5.5` | $5.00 ($10.00 above 272K input tokens) | $30.00 ($45.00 above 272K) | [OpenAI pricing](https://developers.openai.com/api/docs/pricing), 5 Nov 2026 |
 | `google_genai:gemini-3.8-flash` | free tier | free tier | [AI Studio pricing](https://aistudio.google.com/docs/pricing), 5 Nov 2026 |
 | `google_genai:gemini-3.5-flash-lite` | free tier | free tier | [AI Studio pricing](https://aistudio.google.com/docs/pricing), 5 Nov 2026 |
 

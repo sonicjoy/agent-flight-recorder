@@ -1,6 +1,7 @@
 import pytest
 from langchain_anthropic import ChatAnthropic
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 
 from flight_recorder.llm import (
     MissingCredentialsError,
@@ -49,6 +50,13 @@ def test_cheap_uses_cheap_model(clean_env: pytest.MonkeyPatch) -> None:
 
     assert isinstance(llm, ChatAnthropic)
     assert llm.model == "claude-haiku-5-5"
+
+
+def test_builds_openai_model(clean_env: pytest.MonkeyPatch) -> None:
+    llm = chat_model("openai:gpt-5.4-nano", settings=make_settings(OPENAI_API_KEY="test-key"))
+
+    assert isinstance(llm, ChatOpenAI)
+    assert llm.model_name == "gpt-5.4-nano"
 
 
 def test_builds_gemini_model_from_config(clean_env: pytest.MonkeyPatch) -> None:

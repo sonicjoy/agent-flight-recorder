@@ -18,6 +18,21 @@ models:
       input: 0.50
       output: 2.50
 
+  # OpenAI standard tier (not batch, flex or priority).
+  openai:gpt-5.4-nano:
+    input: 0.20
+    output: 1.25
+  openai:gpt-5.4-mini:
+    input: 0.75
+    output: 4.50
+  openai:gpt-5.5:
+    input: 5.00
+    output: 30.00
+    long_context:
+      above_input_tokens: 272000
+      input: 10.00
+      output: 45.00
+
   # Gemini free tier: no charge (Google may use inputs to improve its products).
   google_genai:gemini-3.8-flash:
     input: 0.00
