@@ -22,7 +22,7 @@
 - **Clean room.** No employer code, data, prompts or traces, ever. The project is rebuilt from scratch using only public or self-generated data.
 - **Hook scope.** The Claude Code hook is installed only in a project-level `.claude/settings.json` for personal repos, never in user-level settings on a work machine.
 - **Dry-run tools.** The demo agent never writes to GitHub or anything else outside this repo.
-- **Keys stay local.** The Anthropic API key lives only in a local, git-ignored `.env`: never in GitHub secrets, CI, the deployed instance, issues or logs. CI uses GitHub Models through the workflow's own `GITHUB_TOKEN`.
+- **Keys stay local.** The Anthropic API key lives only in a local, git-ignored `.env`: never in GitHub secrets, CI, the deployed instance, issues or logs. CI uses the free Gemini API key from a personal Google account, stored as a GitHub Actions secret.
 - **Secrets.** gitleaks runs in pre-commit and CI; the Anthropic key has a spend limit; the GCP project has a budget alert.
 
 ## The demo agent and its data
@@ -93,7 +93,7 @@ docs/                     plan, schema, evals write-ups, decisions/
 | Area | Choice |
 |---|---|
 | Language and tooling | Python 3.12+, uv, ruff, pyright, pytest, pre-commit, gitleaks, GitHub Actions |
-| LLMs | Anthropic (Claude Sonnet and Haiku) locally; GitHub Models in CI and for the provider comparison; one config switch (`AFR_LLM_MODEL`, `AFR_LLM_CHEAP_MODEL`); per-model prices in `pricing.yaml` |
+| LLMs | Anthropic (Claude Sonnet and Haiku) locally; Gemini free tier in CI and for the provider comparison (GitHub Models was retired in July 2026); one config switch (`AFR_LLM_MODEL`, `AFR_LLM_CHEAP_MODEL`); per-model prices in `pricing.yaml` |
 | Agents | LangGraph; one comparison port to the Claude Agent SDK or OpenAI Agents SDK |
 | API and storage | FastAPI, Postgres 16, pgvector, SQLAlchemy 2, Alembic |
 | Tracing | OpenTelemetry (OTLP/HTTP); OTel GenAI and OpenInference attributes |
@@ -111,7 +111,7 @@ Write each one up as a short ADR in `docs/decisions/` when you make it. They fee
 2. **One store: Postgres with pgvector.** No separate graph or analytics database. Fewer moving parts keeps the five-minute install achievable, and JSONB holds raw attributes.
 3. **Redact before write.** Raw values are never persisted. The hook does a first pass client-side, ingest enforces it server-side, and only redaction counts are stored.
 4. **Local embeddings.** No extra API key, reproducible results, and free to run in CI and the quickstart.
-5. **Provider-agnostic LLM layer.** Every agent and the judge run on Anthropic or GitHub Models (or OpenAI, given a key). Provider comparisons become a by-product of the eval suite, and CI needs no paid key.
+5. **Provider-agnostic LLM layer.** Every agent and the judge run on Anthropic or Gemini (or OpenAI, given a key). Provider comparisons become a by-product of the eval suite, and CI needs no paid key. See [LLM providers](llm-providers.md).
 6. **Build the eval harness yourself before using a library**, so eval design is something you can explain end to end, then compare the two honestly.
 7. **Eval cases live in git as YAML**, while results live in the database: cases change through review, results accumulate as history.
 8. **The server makes no LLM calls.** MCP tools return data (runs, similar failures, labels, eval cases), and the calling agent's own model does the explaining. The analyst runs as a local job. So the deployed instance needs no LLM key.
@@ -215,7 +215,7 @@ Cut in this order:
 
 - Close the week's milestone; move anything unfinished to the next week, or drop it if it's `stretch`
 - Note one thing you learned for the write-up
-- Check Anthropic spend, GitHub Models usage and GCP billing
+- Check Anthropic spend, Gemini free-tier usage and GCP billing
 
 ## Workflow
 
@@ -226,6 +226,6 @@ Cut in this order:
 
 ## Open decisions
 
-- [ ] Which GitHub Models model to use in CI and for the comparison, once current limits are confirmed (#2)
+- [ ] Record the Gemini free-tier rate limits from AI Studio and size the CI eval suite to fit (#2, #19)
 - [ ] License, MIT or Apache-2.0, before going public (#33)
 - [ ] GCP project and region (#27)
