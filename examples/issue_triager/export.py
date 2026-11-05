@@ -26,6 +26,7 @@ from issue_triager.fixtures import (
 REPO = "sonicjoy/agent-flight-recorder"
 FIELDS = "number,title,body,labels,milestone,state,stateReason,comments"
 DUPLICATE_OF = re.compile(r"^\s*duplicate of #(\d+)", re.IGNORECASE | re.MULTILINE)
+REGRESSION_OF = re.compile(r"^\s*regression of #(\d+)", re.IGNORECASE | re.MULTILINE)
 WEEK_TITLE = re.compile(r"^Week (\d+)\b")
 
 
@@ -42,6 +43,14 @@ def duplicate_of(issue: dict[str, Any]) -> str | None:
     """GitHub's convention: a closing comment that starts "Duplicate of #N"."""
     for comment in issue.get("comments", []):
         if match := DUPLICATE_OF.search(comment["body"]):
+            return match.group(1)
+    return None
+
+
+def regression_of(issue: dict[str, Any]) -> str | None:
+    """Our convention: a line in the body or a comment that starts "Regression of #N"."""
+    for text in (issue["body"], *(c["body"] for c in issue.get("comments", []))):
+        if match := REGRESSION_OF.search(text):
             return match.group(1)
     return None
 
@@ -67,6 +76,7 @@ def to_case(issue: dict[str, Any]) -> TriageCase:
             stretch=STRETCH in labels,
             week=week_of(issue["milestone"]),
             duplicate_of=duplicate_of(issue),
+            regression_of=regression_of(issue),
         ),
         source="real",
         state="closed" if issue["state"] == "CLOSED" else "open",

@@ -7,6 +7,7 @@ from issue_triager.fixtures import (
     AREAS,
     ISSUES_FILE,
     WEEKS,
+    GroundTruth,
     IssueExport,
     TriageCase,
     dump_export,
@@ -55,6 +56,34 @@ def test_ground_truth_is_valid(case: TriageCase) -> None:
     assert case.truth.week is None or case.truth.week in WEEKS
     assert case.truth.duplicate_of in {None, *REAL}
     assert case.truth.duplicate_of != case.id
+
+
+@pytest.mark.parametrize("case", [c for c in load_cases() if c.truth.regression_of], ids=str)
+def test_regression_points_at_delivered_work(case: TriageCase) -> None:
+    original = REAL[str(case.truth.regression_of)]
+
+    assert original.state == "closed", "only finished work can regress"
+    assert original.truth.duplicate_of is None, "a closed duplicate delivered nothing"
+    assert case.truth.week == original.truth.week
+
+
+def test_synthetic_set_separates_duplicates_from_regressions() -> None:
+    regressions = [c for c in SYNTHETIC if c.truth.regression_of]
+    dupes_of_done_work = [
+        c
+        for c in SYNTHETIC
+        if c.truth.duplicate_of and REAL[c.truth.duplicate_of].state == "closed"
+    ]
+
+    assert len(regressions) >= 3
+    assert len(dupes_of_done_work) >= 3
+
+
+def test_duplicate_and_regression_are_exclusive() -> None:
+    with pytest.raises(ValueError, match="not both"):
+        GroundTruth(
+            areas=frozenset({"ui"}), stretch=False, week=1, duplicate_of="2", regression_of="2"
+        )
 
 
 def test_about_sixty_synthetic_cases_of_both_kinds() -> None:
@@ -123,6 +152,15 @@ def test_export_reads_duplicate_from_closing_comment() -> None:
     assert case.truth.duplicate_of == "2"
     assert case.truth.week is None
     assert case.state == "closed"
+
+
+def test_export_reads_regression_from_body() -> None:
+    bug = gh_issue(40, ["infra"], None, body="CI broke again.\n\nRegression of #1\n")
+
+    (case,) = export.build_export([bug]).issues
+
+    assert case.truth.regression_of == "1"
+    assert case.truth.duplicate_of is None
 
 
 def test_export_sorts_by_issue_number() -> None:

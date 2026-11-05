@@ -9,6 +9,15 @@
 #                   unless duplicate_of says so; near-duplicates are deliberate
 #                   hard negatives.
 # truth.week: null  means the work is outside the plan and gets no milestone.
+#
+# Duplicate vs regression (both point at an earlier issue, never both at once):
+# truth.duplicate_of   asks for the same work again, whether or not it's done.
+#                      Close it and link the original.
+# truth.regression_of  reports that work a closed, completed issue delivered has
+#                      broken again. Keep it open as a bug and link the original.
+#                      Its week is the original issue's week.
+# A bug in behaviour that never worked, or in work that isn't finished yet, is
+# neither: it's a plain bug.
 
 cases:
   # ---- Paraphrases of real issues -------------------------------------------
@@ -427,7 +436,7 @@ cases:
   # Bugs, not planned work: the week is when it should be fixed.
   - id: s46
     kind: tricky
-    note: "Bug report in the provider config; terse, with a stack trace."
+    note: "Bug in #2's feature, but empty prompts never worked, so not a regression."
     title: llm-ping crashes on an empty prompt
     body: |
       `uv run afr llm-ping --prompt ""` gives
@@ -437,12 +446,12 @@ cases:
 
   - id: s47
     kind: tricky
-    note: "Bug in CI tooling; the title blames tests."
+    note: "Regression of #1, which added the line-ending rule; the title blames tests."
     title: Tests fail on Windows
     body: |
-      pre-commit's end-of-file fixer rewrites line endings on Windows and the hook loop
-      never settles. Probably needs a .gitattributes rule.
-    truth: {areas: [infra], stretch: false, week: 1}
+      pre-commit's end-of-file fixer has started rewriting line endings on Windows again
+      and the hook loop never settles. Did the .gitattributes rule get lost?
+    truth: {areas: [infra], stretch: false, week: 1, regression_of: "1"}
 
   - id: s48
     kind: tricky
@@ -562,3 +571,50 @@ cases:
       Embeddings need the vector extension. Add it to the local Postgres image and to
       the first migration.
     truth: {areas: [recorder], stretch: false, week: 2}
+
+  # Regressions, and cases that look like one but aren't.
+  - id: s61
+    kind: tricky
+    note: "Regression of #1: same CI job, but it reports breakage, not a request."
+    title: Secret scan job failing with 403 in CI
+    body: |
+      The gitleaks job in GitHub Actions passed last week and now fails on every PR with
+      "Resource not accessible by integration". Something in the workflow permissions
+      changed.
+    truth: {areas: [infra], stretch: false, week: 1, regression_of: "1"}
+
+  - id: s62
+    kind: tricky
+    note: "Regression of #2, which made unknown-model cost None, never $0."
+    title: llm-ping shows $0.00 for a model with no price
+    body: |
+      `afr llm-ping --model openai:some-new-model` prints `cost: $0.000000`. It used to
+      say the cost was unknown, which is what we want; $0 hides real spend.
+    truth: {areas: [demo-agent], stretch: false, week: 1, regression_of: "2"}
+
+  - id: s63
+    kind: tricky
+    note: "Duplicate, not regression: asks for work #2 already delivered; nothing broke."
+    title: Support Gemini as a model provider
+    body: |
+      It would be great if the model setting accepted Google Gemini models, so we can run
+      on the free tier.
+    truth: {areas: [demo-agent], stretch: false, week: 1, duplicate_of: "2"}
+
+  - id: s64
+    kind: tricky
+    note: "Not a regression: #5 isn't finished, so its behaviour can't have regressed."
+    title: Triager no longer pauses before applying labels
+    body: |
+      The human approval step seems to have gone; the triager went straight to the apply
+      step on my last run.
+    truth: {areas: [demo-agent], stretch: false, week: 1}
+
+  - id: s65
+    kind: tricky
+    note: "Regression of #2 written like a new feature request."
+    title: Add retries when the provider returns 503
+    body: |
+      Gemini's "high demand" 503s now fail llm-ping straight away. The client used to
+      retry these a couple of times before giving up.
+    truth: {areas: [demo-agent], stretch: false, week: 1, regression_of: "2"}

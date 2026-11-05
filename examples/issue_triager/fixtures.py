@@ -10,10 +10,10 @@ from __future__ import annotations
 import json
 from functools import cache
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 ISSUES_FILE = FIXTURES_DIR / "issues.json"
@@ -39,12 +39,27 @@ class TriageInput(_Frozen):
 
 
 class GroundTruth(_Frozen):
-    """The triage decision the agent is graded against."""
+    """The triage decision the agent is graded against.
+
+    `duplicate_of` and `regression_of` both point at an earlier issue, but mean
+    different things and call for different actions:
+
+    - duplicate: asks for the same work again. Close it, link the original.
+    - regression: reports that work an issue already delivered (closed as
+      completed) has broken again. Keep it open as a bug; link the original.
+    """
 
     areas: frozenset[str]
     stretch: bool
     week: int | None
     duplicate_of: str | None = None
+    regression_of: str | None = None
+
+    @model_validator(mode="after")
+    def _one_relation(self) -> Self:
+        if self.duplicate_of and self.regression_of:
+            raise ValueError("an issue is a duplicate or a regression, not both")
+        return self
 
 
 class TriageCase(_Frozen):
