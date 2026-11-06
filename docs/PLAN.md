@@ -27,7 +27,9 @@
 
 ## The demo agent and its data
 
-The triager triages **this project's own issues**. That keeps everything self-contained:
+The demo agent is the issue triager. It lives in its own public repo, [sonicjoy/issue-triage-agent](https://github.com/sonicjoy/issue-triage-agent), so it can be shared as a tool on its own: it triages any GitHub repo's issues (labels, milestone, duplicates, regressions). It installs this repo for the provider config, and this repo records its runs over OpenTelemetry, the way it would record any outside agent.
+
+Its bundled dataset is **this project's own issues**. That keeps everything self-contained:
 
 - The issues are ours, so the fixtures can be committed, and CI and the quickstart need no GitHub access.
 - Their area labels, `stretch` flag, milestone and duplicate links are real ground truth. #3 is a genuine duplicate of #2.
@@ -81,7 +83,6 @@ src/flight_recorder/
   evals/       harness, judge
   analyst/     LangGraph analyst agent
   mcp/         FastMCP server
-examples/issue_triager/   LangGraph demo agent
 evals/cases/              golden and red-team cases (YAML)
 ui/                       React + TypeScript (Vite)
 infra/terraform/          GCP deployment
@@ -129,8 +130,8 @@ Estimates are build hours. The learning items come from the 5-week prep plan and
 | Python tooling and CI | #1 | 1h |
 | Provider-switchable LLM config | #2 | 0.5h |
 | Issue fixtures from this repo, plus synthetic cases | #4 | 1h |
-| LangGraph issue triager | #5 | 3h |
-| *Stretch:* port the triager to an Agents SDK | #6 | 1.5h |
+| LangGraph issue triager (moved to [issue-triage-agent](https://github.com/sonicjoy/issue-triage-agent), generalised to any repo) | #5 | 3h |
+| *Stretch:* port the triager to an Agents SDK (in issue-triage-agent) | #6 | 1.5h |
 
 **Learning (about 4h):** LangGraph tutorials or the free LangChain Academy course; try the Claude Agent SDK or OpenAI Agents SDK; write the one-page "native framework vs LangGraph" note. Keep that note private, or write it in general terms with no internal details.
 
@@ -141,7 +142,7 @@ Estimates are build hours. The learning items come from the 5-week prep plan and
 | Task | Issue | Est. |
 |---|---|---|
 | Trace schema, migrations and local Postgres | #7 | 1.5h |
-| OTLP ingest endpoint; instrument the triager | #8 | 2.5h |
+| OTLP ingest endpoint; instrument the triager (in its repo) | #8 | 2.5h |
 | Claude Code hook capture | #9 | 1.5h |
 | Redaction guardrail at ingest | #10 | 1h |
 | Embeddings and semantic search | #11 | 1h |

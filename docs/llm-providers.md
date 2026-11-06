@@ -63,7 +63,8 @@ Not yet modelled: prompt-cache read and write prices.
 
 - Get a key from a personal Google account at [Google AI Studio](https://aistudio.google.com/).
 - Google uses free-tier inputs to improve its products. That's acceptable here because the triager only sees this repo's own issues. Recorded Claude Code sessions should go to the Anthropic model, not Gemini.
-- Rate limits apply per Google Cloud project, not per key, and daily quotas reset at midnight Pacific time. The exact numbers are only shown in your account, under [AI Studio → Rate limits](https://aistudio.google.com/rate-limit). Record them here once the key exists, because they decide how large the CI eval suite can be.
+- Rate limits apply per Google Cloud project, not per key, and daily quotas reset at midnight Pacific time. The exact numbers are only shown in your account, under [AI Studio → Rate limits](https://aistudio.google.com/rate-limit). They decide how large the CI eval suite can be.
+  - Observed 6 Nov 2026 (from a 429 response): `gemini-3.5-flash-lite` allows **15 requests per minute** on the free tier. One triager run makes about 5-10 model calls, so batch runs (#13) must throttle to about one run every 40 seconds per model. Daily limits not yet recorded.
 
 ## Why not GitHub Models
 
