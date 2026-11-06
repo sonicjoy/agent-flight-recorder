@@ -1,0 +1,22 @@
+[project]
+name = "issue-triager"
+version = "0.1.0"
+description = "Demo agent for Agent Flight Recorder: a LangGraph triager for this repo's issues"
+requires-python = ">=3.12"
+dependencies = [
+    "agent-flight-recorder",
+    "langgraph>=1.2.20",
+]
+
+[project.scripts]
+triager = "issue_triager.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "issue_triager"
+
+[tool.uv.sources]
+agent-flight-recorder = { workspace = true }

@@ -29,3 +29,6 @@ node_modules/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Triager dry-run output
+runs/

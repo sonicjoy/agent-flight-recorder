@@ -22,6 +22,7 @@ uv sync                          # create .venv and install dependencies
 uv run pre-commit install        # run checks on every commit
 cp .env.example .env             # then fill in your keys
 uv run afr --help
+uv run triager --issue 19 --model google_genai:gemini-3.5-flash-lite   # demo agent, dry run
 ```
 
 Checks (the same ones CI runs on every pull request):
