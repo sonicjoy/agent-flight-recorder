@@ -37,7 +37,7 @@ uv run pytest
 
 See the [project plan](docs/PLAN.md) and [milestones](https://github.com/sonicjoy/agent-flight-recorder/milestones).
 
-- [ ] Demo agent: provider-switchable LangGraph issue triager
+- [x] Demo agent: LangGraph issue triager, in its own repo: [issue-triage-agent](https://github.com/sonicjoy/issue-triage-agent)
 - [ ] Recorder core: trace schema, ingest API, redaction, pgvector search, replay CLI
 - [ ] Evals and guardrails: eval harness, golden cases, LLM-as-judge, red-team set, CI
 - [ ] Analyst agent, MCP server, Docker + Terraform deployment to Cloud Run
