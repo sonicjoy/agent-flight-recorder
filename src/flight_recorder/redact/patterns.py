@@ -101,9 +101,14 @@ PATTERNS: tuple[Pattern, ...] = (
         "connection_password",  # scheme://user:PASSWORD@host keeps the scheme, user and host
         # Starts only where a token starts, and the scheme is short: `\b` alone matched at
         # every "+" in "Ab1+Ab1+...", each scan running to the end (quadratic).
+        # Hand-written passwords often hold an unencoded / # ? or @, so the password runs to
+        # the last @ that is followed by a host. It is capped at 128 characters so a failed
+        # match can't scan to the end of the text. A port and path (localhost:4873/@types)
+        # is not a password.
         re.compile(
             r"(?<![a-zA-Z0-9+.-])[a-zA-Z][a-zA-Z0-9+.-]{0,30}+://"
-            r"[^\s:/?#@]++:(?P<secret>[^\s@/?#]++)@"
+            r"[^\s:/?#@]++:(?!\d{1,5}+(?:[/?#]|$))"
+            r"(?P<secret>[^\s\"'\\]{1,128})@(?=[^\s@/?#\"'\\])"
         ),
     ),
     Pattern(

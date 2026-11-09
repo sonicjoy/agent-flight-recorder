@@ -5,8 +5,11 @@ memory and calls record_run(). record_run redacts every free-text field, attribu
 input/output at any depth, before any row is built, so no column can hold an original
 value (docs/redaction.md). A test fails if anything else in src writes to runs or spans.
 
-Re-sending a run or span updates it: rows are keyed by the source's ids. A child span may
-arrive before its parent (in an earlier batch); it is linked once the parent arrives.
+Re-sending a run or span updates it: rows are keyed by the source's ids. A span is
+replaced, since it is sent whole once it ends. A run is merged, since each batch may know
+only part of it: what a batch leaves out keeps its stored value (see _upsert_run). A child
+span may arrive before its parent (in an earlier batch); it is linked once the parent
+arrives.
 """
 
 from __future__ import annotations
@@ -19,8 +22,8 @@ from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import text
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import case, func, literal_column, text
+from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.orm import Session
 
 from flight_recorder.pricing import cost_usd
@@ -38,7 +41,11 @@ class _In(BaseModel):
 
 
 class RunIn(_In):
-    """A run as sent by a source, before redaction."""
+    """A run as sent by a source, before redaction.
+
+    A batch may send only what it knows: leave a field None (or status "unset") and the
+    stored value is kept. started_at may be the earliest span in this batch.
+    """
 
     source: Source
     external_id: str
@@ -78,10 +85,47 @@ def _price(
     return None if cost is None else Decimal(str(cost)).quantize(CENT_FRACTION)
 
 
-def _upsert(table: type[Run] | type[Span], key: list[str], values: dict[str, Any]) -> Any:
-    statement = insert(table).values(**values)
+def _upsert_span(values: dict[str, Any]) -> Any:
+    """A span is sent whole once it ends, so a re-send replaces it."""
+    statement = insert(Span).values(**values)
+    key = ("run_id", "external_id")
     changes = {name: statement.excluded[name] for name in values if name not in key}
-    return statement.on_conflict_do_update(index_elements=key, set_=changes).returning(table.id)
+    return statement.on_conflict_do_update(index_elements=key, set_=changes)
+
+
+# The largest count per pattern seen in one batch. A sum would grow every time a source
+# re-sends the same resource attributes; the originals are gone, so it can't be recounted.
+_MAX_REDACTIONS = literal_column(
+    """(SELECT coalesce(jsonb_object_agg(key, n), '{}'::jsonb) FROM (
+          SELECT key, max(value::int) AS n FROM (
+            SELECT * FROM jsonb_each_text(runs.redactions)
+            UNION ALL SELECT * FROM jsonb_each_text(excluded.redactions)
+          ) AS c GROUP BY key
+        ) AS m)""",
+    type_=JSONB,
+)
+
+
+def _upsert_run(values: dict[str, Any]) -> Any:
+    """Each batch may know only part of a run, so a re-send merges into what is stored.
+
+    A field the batch leaves out (None, or status "unset") keeps its stored value; the run
+    spans the earliest start and the latest end seen; attributes merge, newer keys winning.
+    """
+    statement = insert(Run).values(**values)
+    new = statement.excluded
+    changes = {
+        "agent": func.coalesce(new.agent, Run.agent),
+        "name": func.coalesce(new.name, Run.name),
+        "status": case((new.status == "unset", Run.status), else_=new.status),
+        "started_at": func.least(Run.started_at, new.started_at),
+        "ended_at": func.greatest(Run.ended_at, new.ended_at),  # greatest() skips NULLs
+        "attributes": Run.attributes.op("||")(new.attributes),
+        "redactions": _MAX_REDACTIONS,
+    }
+    return statement.on_conflict_do_update(
+        index_elements=["source", "external_id"], set_=changes
+    ).returning(Run.id)
 
 
 def record_run(
@@ -100,9 +144,7 @@ def record_run(
         "attributes": redactor.value(run.attributes, counts),
         "redactions": dict(counts),
     }
-    run_id: uuid.UUID = session.execute(
-        _upsert(Run, ["source", "external_id"], run_values)
-    ).scalar_one()
+    run_id: uuid.UUID = session.execute(_upsert_run(run_values)).scalar_one()
 
     for span in spans:
         counts = Counter()
@@ -126,7 +168,7 @@ def record_run(
             "attributes": redactor.value(span.attributes, counts),
             "redactions": dict(counts),
         }
-        session.execute(_upsert(Span, ["run_id", "external_id"], values))
+        session.execute(_upsert_span(values))
 
     _link_parents(session, run_id)
     _total(session, run_id)

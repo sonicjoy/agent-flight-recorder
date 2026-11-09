@@ -46,7 +46,7 @@ Migrations change a database in place: `afr db upgrade` runs only the migrations
 | Decision | Choice | Why |
 |---|---|---|
 | Canonical model | OpenTelemetry GenAI conventions, plus OpenInference | Any instrumented agent works without custom code (plan decision 1) |
-| Identity | Our own UUID per row, plus the source's id in `external_id`, unique per source (`runs`) or per run (`spans`) | Re-sent data updates a row instead of duplicating it (`INSERT ... ON CONFLICT`). Claude Code ids aren't OTel ids, and don't have to be |
+| Identity | Our own UUID per row, plus the source's id in `external_id`, unique per source (`runs`) or per run (`spans`) | Re-sent data updates a row instead of duplicating it (`INSERT ... ON CONFLICT`). A span is replaced; a run is merged, so a batch that knows less (no name, status `unset`) keeps what's stored, and the run spans the earliest start and latest end seen. Claude Code ids aren't OTel ids, and don't have to be |
 | Span kind | Our five kinds: `agent`, `llm`, `tool`, `step`, `other` | Queries and the UI work the same for every source. The source's own words stay in `attributes` |
 | Cost | Priced at ingest from `pricing.yaml` and stored as `numeric(14,8)` | A later price change doesn't rewrite history. An unknown model's cost is `NULL`, never $0 |
 | Status | OTel's span status codes: `unset`, `ok`, `error` | No translation for OTel sources. A run is still going while `ended_at` is `NULL` |
@@ -70,7 +70,7 @@ One agent run (an OTel trace) or one Claude Code session.
 | `status`, `started_at`, `ended_at` | `ended_at` is `NULL` while the run is going |
 | `input_tokens`, `output_tokens`, `cost_usd` | Totals over the run's spans. `cost_usd` is `NULL` if any priced span's model is unknown |
 | `attributes` | Resource and root attributes, after redaction |
-| `redactions` | `{"pattern": count}` for the run's own fields (migration 0003). Never the values |
+| `redactions` | `{"pattern": count}` for the run's own fields (migration 0003): the largest count per pattern in one batch, since batches may repeat the same attributes. Never the values |
 
 ### `spans`
 One step in a run.

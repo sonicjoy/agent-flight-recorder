@@ -15,7 +15,7 @@ after:  "Authorization: Bearer [REDACTED:bearer_token:d9a61cf2], mail [REDACTED:
 - **The fingerprint** is the first 8 hex characters of an HMAC-SHA256 of the value, under the installation's redaction key. The same value gets the same placeholder throughout a database, so a replay shows a key moving from step 3 to a tool call in step 7. The value can't be recovered from it, and without the key nobody can check a guess against it.
 - **Only the matched part is replaced.** A connection string keeps its scheme, user and host, and `password=` keeps its key name, so replays stay readable.
 - **Redacting again changes nothing:** existing placeholders are skipped.
-- **Counts per pattern,** never values, are stored in `runs.redactions` and `spans.redactions`.
+- **Counts per pattern,** never values, are stored in `runs.redactions` and `spans.redactions`. A run sent in several batches keeps the largest count per pattern from any one batch.
 
 Nothing here can be reversed, by design. There is no encrypted copy of the originals. If a recorded run is ever re-run, for example to make an eval case, placeholders are filled at that time with values the person supplies, or with fakes of the right shape.
 
@@ -44,7 +44,7 @@ Checked in this order; the first match wins.
 | `gcp_oauth_token` | `ya29.` tokens | |
 | `jwt` | `eyJ...eyJ...signature` | |
 | `bearer_token` | After `Bearer`, `Basic` or `Token` | |
-| `connection_password` | The password in `scheme://user:password@host` | |
+| `connection_password` | The password in `scheme://user:password@host` | Runs to the last `@` before a host, so an unencoded `/`, `#`, `?` or `@` in a hand-written password is caught too (up to 128 characters). A port and path (`localhost:4873/@types/node`) is left alone |
 | `secret_assignment` | The value in `password=`, `"api_key": "..."`, `token: ...` (8+ characters) | Also inside JSON strings (`\"api_key\": \"...\"`), which is how OTel sends messages; the result stays valid JSON |
 | `email` | Email addresses, in full | |
 | `phone` | `+44 20 7946 0958`, `(555) 123-4567`, with 8–15 digits | Bare digit runs are left alone: they're usually ids or timestamps |
@@ -59,6 +59,7 @@ These are tested as near-misses: git SHAs, UUIDs, OTel trace ids, data-URI image
 - **Secrets with no recognisable shape** (a short password in plain prose, a custom token format) are missed unless they follow `password=` or a similar key.
 - **Names and street addresses** aren't detected. That would need an NLP model such as Presidio, too heavy for now.
 - **`git@github.com` in an SSH remote** looks like an email address and is redacted.
+- **An `@` in a URL's query** (`https://u:pw@host/?to=a@b.com`) is taken as part of the password, so the host is redacted with it. Safe, but less readable.
 - **Over-matching:** rising `high_entropy` counts in `spans.redactions` show it catching things it shouldn't. Tune `_looks_random` in `patterns.py` and add the case as a near-miss test.
 
 ## Safety properties, tested

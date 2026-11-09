@@ -66,7 +66,32 @@ NEAR_MISSES = {
     "version": "alembic 1.20.1, pgvector 0.8.6",
     "long identifier": "thisIsAVeryLongIdentifierWithoutAnyDigitsAtAllInIt",
     "prose": "The agent searched three times, then decided the issue was a duplicate.",
+    "port and scoped package": "npm install from http://localhost:4873/@types/node",
+    "URL with no password": "https://github.com/sonicjoy/agent-flight-recorder/pull/43",
 }
+
+
+@pytest.mark.parametrize(
+    ("url", "password"),
+    [
+        ("postgresql://afr:ab/cdEF12xyz@db:5432/afr", "ab/cdEF12xyz"),
+        ("postgresql://afr:hunter2#x@db/afr", "hunter2#x"),
+        ("postgresql://afr:p@ssw0rd99@db:5432/afr", "p@ssw0rd99"),
+        ("redis://default:a?b/c@d#e@cache.internal:6379/0", "a?b/c@d#e"),
+        ("mysql://root:pw@127.0.0.1", "pw"),
+    ],
+)
+def test_unencoded_characters_in_a_connection_password_are_redacted(
+    redactor: Redactor, url: str, password: str
+) -> None:
+    """Hand-written URLs often skip percent-encoding; the whole password still goes."""
+    result, counts = redact(redactor, f"DATABASE_URL={url} end")
+
+    redacted_url = url.replace(
+        f":{password}@", f":{redactor.placeholder('connection_password', password)}@"
+    )
+    assert result == f"DATABASE_URL={redacted_url} end"
+    assert counts == Counter({"connection_password": 1})
 
 
 @pytest.mark.parametrize("text", NEAR_MISSES.values(), ids=NEAR_MISSES.keys())
@@ -137,6 +162,8 @@ ADVERSARIAL = {
     "token chars": "Ab1+" * 50_000,
     "begin markers": ("-----BEGIN " + "PRIVATE KEY----- ") * 5_000,
     "url-ish": "x://a:" * 40_000,
+    "url-ish with at signs": "x://a:b@" * 30_000,
+    "url then a long password": "x://a:" + "b" * 200_000,
     "assignments": "token=" * 40_000,
 }
 

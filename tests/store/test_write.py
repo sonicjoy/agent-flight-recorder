@@ -142,6 +142,47 @@ def test_resending_updates_instead_of_duplicating(session: Session) -> None:
     assert session.scalars(select(Span.status)).one() == "ok"
 
 
+def test_a_partial_batch_merges_into_the_run_instead_of_wiping_it(session: Session) -> None:
+    """A later batch that knows less (no name, status unset) mustn't erase what's stored."""
+    record_run(
+        session,
+        run_in(
+            agent="triager",
+            name="triage #42",
+            status="ok",
+            started_at=T0 + timedelta(seconds=2),
+            ended_at=T0 + timedelta(seconds=9),
+            attributes={"service.name": "triager", "owner": "a@example.com"},
+        ),
+        [span_in("root")],
+        redactor=REDACTOR,
+    )
+    record_run(
+        session,
+        run_in(started_at=T0, attributes={"deployment": "local", "owner": "b@example.com"}),
+        [span_in("late-child", parent_external_id="root")],
+        redactor=REDACTOR,
+    )
+    session.expire_all()
+
+    run = session.scalars(select(Run)).one()
+    assert (run.agent, run.name, run.status) == ("triager", "triage #42", "ok")
+    assert (run.started_at, run.ended_at) == (T0, T0 + timedelta(seconds=9))  # widest span
+    assert run.attributes["service.name"] == "triager"  # kept
+    assert run.attributes["deployment"] == "local"  # added
+    assert run.attributes["owner"] == REDACTOR.placeholder("email", "b@example.com")  # newer
+    assert run.redactions == {"email": 1}  # largest per batch, not a running sum
+
+
+def test_a_later_status_replaces_an_earlier_one(session: Session) -> None:
+    record_run(session, run_in(status="ok"), [], redactor=REDACTOR)
+    record_run(session, run_in(status="error"), [], redactor=REDACTOR)
+    record_run(session, run_in(), [], redactor=REDACTOR)  # unset: no news
+    session.expire_all()
+
+    assert session.scalars(select(Run.status)).one() == "error"
+
+
 def test_child_arriving_before_its_parent_is_linked_later(session: Session) -> None:
     record_run(session, run_in(), [span_in("child", parent_external_id="root")], redactor=REDACTOR)
     session.expire_all()
