@@ -81,10 +81,20 @@ def db_upgrade(revision: Annotated[str, typer.Argument(help="Target revision.")]
 
 
 @db_app.command("downgrade")
-def db_downgrade(revision: Annotated[str, typer.Argument(help="Target revision.")]) -> None:
-    """Undo migrations down to a revision ("base" removes every table)."""
+def db_downgrade(
+    revision: Annotated[str, typer.Argument(help="Target revision.")],
+    yes: Annotated[bool, typer.Option("--yes", help="Confirm that data may be lost.")] = False,
+) -> None:
+    """Undo migrations down to a revision ("base" removes every table). Can lose data."""
     from flight_recorder.store.db import downgrade
 
+    if not yes:
+        typer.echo(
+            f"Downgrading to {revision} drops every table and column added after it, with "
+            "their data. Back up first (docs/schema.md), then re-run with --yes.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
     downgrade(revision=revision)
     typer.echo(f"database at {revision}")
 

@@ -15,10 +15,31 @@ runs ─┬─ spans          a tree per run (parent_id)
 docker compose up -d       # Postgres 16 with pgvector, on 127.0.0.1:5433
 uv run afr db upgrade      # apply migrations (AFR_DATABASE_URL, default: the compose database)
 uv run afr db current      # show the current revision
-uv run afr db revision -m "add x" --rev-id 0002   # generate a migration after changing a model
+uv run afr db revision -m "add x" --rev-id 0003   # generate a migration after changing a model
+docker compose down        # stop Postgres; the data stays in the afr-db volume
 ```
 
-Tests that need the database skip when it isn't running. In CI they run against a Postgres service container, with `AFR_REQUIRE_DB=1` so they can't silently skip. `test_models_match_the_migrations` fails if a model changes without a migration.
+`docker compose down -v` **deletes the volume and every recorded run**. Use it only to start from nothing on purpose.
+
+Tests that need the database skip when it isn't running. In CI they run against a Postgres service container, with `AFR_REQUIRE_DB=1` so they can't silently skip. Tests never touch the `afr` database: each test session creates throwaway `afr_test_*` databases and drops them afterwards.
+
+## Changing the schema without losing data
+
+Migrations change a database in place: `afr db upgrade` runs only the migrations it hasn't run yet, and existing rows stay. These rules keep it that way, and the ones marked *enforced* fail CI:
+
+| Rule | How it's kept |
+|---|---|
+| Change the schema by adding a migration. Never edit, rename or delete one that's on `main`, because databases that already ran it won't run it again | *Enforced*: the "Merged migrations unchanged" CI job (`scripts/check_frozen_migrations.sh origin/main` locally) |
+| A model change always comes with a migration | *Enforced*: `test_models_match_the_migrations` |
+| Every migration works on a database that already has rows. For example, a new required column needs a default or a backfill | *Enforced*: `test_existing_rows_survive_every_migration` seeds rows at 0001, upgrades one step at a time and checks nothing is lost |
+| Upgrades are additive. `drop_table`, `drop_column`, `TRUNCATE` and `DELETE FROM` need a comment starting `# allow-data-loss:` that says why | *Enforced*: `test_upgrades_never_drop_data_without_a_reason` |
+| A rename is three steps across releases: add the new column, copy the data, drop the old one later | Review |
+| Downgrades can drop data, so `afr db downgrade` refuses without `--yes` | *Enforced* in the CLI |
+| Back up before a risky change: `docker compose exec db pg_dump -U afr -Fc afr > afr.dump` (restore with `pg_restore`) | Habit |
+
+## Timestamps
+
+`created_at` is when a row was first written, and `updated_at` is its last real change. A `set_updated_at` trigger (migration 0002) maintains `updated_at` on `runs`, `spans`, `embeddings` and `labels`. Because it's a trigger rather than ORM code, it's also right for `INSERT ... ON CONFLICT DO UPDATE`, which SQLAlchemy's `onupdate` doesn't cover, and for psql. It fires only when a row actually changes, so an identical re-send leaves `updated_at` alone, and it uses `clock_timestamp()`, so changes within one transaction get their own times. `eval_results` rows are never updated, so they have only `created_at`. A test checks that every table with an `updated_at` column has the trigger.
 
 ## Design decisions
 
@@ -33,7 +54,7 @@ Tests that need the database skip when it isn't running. In CI they run against 
 | Redaction | Everything a source sends is redacted before mapping, not just `input`/`output`; see the [redaction contract](#redaction-contract). `redactions` holds counts per pattern | The original values are never written (plan decision 3). Prompts also arrive as attributes (`gen_ai.input.messages`), so redacting only the mapped columns would leak them |
 | Integrity | A span's parent, and a label's or embedding's span, must belong to the same run (composite foreign keys on `(run_id, id)`). Tokens and cost can't be negative, and nothing ends before it starts. Every foreign key has an index | A replay can't show another run's steps, and impossible numbers fail at write time. A test checks the indexes |
 | Database access | Sync SQLAlchemy 2 with psycopg 3 | Ingest volume is small. Simpler for the CLI, migrations, tests and the analyst job |
-| Migrations | `afr db ...`, which calls Alembic from code: no `alembic.ini` | The same code path works locally, in CI and in a deployed container |
+| Migrations | `afr db ...`, which calls Alembic from code: no `alembic.ini`. Additive, and never edited once merged; see [Changing the schema without losing data](#changing-the-schema-without-losing-data) | The same code path works locally, in CI and in a deployed container. Upgrades keep existing rows |
 
 ## Tables
 

@@ -60,6 +60,18 @@ jobs:
       - name: Pytest
         run: uv run pytest
 
+  migrations:
+    name: Merged migrations unchanged
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # needs history to find where the branch left the base
+
+      - name: No migration from the base branch was edited
+        run: sh scripts/check_frozen_migrations.sh "origin/${{ github.base_ref }}"
+
   secrets:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest

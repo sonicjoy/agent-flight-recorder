@@ -87,6 +87,16 @@ def _created_at() -> Mapped[datetime]:
     return mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+def _updated_at() -> Mapped[datetime]:
+    # Kept current by the set_updated_at trigger (migration 0002), not by the ORM, so it is
+    # also right for INSERT ... ON CONFLICT DO UPDATE, raw SQL and any other client.
+    return mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        comment="Last real change; set by a trigger",
+    )
+
+
 def _json(comment: str | None = None) -> Mapped[dict[str, Any]]:
     return mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"), comment=comment)
 
@@ -118,6 +128,7 @@ class Run(Base):
     )
     attributes: Mapped[dict[str, Any]] = _json("Resource and root attributes, after redaction")
     created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
 
     spans: Mapped[list[Span]] = relationship(
         back_populates="run", cascade="all, delete-orphan", passive_deletes=True
@@ -164,6 +175,8 @@ class Span(Base):
         server_default=text("'{}'::jsonb"),
         comment="Count per redaction pattern; the original values are never stored",
     )
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
 
     run: Mapped[Run] = relationship(back_populates="spans")
     # The database ties a parent to the same run (composite key); joining on id alone is enough.
@@ -209,6 +222,7 @@ class Embedding(Base):
     )
     embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIMENSIONS))
     created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
 
     run: Mapped[Run] = relationship()
     span: Mapped[Span | None] = relationship(primaryjoin="foreign(Embedding.span_id) == Span.id")
@@ -240,6 +254,7 @@ class Label(Base):
     author: Mapped[str | None] = mapped_column(Text, comment="Who labelled it, or which model")
     confidence: Mapped[float | None]
     created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
 
     run: Mapped[Run] = relationship()
     span: Mapped[Span | None] = relationship(primaryjoin="foreign(Label.span_id) == Span.id")
