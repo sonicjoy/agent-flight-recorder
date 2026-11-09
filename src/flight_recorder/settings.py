@@ -39,6 +39,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("AFR_DATABASE_URL"),
         description="SQLAlchemy URL of the run store; default: compose.yaml's Postgres.",
     )
+    redaction_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("AFR_REDACTION_KEY"),
+        description="Key for redaction fingerprints; unset locally means .afr/redaction.key.",
+    )
 
 
 def env_var_names() -> set[str]:

@@ -46,7 +46,7 @@ Migrations change a database in place: `afr db upgrade` runs only the migrations
 | Decision | Choice | Why |
 |---|---|---|
 | Canonical model | OpenTelemetry GenAI conventions, plus OpenInference | Any instrumented agent works without custom code (plan decision 1) |
-| Identity | Our own UUID per row, plus the source's id in `external_id`, unique per source (`runs`) or per run (`spans`) | Re-sent data updates a row instead of duplicating it (`INSERT ... ON CONFLICT`). Claude Code ids aren't OTel ids, and don't have to be |
+| Identity | Our own UUID per row, plus the source's id in `external_id`, unique per source (`runs`) or per run (`spans`) | Re-sent data updates a row instead of duplicating it (`INSERT ... ON CONFLICT`). A span is replaced; a run is merged, so a batch that knows less (no name, status `unset`) keeps what's stored, and the run spans the earliest start and latest end seen. Claude Code ids aren't OTel ids, and don't have to be |
 | Span kind | Our five kinds: `agent`, `llm`, `tool`, `step`, `other` | Queries and the UI work the same for every source. The source's own words stay in `attributes` |
 | Cost | Priced at ingest from `pricing.yaml` and stored as `numeric(14,8)` | A later price change doesn't rewrite history. An unknown model's cost is `NULL`, never $0 |
 | Status | OTel's span status codes: `unset`, `ok`, `error` | No translation for OTel sources. A run is still going while `ended_at` is `NULL` |
@@ -70,6 +70,7 @@ One agent run (an OTel trace) or one Claude Code session.
 | `status`, `started_at`, `ended_at` | `ended_at` is `NULL` while the run is going |
 | `input_tokens`, `output_tokens`, `cost_usd` | Totals over the run's spans. `cost_usd` is `NULL` if any priced span's model is unknown |
 | `attributes` | Resource and root attributes, after redaction |
+| `redactions` | `{"pattern": count}` for the run's own fields (migration 0003): the largest count per pattern in one batch, since batches may repeat the same attributes. Never the values |
 
 ### `spans`
 One step in a run.
@@ -99,19 +100,19 @@ One case's result in one eval run (`suite_run_id`), with the model and git SHA. 
 
 ## Redaction contract
 
-Redaction (#10) runs on **everything a source sends, before it's mapped to columns**: every string, at any depth, in the span's attributes, events, status message and resource. The mapping then only ever sees redacted data, so no column can hold an original value. Ingest has no path that writes without redacting.
+Runs and spans enter the store through one function, `store.write.record_run()`. It redacts **every free-text field before any row is built**: every string, at any depth, in the attributes, input, output, error, names and model, and the dictionary keys too. Ingest (#8, #9) maps each source to `RunIn`/`SpanIn` in memory: span events go into `attributes` or `output`, and the resource into the run's `attributes`. It must not persist or log the raw data. A test fails if anything else in `src` writes to `runs` or `spans`. How redaction works, and its placeholders: [redaction.md](redaction.md).
 
 Columns that hold text from the agent, and are therefore redacted:
 
 | Table | Columns |
 |---|---|
-| `runs` | `name`, `attributes` |
-| `spans` | `name`, `error`, `input`, `output`, `attributes` |
+| `runs` | `agent`, `name`, `attributes` |
+| `spans` | `name`, `model`, `error`, `input`, `output`, `attributes` |
 | `embeddings` | `content` (built only from redacted columns) |
 | `labels` | `note` (a human or model may quote the run) |
 | `eval_results` | `details` |
 
-Columns with no free text, such as ids, kinds, status, model names, token counts, costs and times, pass through unchanged. `spans.redactions` records how many values each pattern replaced; the replaced values themselves are never stored.
+Ids (`external_id`, `parent_external_id`), kinds, status, token counts, costs and times pass through unchanged. `runs.redactions` and `spans.redactions` record how many values each pattern replaced; the replaced values themselves are never stored.
 
 ## Mapping sources onto the schema
 

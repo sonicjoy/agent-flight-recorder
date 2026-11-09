@@ -127,6 +127,12 @@ class Run(Base):
         Money, comment="Sum of span costs at ingest; null if any priced span is unknown"
     )
     attributes: Mapped[dict[str, Any]] = _json("Resource and root attributes, after redaction")
+    redactions: Mapped[dict[str, int]] = mapped_column(
+        JSONB,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+        comment="Count per redaction pattern in the run's own fields; spans keep their own",
+    )
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 
