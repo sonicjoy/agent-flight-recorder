@@ -205,6 +205,81 @@ def test_span_kind_must_be_one_of_ours(session: Session) -> None:
         session.commit()
 
 
+@pytest.mark.parametrize(
+    ("change", "constraint"),
+    [
+        ({"input_tokens": -5}, "tokens"),
+        ({"output_tokens": -1}, "tokens"),
+        ({"cost_usd": Decimal("-0.01")}, "cost"),
+        ({"ended_at": T0 - timedelta(hours=1)}, "ended_after_started"),
+    ],
+    ids=["negative-input-tokens", "negative-output-tokens", "negative-cost", "ends-before-start"],
+)
+@pytest.mark.parametrize("table", ["runs", "spans"])
+def test_measurements_must_be_possible(
+    session: Session, table: str, change: dict[str, Any], constraint: str
+) -> None:
+    if table == "runs":
+        session.add(make_run(**change))
+    else:
+        run = make_run()
+        make_span(run, "s1", **change)
+        session.add(run)
+
+    with pytest.raises(IntegrityError, match=f"ck_{table}_{constraint}"):
+        session.commit()
+
+
+def test_span_parent_must_be_in_the_same_run(session: Session) -> None:
+    """Otherwise one run's replay could show another run's steps."""
+    run_a, run_b = make_run(), make_run()
+    root = make_span(run_a, "root")
+    session.add_all([run_a, run_b])
+    session.commit()
+
+    session.add(make_span(run_b, "child", parent=root))
+    with pytest.raises(IntegrityError, match="fk_spans_run_id_parent_id_spans"):
+        session.commit()
+
+
+@pytest.mark.parametrize("model", [Label, Embedding])
+def test_label_and_embedding_span_must_be_in_the_same_run(
+    session: Session, model: type[Label] | type[Embedding]
+) -> None:
+    run_a, run_b = make_run(), make_run()
+    span_a = make_span(run_a, "root")
+    session.add_all([run_a, run_b])
+    session.commit()
+
+    if model is Label:
+        session.add(Label(run=run_b, span=span_a, failure_mode="timeout", source="human"))
+    else:
+        session.add(
+            Embedding(run=run_b, span=span_a, kind="failed_span", model="m", content="x",
+                      embedding=vector(1))
+        )  # fmt: skip
+    with pytest.raises(IntegrityError, match=f"fk_{model.__tablename__}_run_id_span_id_spans"):
+        session.commit()
+
+
+def test_every_foreign_key_is_indexed(engine: Engine) -> None:
+    """Postgres doesn't index foreign keys itself; without one, deletes scan the table."""
+    query = text("""
+        SELECT c.conrelid::regclass::text || ' (' || c.conname || ')'
+        FROM pg_constraint c
+        WHERE c.contype = 'f' AND c.connamespace = 'public'::regnamespace
+          AND NOT EXISTS (
+            SELECT 1 FROM pg_index i
+            WHERE i.indrelid = c.conrelid
+              AND (i.indkey::int2[])[0:cardinality(c.conkey) - 1] = c.conkey
+          )
+    """)
+    with engine.connect() as connection:
+        unindexed = connection.scalars(query).all()
+
+    assert unindexed == []
+
+
 def test_label_confidence_is_between_zero_and_one(session: Session) -> None:
     run = make_run()
     session.add_all([run, Label(run=run, failure_mode="x", source="judge", confidence=1.5)])

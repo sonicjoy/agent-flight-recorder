@@ -29,8 +29,9 @@ Tests that need the database skip when it isn't running. In CI they run against 
 | Span kind | Our five kinds: `agent`, `llm`, `tool`, `step`, `other` | Queries and the UI work the same for every source. The source's own words stay in `attributes` |
 | Cost | Priced at ingest from `pricing.yaml` and stored as `numeric(14,8)` | A later price change doesn't rewrite history. An unknown model's cost is `NULL`, never $0 |
 | Status | OTel's span status codes: `unset`, `ok`, `error` | No translation for OTel sources. A run is still going while `ended_at` is `NULL` |
-| Raw data | Every source attribute is kept in `attributes` (JSONB) | Nothing is lost in mapping, and a later mapping can re-read it |
-| Redaction | `input`/`output` are stored after redaction (#10); `redactions` holds counts per pattern | The original values are never written (plan decision 3) |
+| Raw data | Every source attribute is kept in `attributes` (JSONB), **after redaction** | Nothing is lost in mapping, and a later mapping can re-read it |
+| Redaction | Everything a source sends is redacted before mapping, not just `input`/`output`; see the [redaction contract](#redaction-contract). `redactions` holds counts per pattern | The original values are never written (plan decision 3). Prompts also arrive as attributes (`gen_ai.input.messages`), so redacting only the mapped columns would leak them |
+| Integrity | A span's parent, and a label's or embedding's span, must belong to the same run (composite foreign keys on `(run_id, id)`). Tokens and cost can't be negative, and nothing ends before it starts. Every foreign key has an index | A replay can't show another run's steps, and impossible numbers fail at write time. A test checks the indexes |
 | Database access | Sync SQLAlchemy 2 with psycopg 3 | Ingest volume is small. Simpler for the CLI, migrations, tests and the analyst job |
 | Migrations | `afr db ...`, which calls Alembic from code: no `alembic.ini` | The same code path works locally, in CI and in a deployed container |
 
@@ -44,10 +45,10 @@ One agent run (an OTel trace) or one Claude Code session.
 | `source` | `otel` or `claude_code` |
 | `external_id` | OTel trace id, or the Claude Code session id. Unique with `source` |
 | `agent` | Agent or service name |
-| `name` | Root span name, or the session title |
+| `name` | Root span name, or the session title (redacted: titles can quote the prompt) |
 | `status`, `started_at`, `ended_at` | `ended_at` is `NULL` while the run is going |
 | `input_tokens`, `output_tokens`, `cost_usd` | Totals over the run's spans. `cost_usd` is `NULL` if any priced span's model is unknown |
-| `attributes` | Resource and root attributes, as sent |
+| `attributes` | Resource and root attributes, after redaction |
 
 ### `spans`
 One step in a run.
@@ -55,13 +56,13 @@ One step in a run.
 | Column | Notes |
 |---|---|
 | `external_id` | OTel span id, or the Claude Code tool-use id. Unique within a run |
-| `parent_id` / `parent_external_id` | The parent's row, and the parent's id as sent. A child can arrive before its parent: its `parent_external_id` is kept and `parent_id` is filled in when the parent arrives |
+| `parent_id` / `parent_external_id` | The parent's row (always in the same run), and the parent's id as sent. A child can arrive before its parent: its `parent_external_id` is kept and `parent_id` is filled in when the parent arrives |
 | `kind` | `agent`, `llm`, `tool`, `step` or `other`; see the mapping below |
 | `name`, `model` | `model` is `<provider>:<model>` when known, the same format as `pricing.yaml` |
-| `status`, `error` | `error` holds the status description or exception message |
+| `status`, `error` | `error` holds the status description or exception message, redacted |
 | `input_tokens`, `output_tokens`, `cost_usd` | `cost_usd` is priced at ingest |
 | `input`, `output` | Redacted message or argument JSON |
-| `attributes` | Every attribute, as sent |
+| `attributes` | Every attribute as sent, after redaction |
 | `redactions` | `{"pattern": count}`. Never the values |
 
 Times are `timestamptz`, with microsecond precision; OTel's nanoseconds are truncated. Latency is `ended_at - started_at`.
@@ -74,6 +75,22 @@ A failure mode on a run, or on one of its spans. `source` is `human`, `judge` or
 
 ### `eval_results`
 One case's result in one eval run (`suite_run_id`), with the model and git SHA. The cases themselves are YAML files in git (plan decision 7). `run_id` links to the recorded run the case produced; it's set to `NULL` if that run is deleted, so results history survives.
+
+## Redaction contract
+
+Redaction (#10) runs on **everything a source sends, before it's mapped to columns**: every string, at any depth, in the span's attributes, events, status message and resource. The mapping then only ever sees redacted data, so no column can hold an original value. Ingest has no path that writes without redacting.
+
+Columns that hold text from the agent, and are therefore redacted:
+
+| Table | Columns |
+|---|---|
+| `runs` | `name`, `attributes` |
+| `spans` | `name`, `error`, `input`, `output`, `attributes` |
+| `embeddings` | `content` (built only from redacted columns) |
+| `labels` | `note` (a human or model may quote the run) |
+| `eval_results` | `details` |
+
+Columns with no free text, such as ids, kinds, status, model names, token counts, costs and times, pass through unchanged. `spans.redactions` records how many values each pattern replaced; the replaced values themselves are never stored.
 
 ## Mapping sources onto the schema
 
@@ -102,7 +119,7 @@ The ingest code (#8, #9) implements this mapping; this section is the contract. 
 | `runs.agent` | `gen_ai.agent.name`, else `service.name` | `agent.name`, else `service.name` |
 | `status`, `error` | Span status code and description; exception events | Span status code and description; exception events |
 
-Not mapped to columns, but kept in `attributes`: `gen_ai.conversation.id` / `session.id`, cache and reasoning token counts, tool call ids, request parameters (temperature and so on), finish reasons.
+Not mapped to columns, but kept (redacted) in `attributes`: `gen_ai.conversation.id` / `session.id`, cache and reasoning token counts, tool call ids, request parameters (temperature and so on), finish reasons.
 
 Provider names differ between the two conventions. For example, OTel uses `gcp.gemini` and `x_ai`, while OpenInference uses `google` and `xai`. Ingest normalises both to the provider names in `pricing.yaml` (`anthropic`, `google_genai`, `openai`), so costs can be looked up.
 

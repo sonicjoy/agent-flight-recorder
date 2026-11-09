@@ -2,7 +2,7 @@
 
 Revision ID: 0001
 Revises:
-Create Date: 2026-11-09 12:36:50.906507
+Create Date: 2026-11-09 13:51:45.861557
 """
 
 # pyright: basic
@@ -29,7 +29,12 @@ def upgrade() -> None:
         sa.Column("source", sa.Text(), nullable=False),
         sa.Column("external_id", sa.Text(), nullable=False),
         sa.Column("agent", sa.Text(), nullable=True, comment="Agent or service name"),
-        sa.Column("name", sa.Text(), nullable=True, comment="Root span name or session title"),
+        sa.Column(
+            "name",
+            sa.Text(),
+            nullable=True,
+            comment="Root span name or session title, after redaction",
+        ),
         sa.Column("status", sa.Text(), server_default="unset", nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column(
@@ -51,6 +56,7 @@ def upgrade() -> None:
             postgresql.JSONB(astext_type=sa.Text()),
             server_default=sa.text("'{}'::jsonb"),
             nullable=False,
+            comment="Resource and root attributes, after redaction",
         ),
         sa.Column(
             "created_at",
@@ -60,6 +66,9 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint("source IN ('otel', 'claude_code')", name=op.f("ck_runs_source")),
         sa.CheckConstraint("status IN ('unset', 'ok', 'error')", name=op.f("ck_runs_status")),
+        sa.CheckConstraint("cost_usd >= 0", name=op.f("ck_runs_cost")),
+        sa.CheckConstraint("ended_at >= started_at", name=op.f("ck_runs_ended_after_started")),
+        sa.CheckConstraint("input_tokens >= 0 AND output_tokens >= 0", name=op.f("ck_runs_tokens")),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_runs")),
         sa.UniqueConstraint("source", "external_id", name=op.f("uq_runs_source_external_id")),
     )
@@ -82,6 +91,7 @@ def upgrade() -> None:
             postgresql.JSONB(astext_type=sa.Text()),
             server_default=sa.text("'{}'::jsonb"),
             nullable=False,
+            comment="Redacted before storing",
         ),
         sa.Column(
             "created_at",
@@ -103,12 +113,13 @@ def upgrade() -> None:
         ["case_id", "created_at"],
         unique=False,
     )
+    op.create_index(op.f("ix_eval_results_run_id"), "eval_results", ["run_id"], unique=False)
     op.create_table(
         "spans",
         sa.Column("id", sa.Uuid(), server_default=sa.text("gen_random_uuid()"), nullable=False),
         sa.Column("run_id", sa.Uuid(), nullable=False),
         sa.Column("external_id", sa.Text(), nullable=False),
-        sa.Column("parent_id", sa.Uuid(), nullable=True),
+        sa.Column("parent_id", sa.Uuid(), nullable=True, comment="A span of the same run"),
         sa.Column(
             "parent_external_id",
             sa.Text(),
@@ -119,7 +130,7 @@ def upgrade() -> None:
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column("model", sa.Text(), nullable=True, comment="As <provider>:<model> when known"),
         sa.Column("status", sa.Text(), server_default="unset", nullable=False),
-        sa.Column("error", sa.Text(), nullable=True),
+        sa.Column("error", sa.Text(), nullable=True, comment="Redacted before storing"),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("input_tokens", sa.Integer(), nullable=True),
@@ -144,6 +155,7 @@ def upgrade() -> None:
             postgresql.JSONB(astext_type=sa.Text()),
             server_default=sa.text("'{}'::jsonb"),
             nullable=False,
+            comment="Every attribute as sent, after redaction",
         ),
         sa.Column(
             "redactions",
@@ -156,14 +168,23 @@ def upgrade() -> None:
             "kind IN ('agent', 'llm', 'tool', 'step', 'other')", name=op.f("ck_spans_kind")
         ),
         sa.CheckConstraint("status IN ('unset', 'ok', 'error')", name=op.f("ck_spans_status")),
+        sa.CheckConstraint("cost_usd >= 0", name=op.f("ck_spans_cost")),
+        sa.CheckConstraint("ended_at >= started_at", name=op.f("ck_spans_ended_after_started")),
+        sa.CheckConstraint(
+            "input_tokens >= 0 AND output_tokens >= 0", name=op.f("ck_spans_tokens")
+        ),
         sa.ForeignKeyConstraint(
-            ["parent_id"], ["spans.id"], name=op.f("fk_spans_parent_id_spans"), ondelete="CASCADE"
+            ["run_id", "parent_id"],
+            ["spans.run_id", "spans.id"],
+            name=op.f("fk_spans_run_id_parent_id_spans"),
+            ondelete="CASCADE",
         ),
         sa.ForeignKeyConstraint(
             ["run_id"], ["runs.id"], name=op.f("fk_spans_run_id_runs"), ondelete="CASCADE"
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_spans")),
         sa.UniqueConstraint("run_id", "external_id", name=op.f("uq_spans_run_id_external_id")),
+        sa.UniqueConstraint("run_id", "id", name=op.f("uq_spans_run_id_id")),
     )
     op.create_index(
         "ix_spans_errors",
@@ -172,7 +193,9 @@ def upgrade() -> None:
         unique=False,
         postgresql_where=sa.text("status = 'error'"),
     )
-    op.create_index(op.f("ix_spans_parent_id"), "spans", ["parent_id"], unique=False)
+    op.create_index(
+        op.f("ix_spans_run_id_parent_id"), "spans", ["run_id", "parent_id"], unique=False
+    )
     op.create_index(
         op.f("ix_spans_run_id_started_at"), "spans", ["run_id", "started_at"], unique=False
     )
@@ -180,12 +203,17 @@ def upgrade() -> None:
         "embeddings",
         sa.Column("id", sa.Uuid(), server_default=sa.text("gen_random_uuid()"), nullable=False),
         sa.Column("run_id", sa.Uuid(), nullable=False),
-        sa.Column("span_id", sa.Uuid(), nullable=True),
+        sa.Column("span_id", sa.Uuid(), nullable=True, comment="A span of the same run"),
         sa.Column("kind", sa.Text(), nullable=False),
         sa.Column(
             "model", sa.Text(), nullable=False, comment="Embedding model, e.g. bge-small-en-v1.5"
         ),
-        sa.Column("content", sa.Text(), nullable=False, comment="The text that was embedded"),
+        sa.Column(
+            "content",
+            sa.Text(),
+            nullable=False,
+            comment="The text that was embedded, built from redacted columns only",
+        ),
         sa.Column("embedding", Vector(384), nullable=False),
         sa.Column(
             "created_at",
@@ -197,10 +225,13 @@ def upgrade() -> None:
             "kind IN ('run_summary', 'failed_span')", name=op.f("ck_embeddings_kind")
         ),
         sa.ForeignKeyConstraint(
-            ["run_id"], ["runs.id"], name=op.f("fk_embeddings_run_id_runs"), ondelete="CASCADE"
+            ["run_id", "span_id"],
+            ["spans.run_id", "spans.id"],
+            name=op.f("fk_embeddings_run_id_span_id_spans"),
+            ondelete="CASCADE",
         ),
         sa.ForeignKeyConstraint(
-            ["span_id"], ["spans.id"], name=op.f("fk_embeddings_span_id_spans"), ondelete="CASCADE"
+            ["run_id"], ["runs.id"], name=op.f("fk_embeddings_run_id_runs"), ondelete="CASCADE"
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_embeddings")),
         sa.UniqueConstraint(
@@ -223,9 +254,9 @@ def upgrade() -> None:
         "labels",
         sa.Column("id", sa.Uuid(), server_default=sa.text("gen_random_uuid()"), nullable=False),
         sa.Column("run_id", sa.Uuid(), nullable=False),
-        sa.Column("span_id", sa.Uuid(), nullable=True),
+        sa.Column("span_id", sa.Uuid(), nullable=True, comment="A span of the same run"),
         sa.Column("failure_mode", sa.Text(), nullable=False),
-        sa.Column("note", sa.Text(), nullable=True),
+        sa.Column("note", sa.Text(), nullable=True, comment="Redacted before storing"),
         sa.Column("source", sa.Text(), nullable=False),
         sa.Column("author", sa.Text(), nullable=True, comment="Who labelled it, or which model"),
         sa.Column("confidence", sa.Double(), nullable=True),
@@ -242,19 +273,22 @@ def upgrade() -> None:
             "confidence IS NULL OR confidence BETWEEN 0 AND 1", name=op.f("ck_labels_confidence")
         ),
         sa.ForeignKeyConstraint(
-            ["run_id"], ["runs.id"], name=op.f("fk_labels_run_id_runs"), ondelete="CASCADE"
+            ["run_id", "span_id"],
+            ["spans.run_id", "spans.id"],
+            name=op.f("fk_labels_run_id_span_id_spans"),
+            ondelete="CASCADE",
         ),
         sa.ForeignKeyConstraint(
-            ["span_id"], ["spans.id"], name=op.f("fk_labels_span_id_spans"), ondelete="CASCADE"
+            ["run_id"], ["runs.id"], name=op.f("fk_labels_run_id_runs"), ondelete="CASCADE"
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_labels")),
     )
     op.create_index(op.f("ix_labels_failure_mode"), "labels", ["failure_mode"], unique=False)
-    op.create_index(op.f("ix_labels_run_id"), "labels", ["run_id"], unique=False)
+    op.create_index(op.f("ix_labels_run_id_span_id"), "labels", ["run_id", "span_id"], unique=False)
 
 
 def downgrade() -> None:
-    op.drop_index(op.f("ix_labels_run_id"), table_name="labels")
+    op.drop_index(op.f("ix_labels_run_id_span_id"), table_name="labels")
     op.drop_index(op.f("ix_labels_failure_mode"), table_name="labels")
     op.drop_table("labels")
     op.drop_index(
@@ -265,11 +299,12 @@ def downgrade() -> None:
     )
     op.drop_table("embeddings")
     op.drop_index(op.f("ix_spans_run_id_started_at"), table_name="spans")
-    op.drop_index(op.f("ix_spans_parent_id"), table_name="spans")
+    op.drop_index(op.f("ix_spans_run_id_parent_id"), table_name="spans")
     op.drop_index(
         "ix_spans_errors", table_name="spans", postgresql_where=sa.text("status = 'error'")
     )
     op.drop_table("spans")
+    op.drop_index(op.f("ix_eval_results_run_id"), table_name="eval_results")
     op.drop_index(op.f("ix_eval_results_case_id_created_at"), table_name="eval_results")
     op.drop_table("eval_results")
     op.drop_index(op.f("ix_runs_started_at"), table_name="runs")
