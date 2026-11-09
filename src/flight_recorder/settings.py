@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = Field(
         default=None, validation_alias=AliasChoices("OPENAI_API_KEY")
     )
+    database_url: SecretStr = Field(
+        default=SecretStr("postgresql+psycopg://afr:afr@127.0.0.1:5433/afr"),
+        validation_alias=AliasChoices("AFR_DATABASE_URL"),
+        description="SQLAlchemy URL of the run store; default: compose.yaml's Postgres.",
+    )
 
 
 def env_var_names() -> set[str]:

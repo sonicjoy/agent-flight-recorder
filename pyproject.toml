@@ -8,12 +8,16 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.20.1",
     "langchain>=1.4.9",
     "langchain-anthropic>=1.7.10",
     "langchain-google-genai>=4.4.3",
     "langchain-openai>=1.7.4",
+    "pgvector>=0.5.1",
+    "psycopg[binary]>=3.3.8",
     "pydantic-settings>=2.16.2",
     "pyyaml>=6.0.3",
+    "sqlalchemy>=2.1.8",
     "typer>=0.27.3",
 ]
 
@@ -55,6 +59,7 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers -m 'not smoke'"
 markers = [
     "smoke: real calls to LLM providers; run with `pytest -m smoke` (skipped without keys)",
+    "db: needs Postgres (`docker compose up -d`); skipped without it unless AFR_REQUIRE_DB is set",
 ]
 
 [dependency-groups]

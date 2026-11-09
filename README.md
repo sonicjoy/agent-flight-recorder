@@ -15,14 +15,18 @@ An open-source tool that records every AI agent run, replays it as a timeline, f
 
 ## Development
 
-Requires [uv](https://docs.astral.sh/uv/) and Python 3.12+.
+Requires [uv](https://docs.astral.sh/uv/), Python 3.12+ and Docker (for the run store's Postgres).
 
 ```bash
 uv sync                          # create .venv and install dependencies
 uv run pre-commit install        # run checks on every commit
 cp .env.example .env             # then fill in your keys
+docker compose up -d             # Postgres 16 + pgvector on 127.0.0.1:5433
+uv run afr db upgrade            # create or update the tables; existing data is kept
 uv run afr --help
 ```
+
+`docker compose down` stops Postgres and keeps the data; `docker compose down -v` deletes it. The schema, how traces map onto it, and the rules for changing it without losing data: [docs/schema.md](docs/schema.md).
 
 Checks (the same ones CI runs on every pull request):
 
@@ -30,7 +34,7 @@ Checks (the same ones CI runs on every pull request):
 uv run pre-commit run --all-files   # everything, including gitleaks
 uv run ruff check && uv run ruff format --check
 uv run pyright
-uv run pytest
+uv run pytest                       # database tests skip if Postgres isn't running
 ```
 
 ## Roadmap
