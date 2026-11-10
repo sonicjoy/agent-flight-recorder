@@ -50,15 +50,21 @@ def decompress(body: bytes, content_encoding: str | None) -> bytes:
         return body
     if encoding != "gzip":
         raise PayloadError(f"unsupported Content-Encoding {encoding!r}; use gzip or none")
-    inflater = zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)  # 16+: gzip header
-    try:
-        # Stop one byte past the limit instead of inflating a zip bomb in full.
-        data = inflater.decompress(body, MAX_BODY_BYTES + 1)
-    except zlib.error as error:
-        raise PayloadError(f"invalid gzip body: {error}") from error
-    if len(data) > MAX_BODY_BYTES or inflater.unconsumed_tail:
-        raise PayloadTooLarge(f"body expands to more than {MAX_BODY_BYTES} bytes")
-    return data
+    data = bytearray()
+    rest = body
+    while rest:  # a gzip body may hold several members, one after another (RFC 1952)
+        inflater = zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)  # 16+: gzip header
+        try:
+            # Stop one byte past the limit instead of inflating a zip bomb in full.
+            data += inflater.decompress(rest, MAX_BODY_BYTES + 1 - len(data))
+        except zlib.error as error:
+            raise PayloadError(f"invalid gzip body: {error}") from error
+        if len(data) > MAX_BODY_BYTES or inflater.unconsumed_tail:
+            raise PayloadTooLarge(f"body expands to more than {MAX_BODY_BYTES} bytes")
+        if not inflater.eof:
+            raise PayloadError("invalid gzip body: truncated")
+        rest = inflater.unused_data
+    return bytes(data)
 
 
 def _hex_ids_to_base64(node: Any) -> Any:

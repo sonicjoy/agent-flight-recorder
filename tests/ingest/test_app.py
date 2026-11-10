@@ -157,6 +157,68 @@ def test_one_bad_trace_is_rejected_and_the_rest_are_stored(
     assert run.agent == "triage_agent"
 
 
+def bad_for_postgres(attributes: dict[str, Any]) -> Callable[[Tracer], None]:
+    def build(tracer: Tracer) -> None:
+        with tracer.start_as_current_span("chat", attributes=attributes):
+            pass
+
+    return build
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        {"note": "nul \x00 char"},
+        {"score": float("nan")},
+        {"gen_ai.operation.name": "chat", "gen_ai.usage.input_tokens": 2**40},
+    ],
+    ids=["nul-in-jsonb", "nan-in-jsonb", "tokens-over-int4"],
+)
+def test_a_trace_postgres_refuses_is_rejected_and_the_rest_are_stored(
+    client: TestClient, store: Engine, attributes: dict[str, Any]
+) -> None:
+    body = protobuf(record(triage_run()) + record(bad_for_postgres(attributes)))
+
+    response = post(client, body)
+
+    assert response.status_code == 200
+    partial = ExportTraceServiceResponse.FromString(response.content).partial_success
+    assert partial.rejected_spans == 1
+    assert "DataError" in partial.error_message
+    [run], _ = rows(store)
+    assert run.agent == "triage_agent"
+
+
+def nested_agents(tracer: Tracer) -> None:
+    agent = {"gen_ai.operation.name": "invoke_agent"}
+    with (
+        tracer.start_as_current_span("root"),
+        tracer.start_as_current_span(
+            "triage", attributes=agent | {"gen_ai.agent.name": "triage_agent"}
+        ),
+        tracer.start_as_current_span(
+            "comment", attributes=agent | {"gen_ai.agent.name": "comment_writer"}
+        ),
+    ):
+        pass
+
+
+@pytest.mark.parametrize("helper_last", [True, False], ids=["helper-last", "helper-first"])
+def test_a_later_batch_does_not_rename_the_runs_agent(
+    client: TestClient, store: Engine, helper_last: bool
+) -> None:
+    """A batch holding only the helper agent used to rename the run after it."""
+    spans = record(nested_agents)
+    helper = [s for s in spans if s.name == "comment"]
+    rest = [s for s in spans if s.name != "comment"]
+
+    for batch in (rest, helper) if helper_last else (helper, rest):
+        post(client, protobuf(batch))
+
+    [run], _ = rows(store)
+    assert run.agent == "triage_agent"
+
+
 @pytest.mark.parametrize(
     ("body", "headers", "status"),
     [

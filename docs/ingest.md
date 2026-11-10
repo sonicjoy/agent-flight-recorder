@@ -34,13 +34,13 @@ The issue triager does this with `triager run --record http://127.0.0.1:4318`.
 3. **Map each span** to the store's model ([`ingest/mapping.py`](../src/flight_recorder/ingest/mapping.py)). This reads both OpenTelemetry GenAI (`gen_ai.*`) and OpenInference (`openinference.span.kind`, `llm.*`, `input.value`) attributes. The mapping table is in [schema.md](schema.md#mapping-sources-onto-the-schema).
 4. **Record.** Each trace goes through `store.write.record_run()` in its own transaction. That function **redacts** every free-text field ([redaction.md](redaction.md)), prices the model calls and totals the run.
 
-A trace that can't be mapped, for example one with a negative token count, is rejected on its own; the others are still stored. The rejection message names the fields that failed, never their values, because they may be sensitive.
+A trace that can't be mapped or stored, for example one with a negative token count or a value Postgres won't take (a NUL character, NaN), is rejected on its own; the others are still stored. The rejection message names the fields that failed, never their values, because they may be sensitive.
 
 ### Traces arrive in pieces
 
 Exporters send spans in batches as they finish, so a trace's children usually arrive before its root. Each batch is merged into the run:
 - A child is linked to its parent once the parent arrives.
-- The run's name, status and end time come from the root span when it arrives.
+- The run's name, status, end time and agent come from the batch holding the root span. A batch without the root can't tell the outermost agent from a helper, so it leaves the agent alone.
 - The run covers the earliest start and latest end seen.
 - Attributes from later batches are merged in.
 
@@ -49,10 +49,10 @@ Exporters send spans in batches as they finish, so a trace's children usually ar
 | Field | From |
 |---|---|
 | `name`, `status`, `ended_at` | The root span (no parent). Until it arrives: unknown |
-| `agent` | The agent nearest the root (`gen_ai.agent.name` or `agent.name`), else the resource's `service.name` |
+| `agent` | The agent nearest the root (`gen_ai.agent.name` or `agent.name`) among the spans that arrive with the root, else the resource's `service.name` |
 | `attributes` | Resource attributes, such as `service.name` and `triager.engine` |
 
-A span's prompt and output content (`gen_ai.input.messages`, `input.value` and so on) goes into `input` and `output`, not also into `attributes`. Events (exceptions included) and links go into `attributes.events` and `attributes.links`.
+A span's prompt and output content (`gen_ai.input.messages`, `input.value` and so on) goes into `input` and `output`, not also into `attributes`. If a span has more than one source for the same side, only the one used is moved; the others stay in `attributes`. Events (exceptions included) and links go into `attributes.events` and `attributes.links`.
 
 ## Checked against real runs
 

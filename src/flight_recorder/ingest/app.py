@@ -16,6 +16,8 @@ from fastapi import FastAPI, Header, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import Engine
+from sqlalchemy.exc import DataError, IntegrityError
+from starlette.concurrency import run_in_threadpool
 
 from flight_recorder.ingest import otlp
 from flight_recorder.ingest.mapping import MappingError, map_trace, traces
@@ -32,6 +34,36 @@ def _reason(error: Exception) -> str:
         )
         return f"invalid fields: {', '.join(fields)}"
     return str(error) if isinstance(error, MappingError) else type(error).__name__
+
+
+# What one trace can get wrong. DataError is a value Postgres won't take: a NUL character,
+# NaN in JSON, a count too big for its column. Anything else (the database being down)
+# fails the whole request, so the exporter retries it.
+TRACE_ERRORS = (ValueError, DataError, IntegrityError)
+
+
+def _ingest(
+    engine: Engine, redactor: Redactor, body: bytes, encoding: str | None, kind: str
+) -> Response:
+    """Decode and store an export. Blocking (protobuf, the database): run off the event loop."""
+    try:
+        export = otlp.parse(otlp.decompress(body, encoding), kind)
+    except otlp.PayloadTooLarge as error:
+        return JSONResponse({"error": str(error)}, status_code=413)
+    except otlp.PayloadError as error:
+        return JSONResponse({"error": str(error)}, status_code=400)
+
+    rejected = 0
+    reasons: list[str] = []
+    for trace in traces(export):
+        try:
+            run, spans = map_trace(trace)
+            with session_scope(engine) as session:
+                record_run(session, run, spans, redactor=redactor)
+        except TRACE_ERRORS as error:  # pydantic's ValidationError is a ValueError
+            rejected += len(trace.spans)
+            reasons.append(f"trace {trace.trace_id or '?'}: {_reason(error)}")
+    return Response(otlp.response_body(kind, rejected, "; ".join(reasons)[:1000]), media_type=kind)
 
 
 def create_app(engine: Engine, redactor: Redactor) -> FastAPI:
@@ -57,25 +89,8 @@ def create_app(engine: Engine, redactor: Redactor) -> FastAPI:
             body += chunk
             if len(body) > otlp.MAX_BODY_BYTES:
                 return JSONResponse({"error": "body too large"}, status_code=413)
-        try:
-            export = otlp.parse(otlp.decompress(bytes(body), content_encoding), kind)
-        except otlp.PayloadTooLarge as error:
-            return JSONResponse({"error": str(error)}, status_code=413)
-        except otlp.PayloadError as error:
-            return JSONResponse({"error": str(error)}, status_code=400)
-
-        rejected = 0
-        reasons: list[str] = []
-        for trace in traces(export):
-            try:
-                run, spans = map_trace(trace)
-                with session_scope(engine) as session:
-                    record_run(session, run, spans, redactor=redactor)
-            except (ValueError, ValidationError) as error:
-                rejected += len(trace.spans)
-                reasons.append(f"trace {trace.trace_id or '?'}: {_reason(error)}")
-        return Response(
-            otlp.response_body(kind, rejected, "; ".join(reasons)[:1000]), media_type=kind
+        return await run_in_threadpool(
+            _ingest, engine, redactor, bytes(body), content_encoding, kind
         )
 
     return app

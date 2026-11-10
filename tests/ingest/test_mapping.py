@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
+import pytest
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue, ArrayValue, KeyValue, KeyValueList
 from opentelemetry.trace import Tracer
 from otlp_payloads import export, record, triage_run
@@ -116,7 +118,7 @@ def test_a_batch_without_the_root_leaves_run_fields_unknown() -> None:
 
     run, mapped_spans = map_trace(trace)
 
-    assert (run.name, run.status, run.ended_at) == (None, "unset", None)
+    assert (run.name, run.status, run.ended_at, run.agent) == (None, "unset", None, None)
     assert run.started_at == min(s.started_at for s in mapped_spans)
 
 
@@ -177,3 +179,95 @@ def test_run_agent_is_the_first_agent_not_the_most_frequent() -> None:
     run, _ = mapped(build)
 
     assert run.agent == "triage_agent"
+
+
+def nested_agents(tracer: Tracer) -> None:
+    """root -> triage_agent -> comment_writer, as in the triager."""
+    agent = {"gen_ai.operation.name": "invoke_agent"}
+    with (
+        tracer.start_as_current_span("root"),
+        tracer.start_as_current_span(
+            "triage", attributes=agent | {"gen_ai.agent.name": "triage_agent"}
+        ),
+        tracer.start_as_current_span(
+            "comment", attributes=agent | {"gen_ai.agent.name": "comment_writer"}
+        ),
+    ):
+        pass
+
+
+def test_a_helper_whose_parents_are_in_another_batch_never_names_the_run() -> None:
+    """Its depth can't be known from this batch, so it can't win over the real agent."""
+    spans = record(nested_agents)
+    without_middle = [s for s in spans if s.name != "triage"]  # root and comment_writer
+    [trace] = traces(export(without_middle))
+
+    run, _ = map_trace(trace)
+
+    assert run.agent == "issue-triager"  # falls back to service.name, not the helper
+
+
+def span_with(attributes: dict[str, Any], kind: str = "LLM") -> SpanIn:
+    def build(tracer: Tracer) -> None:
+        with tracer.start_as_current_span(
+            "span", attributes={"openinference.span.kind": kind} | attributes
+        ):
+            pass
+
+    _, spans = mapped(build)
+    return spans["span"]
+
+
+def test_output_messages_are_kept_when_only_input_is_moved() -> None:
+    span = span_with({"input.value": "hi", "llm.output_messages.0.message.content": "the reply"})
+
+    assert (span.input, span.output) == ("hi", None)
+    assert span.attributes["llm.output_messages.0.message.content"] == "the reply"
+
+
+def test_content_keys_that_were_not_used_stay_in_attributes() -> None:
+    span = span_with(
+        {
+            "gen_ai.operation.name": "chat",
+            "gen_ai.input.messages": '[{"role": "user"}]',
+            "input.value": "the same prompt, OpenInference's copy",
+            "gen_ai.tool.call.arguments": '{"q": 1}',
+        }
+    )
+
+    assert span.input == [{"role": "user"}]
+    assert "gen_ai.input.messages" not in span.attributes  # moved
+    assert span.attributes["input.value"] == "the same prompt, OpenInference's copy"
+    assert span.attributes["gen_ai.tool.call.arguments"] == '{"q": 1}'
+
+
+@pytest.mark.parametrize(
+    ("value", "tokens"),
+    [
+        (12, 12),
+        (12.0, 12),
+        ("12", 12),
+        (float("inf"), None),
+        (float("nan"), None),
+        (1.5, None),
+        (True, None),
+        ("\u00b2", None),  # a digit to str.isdigit(), not to int()
+        ("12k", None),
+    ],
+)
+def test_token_counts(value: object, tokens: int | None) -> None:
+    assert span_with({"llm.token_count.prompt": value}).input_tokens == tokens
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "expected"),
+    [
+        ("openai", "gpt-5.4-mini-2026-03-17", "openai:gpt-5.4-mini"),
+        ("anthropic", "claude-sonnet-5-5-20260115", "anthropic:claude-sonnet-5-5"),
+        ("openai", "gpt-5.5", "openai:gpt-5.5"),
+    ],
+)
+def test_snapshot_dates_are_dropped(provider: str, model: str, expected: str) -> None:
+    span = span_with({"llm.provider": provider, "llm.model_name": model})
+
+    assert span.model == expected

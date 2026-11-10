@@ -50,6 +50,25 @@ def test_gzip_is_decompressed() -> None:
     assert otlp.decompress(body, None) == body
 
 
+def test_gzip_members_are_all_decompressed() -> None:
+    """RFC 1952 allows several members in one body; none may be dropped."""
+    assert otlp.decompress(gzip.compress(b"one ") + gzip.compress(b"two"), "gzip") == b"one two"
+
+
+def test_truncated_gzip_is_refused() -> None:
+    body = gzip.compress(protobuf(record(triage_run())))
+
+    with pytest.raises(otlp.PayloadError, match="truncated"):
+        otlp.decompress(body[:-4], "gzip")
+
+
+def test_zip_bomb_across_members_is_refused() -> None:
+    member = gzip.compress(b"\x00" * (otlp.MAX_BODY_BYTES // 2 + 1))
+
+    with pytest.raises(otlp.PayloadTooLarge):
+        otlp.decompress(member + member, "gzip")
+
+
 def test_zip_bomb_is_refused_without_inflating_it() -> None:
     bomb = gzip.compress(b"\x00" * (otlp.MAX_BODY_BYTES * 5))  # 50 MB of zeros, ~50 KB gzipped
 

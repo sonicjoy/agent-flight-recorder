@@ -65,17 +65,21 @@ OUTPUT_TOKENS = (
     "llm.token_count.completion",
     "gen_ai.usage.completion_tokens",
 )
-DATED_MODEL = re.compile(r"^(?P<alias>.+)-\d{4}-\d{2}-\d{2}$")  # gpt-5.4-mini-2026-03-17
-# Moved into input/output, so not stored twice in attributes.
-CONTENT_KEYS = (
-    "gen_ai.input.messages",
-    "gen_ai.output.messages",
-    "gen_ai.tool.call.arguments",
-    "gen_ai.tool.call.result",
-    "input.value",
-    "output.value",
+# gpt-5.4-mini-2026-03-17 (OpenAI) or claude-sonnet-5-5-20260115 (Anthropic)
+DATED_MODEL = re.compile(r"^(?P<alias>.+)-(?:\d{4}-\d{2}-\d{2}|\d{8})$")
+# Where (input, output) come from, first match wins. The key used is moved out of
+# attributes, with OpenInference's flattened copy of the same messages, so it isn't
+# stored twice. Content keys that weren't used stay in attributes.
+TOOL_CONTENT = (
+    ("gen_ai.tool.call.arguments", "input.value"),
+    ("gen_ai.tool.call.result", "output.value"),
+)
+MESSAGE_CONTENT = (
+    ("gen_ai.input.messages", "input.value"),
+    ("gen_ai.output.messages", "output.value"),
 )
 FLATTENED_CONTENT = ("llm.input_messages.", "llm.output_messages.")
+AGENT_NAME = ("gen_ai.agent.name", "agent.name")
 
 
 def any_value(value: AnyValue) -> Any:
@@ -110,8 +114,13 @@ def _hex(raw: bytes) -> str | None:
     return raw.hex() or None
 
 
+def _first_key(attrs: Mapping[str, Any], *keys: str) -> str | None:
+    return next((k for k in keys if attrs.get(k) not in (None, "")), None)
+
+
 def _first(attrs: Mapping[str, Any], *keys: str) -> Any:
-    return next((attrs[k] for k in keys if attrs.get(k) not in (None, "")), None)
+    key = _first_key(attrs, *keys)
+    return None if key is None else attrs[key]
 
 
 def _maybe_json(value: Any) -> Any:
@@ -147,8 +156,17 @@ def _model(attrs: Mapping[str, Any]) -> str | None:
 
 
 def _tokens(attrs: Mapping[str, Any], *keys: str) -> int | None:
+    """A count from an int, a whole float or a string of digits; anything else is unknown."""
     value = _first(attrs, *keys)
-    return int(value) if isinstance(value, int | float) or str(value).isdigit() else None
+    if isinstance(value, bool):  # a bool is an int to Python, but not a count
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):  # is_integer() is False for inf and NaN too
+        return int(value) if value.is_integer() else None
+    if isinstance(value, str) and value.isascii() and value.isdigit():
+        return int(value)
+    return None
 
 
 def _error(span: OtlpSpan) -> str | None:
@@ -164,26 +182,27 @@ def _error(span: OtlpSpan) -> str | None:
     return None
 
 
-def _content(attrs: Mapping[str, Any], kind: Kind) -> tuple[Any, Any]:
-    if kind == "tool":
-        input_value = _first(attrs, "gen_ai.tool.call.arguments", "input.value")
-        output_value = _first(attrs, "gen_ai.tool.call.result", "output.value")
-    else:
-        input_value = _first(attrs, "gen_ai.input.messages", "input.value")
-        output_value = _first(attrs, "gen_ai.output.messages", "output.value")
-    return _maybe_json(input_value), _maybe_json(output_value)
+def _content(attrs: Mapping[str, Any], kind: Kind) -> tuple[Any, Any, dict[str, Any]]:
+    """Input, output, and the attributes left once their sources are moved out."""
+    sources = TOOL_CONTENT if kind == "tool" else MESSAGE_CONTENT
+    values: list[Any] = []
+    moved: set[str] = set()
+    moved_prefixes: list[str] = []
+    for keys, flattened in zip(sources, FLATTENED_CONTENT, strict=True):
+        key = _first_key(attrs, *keys)
+        values.append(None if key is None else _maybe_json(attrs[key]))
+        if key is not None:
+            moved.add(key)
+            moved_prefixes.append(flattened)
+    prefixes = tuple(moved_prefixes)
+    kept = {k: v for k, v in attrs.items() if k not in moved and not k.startswith(prefixes)}
+    return values[0], values[1], kept
 
 
 def map_span(span: OtlpSpan) -> SpanIn:
     attrs = attributes(span.attributes)
     kind = _kind(attrs)
-    input_value, output_value = _content(attrs, kind)
-    kept = {
-        k: v
-        for k, v in attrs.items()
-        if k not in CONTENT_KEYS
-        and not (input_value is not None and k.startswith(FLATTENED_CONTENT))
-    }
+    input_value, output_value, kept = _content(attrs, kind)
     if span.events:
         kept["events"] = [
             {
@@ -242,23 +261,39 @@ def traces(request: ExportTraceServiceRequest) -> list[Trace]:
     return list(by_id.values())
 
 
+def _agent_name(span: OtlpSpan) -> str | None:
+    """The span's agent name, read without decoding all its attributes."""
+    names = {kv.key: any_value(kv.value) for kv in span.attributes if kv.key in AGENT_NAME}
+    name = _first(names, *AGENT_NAME)
+    return None if name is None else str(name)
+
+
 def _outermost_agent(trace: Trace) -> str | None:
     """The agent nearest the root; agents below it (a comment writer called mid-run) are
     helpers. Real runs showed "most frequent" picking those, and start times can't decide:
     on Windows a parent and child can share a timestamp.
+
+    Only spans whose chain of parents reaches the root within this batch count. A batch
+    without the root can't tell a helper from the outermost agent, and whatever it sent
+    would overwrite the run's agent (record_run keeps the newest non-null value).
     """
     parents = {s.span_id: s.parent_span_id for s in trace.spans}
 
-    def depth(span_id: bytes) -> int:
-        steps = 0
-        while (span_id := parents.get(span_id, b"")) and steps < len(parents):
-            steps += 1
-        return steps
+    def depth(span_id: bytes) -> int | None:
+        """Steps up to the root, or None if the chain leaves this batch (or loops)."""
+        for steps in range(len(parents)):
+            parent = parents.get(span_id)
+            if parent is None:
+                return None
+            if not parent:
+                return steps
+            span_id = parent
+        return None
 
     named = sorted(
-        (depth(raw.span_id), raw.start_time_unix_nano, str(name))
+        (steps, raw.start_time_unix_nano, name)
         for raw in trace.spans
-        if (name := _first(attributes(raw.attributes), "gen_ai.agent.name", "agent.name"))
+        if (name := _agent_name(raw)) and (steps := depth(raw.span_id)) is not None
     )
     return named[0][2] if named else None
 
@@ -270,7 +305,8 @@ def map_trace(trace: Trace) -> tuple[RunIn, list[SpanIn]]:
     spans = [map_span(s) for s in trace.spans]
     roots = [s for s in spans if s.parent_external_id is None]
     root = roots[0] if roots else None
-    agent = _outermost_agent(trace) or trace.resource.get("service.name")
+    # Only the batch with the root names the agent, so batches can't overwrite each other.
+    agent = (_outermost_agent(trace) or trace.resource.get("service.name")) if root else None
     run = RunIn(
         source="otel",
         external_id=trace.trace_id,
