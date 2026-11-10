@@ -120,3 +120,38 @@ def db_revision(
     from flight_recorder.store.db import alembic_config
 
     command.revision(alembic_config(), message=message, autogenerate=True, rev_id=rev_id)
+
+
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+@app.command()
+def serve(
+    host: Annotated[str, typer.Option(help="Interface to listen on; loopback only for now.")] = (
+        "127.0.0.1"
+    ),
+    port: Annotated[int, typer.Option(help="4318 is the standard OTLP/HTTP port.")] = 4318,
+) -> None:
+    """Run the ingest API: OTLP/HTTP traces on POST /v1/traces."""
+    import uvicorn
+
+    from flight_recorder.ingest.app import create_app
+    from flight_recorder.redact import default_redactor
+    from flight_recorder.store.db import make_engine, pending_migrations
+
+    if host not in LOOPBACK:
+        typer.echo(
+            f"error: refusing to listen on {host}: the ingest API has no authentication "
+            "yet (#25). Use 127.0.0.1.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    engine = make_engine()
+    try:
+        if pending_migrations(engine):
+            typer.echo("error: the database isn't up to date; run `afr db upgrade` first", err=True)
+            raise typer.Exit(code=1)
+        typer.echo(f"ingest: POST http://{host}:{port}/v1/traces (OTLP protobuf or JSON)")
+        uvicorn.run(create_app(engine, default_redactor()), host=host, port=port, log_level="info")
+    finally:
+        engine.dispose()  # close pooled connections on every way out

@@ -44,3 +44,14 @@ def upgrade(url: str | None = None, revision: str = "head") -> None:
 
 def downgrade(url: str | None = None, revision: str = "base") -> None:
     command.downgrade(alembic_config(url), revision)
+
+
+def pending_migrations(engine: Engine) -> bool:
+    """True if the database isn't at the newest migration (run `afr db upgrade`)."""
+    from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+
+    heads = set(ScriptDirectory.from_config(alembic_config()).get_heads())
+    with engine.connect() as connection:
+        current = set(MigrationContext.configure(connection).get_current_heads())
+    return current != heads
