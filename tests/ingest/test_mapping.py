@@ -33,7 +33,7 @@ def test_otel_genai_run_maps_to_a_run_and_a_span_tree() -> None:
     assert root.parent_external_id is None
     assert (run.source, run.agent, run.name, run.status) == (
         "otel",
-        "triage_agent",
+        "issue-triager",  # the application; triage_agent is one of its spans
         root.name,
         "ok",
     )
@@ -107,7 +107,7 @@ def test_openinference_run() -> None:
         k.startswith("llm.input_messages.") for k in llm.attributes
     )  # duplicates dropped
     assert tool.input == {"id": "7"}
-    assert run.agent == "issue-triager"  # no agent name: falls back to service.name
+    assert run.agent == "issue-triager"  # service.name
     assert run.name == "LangGraph"
 
 
@@ -118,7 +118,8 @@ def test_a_batch_without_the_root_leaves_run_fields_unknown() -> None:
 
     run, mapped_spans = map_trace(trace)
 
-    assert (run.name, run.status, run.ended_at, run.agent) == (None, "unset", None, None)
+    assert (run.name, run.status, run.ended_at) == (None, "unset", None)
+    assert run.agent == "issue-triager"  # service.name comes with every batch
     assert run.started_at == min(s.started_at for s in mapped_spans)
 
 
@@ -162,7 +163,7 @@ def test_any_value_conversions() -> None:
     }
 
 
-def test_run_agent_is_the_first_agent_not_the_most_frequent() -> None:
+def test_without_a_service_name_the_agent_is_the_first_agent_not_the_most_frequent() -> None:
     """A real SDK run was attributed to its comment writer, called more often mid-run."""
 
     def build(tracer: Tracer) -> None:
@@ -176,8 +177,10 @@ def test_run_agent_is_the_first_agent_not_the_most_frequent() -> None:
                 ):
                     pass
 
-    run, _ = mapped(build)
+    [trace] = traces(export(record(build, service=None)))
+    run, _ = map_trace(trace)
 
+    assert trace.resource["service.name"].startswith("unknown_service")  # :python.exe
     assert run.agent == "triage_agent"
 
 
@@ -198,13 +201,13 @@ def nested_agents(tracer: Tracer) -> None:
 
 def test_a_helper_whose_parents_are_in_another_batch_never_names_the_run() -> None:
     """Its depth can't be known from this batch, so it can't win over the real agent."""
-    spans = record(nested_agents)
+    spans = record(nested_agents, service=None)
     without_middle = [s for s in spans if s.name != "triage"]  # root and comment_writer
     [trace] = traces(export(without_middle))
 
     run, _ = map_trace(trace)
 
-    assert run.agent == "issue-triager"  # falls back to service.name, not the helper
+    assert run.agent is None  # unknown, rather than the helper
 
 
 def span_with(attributes: dict[str, Any], kind: str = "LLM") -> SpanIn:

@@ -41,7 +41,8 @@ A trace that can't be mapped or stored, for example one with a negative token co
 
 Exporters send spans in batches as they finish, so a trace's children usually arrive before its root. Each batch is merged into the run:
 - A child is linked to its parent once the parent arrives.
-- The run's name, status, end time and agent come from the batch holding the root span. A batch without the root can't tell the outermost agent from a helper, so it leaves the agent alone.
+- The run's name, status and end time come from the batch holding the root span.
+- The run's agent is the application's `service.name`, which every batch carries. Only when there is none does it fall back to an agent's name, and then only the batch holding the root sets it: a batch without the root can't tell the outermost agent from a helper.
 - The run covers the earliest start and latest end seen.
 - Attributes from later batches are merged in.
 
@@ -50,7 +51,7 @@ Exporters send spans in batches as they finish, so a trace's children usually ar
 | Field | From |
 |---|---|
 | `name`, `status`, `ended_at` | The root span (no parent). Until it arrives: unknown |
-| `agent` | The agent nearest the root (`gen_ai.agent.name` or `agent.name`) among the spans that arrive with the root, else the resource's `service.name` |
+| `agent` | The application: the resource's `service.name`. The agents it ran (`triage_agent`, `comment_writer`) are spans of kind `agent`. If `service.name` is missing or the SDK's default `unknown_service`, the agent nearest the root (`gen_ai.agent.name` or `agent.name`) among the spans that arrive with the root |
 | `attributes` | Resource attributes, such as `service.name` and `triager.engine` |
 
 A span's prompt and output content (`gen_ai.input.messages`, `input.value` and so on) goes into `input` and `output`, not also into `attributes`. If a span has more than one source for the same side, only the one used is moved; the others stay in `attributes`. Events (exceptions included) and links go into `attributes.events` and `attributes.links`.
@@ -60,4 +61,4 @@ A span's prompt and output content (`gen_ai.input.messages`, `input.value` and s
 The issue triager recorded through this endpoint with both its versions: LangGraph with OpenInference's LangChain instrumentor, and the OpenAI Agents SDK with its own OpenInference instrumentor. For each run, the stored tokens and cost matched what the triager reported. Three problems showed up in those real runs and are fixed:
 - **One triage became two runs.** LangGraph resumes after the human review in a second call, which started a second trace. The triager now wraps the whole triage in one root span.
 - **A failed run looked successful.** The SDK's own root span doesn't see the exception. The triager's root span records it.
-- **The wrong agent was named.** The run was attributed to its helper `comment_writer`, the most frequent agent name. The run's agent is now the one nearest the root.
+- **The wrong agent was named.** The run was attributed to its helper `comment_writer`, the most frequent agent name. The run's agent is now the application (`service.name`); its agents stay in the span tree.

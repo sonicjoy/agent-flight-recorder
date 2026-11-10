@@ -22,10 +22,17 @@ from opentelemetry.trace import Status, StatusCode, Tracer
 Attributes = Mapping[str, Any]
 
 
-def record(build: Callable[[Tracer], None], service: str = "issue-triager") -> list[ReadableSpan]:
-    """Run `build` with a fresh tracer and return the finished spans."""
+def record(
+    build: Callable[[Tracer], None], service: str | None = "issue-triager"
+) -> list[ReadableSpan]:
+    """Run `build` with a fresh tracer and return the finished spans.
+
+    service=None leaves service.name to the SDK, which sets "unknown_service".
+    """
     exporter = InMemorySpanExporter()
-    provider = TracerProvider(resource=Resource.create({"service.name": service}))
+    provider = TracerProvider(
+        resource=Resource.create({} if service is None else {"service.name": service})
+    )
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     build(provider.get_tracer("tests"))
     provider.shutdown()

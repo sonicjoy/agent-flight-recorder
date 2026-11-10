@@ -80,6 +80,7 @@ MESSAGE_CONTENT = (
 )
 FLATTENED_CONTENT = ("llm.input_messages.", "llm.output_messages.")
 AGENT_NAME = ("gen_ai.agent.name", "agent.name")
+UNKNOWN_SERVICE = "unknown_service"  # the SDKs' service.name when none is configured
 
 
 def any_value(value: AnyValue) -> Any:
@@ -268,10 +269,21 @@ def _agent_name(span: OtlpSpan) -> str | None:
     return None if name is None else str(name)
 
 
+def _application(trace: Trace) -> str | None:
+    """The resource's service.name, sent with every batch. None if it is the SDKs' default
+    ("unknown_service", or "unknown_service:<process>"), which names nothing.
+    """
+    name = trace.resource.get("service.name")
+    if name in (None, "") or str(name).startswith(UNKNOWN_SERVICE):
+        return None
+    return str(name)
+
+
 def _outermost_agent(trace: Trace) -> str | None:
-    """The agent nearest the root; agents below it (a comment writer called mid-run) are
-    helpers. Real runs showed "most frequent" picking those, and start times can't decide:
-    on Windows a parent and child can share a timestamp.
+    """The run's agent when the application has no name: the agent nearest the root.
+    Agents below it (a comment writer called mid-run) are helpers. Real runs showed "most
+    frequent" picking those, and start times can't decide: on Windows a parent and child
+    can share a timestamp.
 
     Only spans whose chain of parents reaches the root within this batch count. A batch
     without the root can't tell a helper from the outermost agent, and whatever it sent
@@ -305,12 +317,13 @@ def map_trace(trace: Trace) -> tuple[RunIn, list[SpanIn]]:
     spans = [map_span(s) for s in trace.spans]
     roots = [s for s in spans if s.parent_external_id is None]
     root = roots[0] if roots else None
-    # Only the batch with the root names the agent, so batches can't overwrite each other.
-    agent = (_outermost_agent(trace) or trace.resource.get("service.name")) if root else None
+    # The application, not one of its agents (those are spans). Without a service name,
+    # the outermost agent, which only the batch with the root can tell.
+    agent = _application(trace) or (_outermost_agent(trace) if root else None)
     run = RunIn(
         source="otel",
         external_id=trace.trace_id,
-        agent=str(agent) if agent else None,
+        agent=agent,
         name=root.name if root else None,
         status=root.status if root else "unset",
         started_at=min(s.started_at for s in spans),

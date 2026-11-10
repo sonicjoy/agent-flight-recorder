@@ -66,7 +66,7 @@ def test_protobuf_export_is_stored_as_a_run_with_a_span_tree(
     by_name = {s.name: s for s in spans}
     root = by_name["invoke_agent triage_agent"]
     assert {s.parent_id for s in spans if s is not root} == {root.id}
-    assert (run.agent, run.status, run.name) == ("triage_agent", "ok", root.name)
+    assert (run.agent, run.status, run.name) == ("issue-triager", "ok", root.name)
     llm = by_name["chat gpt-5.4-mini"]
     assert llm.model == "openai:gpt-5.4-mini" and llm.cost_usd and llm.cost_usd > 0
     assert (run.input_tokens, run.cost_usd) == (1000, llm.cost_usd)
@@ -79,7 +79,7 @@ def test_json_export_is_stored_the_same_way(client: TestClient, store: Engine) -
     assert response.status_code == 200
     assert response.json() == {}
     [run], spans = rows(store)
-    assert len(spans) == 3 and run.agent == "triage_agent"
+    assert len(spans) == 3 and run.agent == "issue-triager"
 
 
 def test_gzip_body(client: TestClient, store: Engine) -> None:
@@ -154,7 +154,7 @@ def test_one_bad_trace_is_rejected_and_the_rest_are_stored(
         secret not in partial.error_message and "-5" not in partial.error_message
     )  # no data echoed
     [run], _ = rows(store)
-    assert run.agent == "triage_agent"
+    assert run.agent == "issue-triager"
 
 
 def bad_for_postgres(attributes: dict[str, Any]) -> Callable[[Tracer], None]:
@@ -186,7 +186,7 @@ def test_a_trace_postgres_refuses_is_rejected_and_the_rest_are_stored(
     assert partial.rejected_spans == 1
     assert "DataError" in partial.error_message
     [run], _ = rows(store)
-    assert run.agent == "triage_agent"
+    assert run.agent == "issue-triager"
 
 
 def ends_before_it_starts(tracer: Tracer) -> None:
@@ -215,7 +215,7 @@ def test_a_span_postgres_refuses_is_rejected_and_the_rest_are_stored(
     assert (response.status_code, partial.rejected_spans) == (200, 1)
     assert error in partial.error_message
     [run], _ = rows(store)
-    assert run.agent == "triage_agent"
+    assert run.agent == "issue-triager"
 
 
 def test_an_unreachable_database_is_a_503_so_the_exporter_retries() -> None:
@@ -251,8 +251,11 @@ def nested_agents(tracer: Tracer) -> None:
 def test_a_later_batch_does_not_rename_the_runs_agent(
     client: TestClient, store: Engine, helper_last: bool
 ) -> None:
-    """A batch holding only the helper agent used to rename the run after it."""
-    spans = record(nested_agents)
+    """A batch holding only the helper agent used to rename the run after it.
+
+    With no service name, the run's agent is the outermost agent's name.
+    """
+    spans = record(nested_agents, service=None)
     helper = [s for s in spans if s.name == "comment"]
     rest = [s for s in spans if s.name != "comment"]
 

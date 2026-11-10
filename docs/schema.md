@@ -65,7 +65,7 @@ One agent run (an OTel trace) or one Claude Code session.
 |---|---|
 | `source` | `otel` or `claude_code` |
 | `external_id` | OTel trace id, or the Claude Code session id. Unique with `source` |
-| `agent` | Agent or service name |
+| `agent` | The application that ran (OTel `service.name`); the agents it ran are spans of kind `agent` |
 | `name` | Root span name, or the session title (redacted: titles can quote the prompt) |
 | `status`, `started_at`, `ended_at` | `ended_at` is `NULL` while the run is going |
 | `input_tokens`, `output_tokens`, `cost_usd` | Totals over the run's spans. `cost_usd` is `NULL` if any priced span's model is unknown |
@@ -138,7 +138,7 @@ The ingest code implements this mapping: [`ingest/mapping.py`](../src/flight_rec
 | `input` | `gen_ai.input.messages`, or `gen_ai.tool.call.arguments` on tool spans | `input.value` (parsed when `input.mime_type` is `application/json`) |
 | `output` | `gen_ai.output.messages`, or `gen_ai.tool.call.result` | `output.value` |
 | `name` on tool spans | `gen_ai.tool.name` | `tool.name` |
-| `runs.agent` | `gen_ai.agent.name`, else `service.name` | `agent.name`, else `service.name` |
+| `runs.agent` | `service.name`, else the `gen_ai.agent.name` nearest the root | `service.name`, else the `agent.name` nearest the root |
 | `status`, `error` | Span status code and description; exception events | Span status code and description; exception events |
 
 Not mapped to columns, but kept (redacted) in `attributes`: `gen_ai.conversation.id` / `session.id`, cache and reasoning token counts, tool call ids, request parameters (temperature and so on), finish reasons.
