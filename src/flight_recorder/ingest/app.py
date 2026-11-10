@@ -3,7 +3,8 @@
 Each trace in a request is written in its own transaction through record_run(), which
 redacts first. A trace that can't be mapped is rejected on its own and reported in the
 response's partial_success; the others are still stored. Error messages never include
-the rejected data, which may be sensitive.
+the rejected data, which may be sensitive. If the database can't be reached, the request
+gets a 503 so the exporter sends it again.
 
 No authentication yet (#25): serve on 127.0.0.1 only.
 """
@@ -16,7 +17,8 @@ from fastapi import FastAPI, Header, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import Engine
-from sqlalchemy.exc import DataError, IntegrityError
+from sqlalchemy.exc import DataError, IntegrityError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from starlette.concurrency import run_in_threadpool
 
 from flight_recorder.ingest import otlp
@@ -37,9 +39,14 @@ def _reason(error: Exception) -> str:
 
 
 # What one trace can get wrong. DataError is a value Postgres won't take: a NUL character,
-# NaN in JSON, a count too big for its column. Anything else (the database being down)
-# fails the whole request, so the exporter retries it.
+# NaN in JSON, a count too big for its column. IntegrityError is a broken check, such as
+# a span that ends before it starts.
 TRACE_ERRORS = (ValueError, DataError, IntegrityError)
+# The database itself unreachable or out of connections: nothing wrong with the data.
+# OTLP exporters retry only 429, 502, 503 and 504, so this must be a 503, not a 500.
+# Retrying is safe: traces already written are upserted again, not duplicated.
+UNAVAILABLE = (OperationalError, PoolTimeout)
+RETRY_AFTER_SECONDS = "5"
 
 
 def _ingest(
@@ -63,6 +70,12 @@ def _ingest(
         except TRACE_ERRORS as error:  # pydantic's ValidationError is a ValueError
             rejected += len(trace.spans)
             reasons.append(f"trace {trace.trace_id or '?'}: {_reason(error)}")
+        except UNAVAILABLE as error:
+            return JSONResponse(
+                {"error": f"database unavailable ({type(error).__name__}); retry later"},
+                status_code=503,
+                headers={"Retry-After": RETRY_AFTER_SECONDS},
+            )
     return Response(otlp.response_body(kind, rejected, "; ".join(reasons)[:1000]), media_type=kind)
 
 

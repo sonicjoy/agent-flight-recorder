@@ -189,6 +189,50 @@ def test_a_trace_postgres_refuses_is_rejected_and_the_rest_are_stored(
     assert run.agent == "triage_agent"
 
 
+def ends_before_it_starts(tracer: Tracer) -> None:
+    """Clock skew, or a buggy exporter: breaks the ended_at >= started_at check."""
+    span = tracer.start_span("chat", start_time=2_000_000_000_000_000_000)
+    span.end(end_time=1_000_000_000_000_000_000)
+
+
+def nul_in_name(tracer: Tracer) -> None:
+    """A NUL in a plain text column, not JSONB: psycopg refuses it before Postgres does."""
+    with tracer.start_as_current_span("nul \x00 name"):
+        pass
+
+
+@pytest.mark.parametrize(
+    ("build", "error"),
+    [(ends_before_it_starts, "IntegrityError"), (nul_in_name, "DataError")],
+    ids=["ends-before-it-starts", "nul-in-text-column"],
+)
+def test_a_span_postgres_refuses_is_rejected_and_the_rest_are_stored(
+    client: TestClient, store: Engine, build: Callable[[Tracer], None], error: str
+) -> None:
+    response = post(client, protobuf(record(triage_run()) + record(build)))
+
+    partial = ExportTraceServiceResponse.FromString(response.content).partial_success
+    assert (response.status_code, partial.rejected_spans) == (200, 1)
+    assert error in partial.error_message
+    [run], _ = rows(store)
+    assert run.agent == "triage_agent"
+
+
+def test_an_unreachable_database_is_a_503_so_the_exporter_retries() -> None:
+    """OTLP exporters retry 429, 502, 503 and 504 only; a 500 would lose the spans."""
+    engine = create_engine(
+        "postgresql+psycopg://afr@127.0.0.1:1/afr", connect_args={"connect_timeout": 2}
+    )  # nothing listens on port 1
+    try:
+        response = post(TestClient(create_app(engine, REDACTOR)), protobuf(record(triage_run())))
+    finally:
+        engine.dispose()
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
+    assert "OperationalError" in response.json()["error"]
+
+
 def nested_agents(tracer: Tracer) -> None:
     agent = {"gen_ai.operation.name": "invoke_agent"}
     with (

@@ -24,6 +24,7 @@ The issue triager does this with `triager run --record http://127.0.0.1:4318`.
 | Response | An `ExportTraceServiceResponse` in the request's format. If some traces couldn't be stored, `partial_success` gives the number of rejected spans and why |
 | `GET /healthz` | `{"status": "ok"}` |
 | Refused | 415 for any other content type, 400 for a body that can't be decoded, 413 for one over the limit. Nothing is stored |
+| Database unavailable | 503 with `Retry-After: 5`, so the exporter sends the request again. Traces already written by then are updated on the retry, not duplicated |
 
 `afr serve` listens on `127.0.0.1:4318`, the standard OTLP/HTTP port, so exporters work with their defaults. It refuses to listen on any other interface until the API has authentication (#25), and refuses to start if the database has migrations it hasn't run (`afr db upgrade`).
 
@@ -34,7 +35,7 @@ The issue triager does this with `triager run --record http://127.0.0.1:4318`.
 3. **Map each span** to the store's model ([`ingest/mapping.py`](../src/flight_recorder/ingest/mapping.py)). This reads both OpenTelemetry GenAI (`gen_ai.*`) and OpenInference (`openinference.span.kind`, `llm.*`, `input.value`) attributes. The mapping table is in [schema.md](schema.md#mapping-sources-onto-the-schema).
 4. **Record.** Each trace goes through `store.write.record_run()` in its own transaction. That function **redacts** every free-text field ([redaction.md](redaction.md)), prices the model calls and totals the run.
 
-A trace that can't be mapped or stored, for example one with a negative token count or a value Postgres won't take (a NUL character, NaN), is rejected on its own; the others are still stored. The rejection message names the fields that failed, never their values, because they may be sensitive.
+A trace that can't be mapped or stored, for example one with a negative token count or a value Postgres won't take (a NUL character, NaN, a span that ends before it starts), is rejected on its own; the others are still stored. The rejection message names the fields that failed, never their values, because they may be sensitive.
 
 ### Traces arrive in pieces
 
