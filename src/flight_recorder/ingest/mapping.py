@@ -242,11 +242,16 @@ def map_span(span: OtlpSpan) -> SpanIn:
 
 @dataclass
 class Trace:
-    """One trace's spans from one export request, with its resource's attributes."""
+    """One trace's spans from one export request, with its resources' attributes.
+
+    A trace can cross services, each exporting its spans under its own resource, so each
+    span's resource is kept too: the root's names the run.
+    """
 
     trace_id: str
-    resource: dict[str, Any] = field(default_factory=dict[str, Any])
+    resource: dict[str, Any] = field(default_factory=dict[str, Any])  # all, merged
     spans: list[OtlpSpan] = field(default_factory=list[OtlpSpan])
+    resources: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])  # per span
 
 
 def traces(request: ExportTraceServiceRequest) -> list[Trace]:
@@ -259,6 +264,7 @@ def traces(request: ExportTraceServiceRequest) -> list[Trace]:
                 trace = by_id.setdefault(trace_id, Trace(trace_id))
                 trace.resource |= resource
                 trace.spans.append(span)
+                trace.resources.append(resource)
     return list(by_id.values())
 
 
@@ -269,11 +275,11 @@ def _agent_name(span: OtlpSpan) -> str | None:
     return None if name is None else str(name)
 
 
-def _application(trace: Trace) -> str | None:
+def _application(resource: Mapping[str, Any]) -> str | None:
     """The resource's service.name, sent with every batch. None if it is the SDKs' default
     ("unknown_service", or "unknown_service:<process>"), which names nothing.
     """
-    name = trace.resource.get("service.name")
+    name = resource.get("service.name")
     if name in (None, "") or str(name).startswith(UNKNOWN_SERVICE):
         return None
     return str(name)
@@ -315,11 +321,16 @@ def map_trace(trace: Trace) -> tuple[RunIn, list[SpanIn]]:
     if not trace.trace_id:
         raise MappingError("span has no trace id")
     spans = [map_span(s) for s in trace.spans]
-    roots = [s for s in spans if s.parent_external_id is None]
-    root = roots[0] if roots else None
-    # The application, not one of its agents (those are spans). Without a service name,
-    # the outermost agent, which only the batch with the root can tell.
-    agent = _application(trace) or (_outermost_agent(trace) if root else None)
+    at = next((i for i, s in enumerate(spans) if s.parent_external_id is None), None)
+    root = None if at is None else spans[at]
+    if at is None:
+        # Maybe from another service the run called: it may only fill what's missing.
+        resource, agent = trace.resource, _application(trace.resource)
+    else:
+        # The application, not one of its agents (those are spans). Without a service
+        # name, the outermost agent, which only the batch with the root can tell.
+        resource = trace.resources[at]
+        agent = _application(resource) or _outermost_agent(trace)
     run = RunIn(
         source="otel",
         external_id=trace.trace_id,
@@ -328,6 +339,7 @@ def map_trace(trace: Trace) -> tuple[RunIn, list[SpanIn]]:
         status=root.status if root else "unset",
         started_at=min(s.started_at for s in spans),
         ended_at=root.ended_at if root else None,  # only the root says when the run ended
-        attributes=trace.resource,
+        attributes=resource,
+        fills_gaps=root is None,
     )
     return run, spans

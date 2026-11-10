@@ -42,17 +42,17 @@ A trace that can't be mapped or stored, for example one with a negative token co
 Exporters send spans in batches as they finish, so a trace's children usually arrive before its root. Each batch is merged into the run:
 - A child is linked to its parent once the parent arrives.
 - The run's name, status and end time come from the batch holding the root span.
-- The run's agent is the application's `service.name`, which every batch carries. Only when there is none does it fall back to an agent's name, and then only the batch holding the root sets it: a batch without the root can't tell the outermost agent from a helper.
+- The run's agent is the `service.name` of the service that sent the root span. A trace can cross services: if the agent calls an instrumented tool server, the server exports its spans in the same trace under its own `service.name`. So a batch without the root only fills in an agent and attributes that aren't stored yet, and the root's batch replaces them.
+- Without a `service.name`, the agent falls back to an agent's name, and only the batch holding the root sets it: a batch without the root can't tell the outermost agent from a helper.
 - The run covers the earliest start and latest end seen.
-- Attributes from later batches are merged in.
 
 ### The run's fields
 
 | Field | From |
 |---|---|
 | `name`, `status`, `ended_at` | The root span (no parent). Until it arrives: unknown |
-| `agent` | The application: the resource's `service.name`. The agents it ran (`triage_agent`, `comment_writer`) are spans of kind `agent`. If `service.name` is missing or the SDK's default `unknown_service`, the agent nearest the root (`gen_ai.agent.name` or `agent.name`) among the spans that arrive with the root |
-| `attributes` | Resource attributes, such as `service.name` and `triager.engine` |
+| `agent` | The application: the root span's resource `service.name`. The agents it ran (`triage_agent`, `comment_writer`) are spans of kind `agent`. If `service.name` is missing or the SDK's default `unknown_service`, the agent nearest the root (`gen_ai.agent.name` or `agent.name`) among the spans that arrive with the root |
+| `attributes` | The root span's resource attributes, such as `service.name` and `triager.engine`. Until the root arrives, those of the batches so far |
 
 A span's prompt and output content (`gen_ai.input.messages`, `input.value` and so on) goes into `input` and `output`, not also into `attributes`. If a span has more than one source for the same side, only the one used is moved; the others stay in `attributes`. Events (exceptions included) and links go into `attributes.events` and `attributes.links`.
 

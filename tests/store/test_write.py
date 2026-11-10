@@ -174,6 +174,28 @@ def test_a_partial_batch_merges_into_the_run_instead_of_wiping_it(session: Sessi
     assert run.redactions == {"email": 1}  # largest per batch, not a running sum
 
 
+def test_a_batch_that_fills_gaps_never_replaces_the_agent_or_attributes(
+    session: Session,
+) -> None:
+    record_run(session, run_in(attributes={"owner": "x"}), [], redactor=REDACTOR)  # no agent
+    record_run(
+        session,
+        run_in(agent="tool-server", attributes={"owner": "y", "host": "h"}, fills_gaps=True),
+        [],
+        redactor=REDACTOR,
+    )
+    session.expire_all()
+    run = session.scalars(select(Run)).one()
+    assert run.agent == "tool-server"  # filled: there was none
+    assert run.attributes == {"owner": "x", "host": "h"}  # added, not replaced
+
+    record_run(session, run_in(agent="triager", attributes={"owner": "z"}), [], redactor=REDACTOR)
+    record_run(session, run_in(agent="other", fills_gaps=True), [], redactor=REDACTOR)
+    session.expire_all()
+    run = session.scalars(select(Run)).one()
+    assert (run.agent, run.attributes["owner"]) == ("triager", "z")
+
+
 def test_a_later_status_replaces_an_earlier_one(session: Session) -> None:
     record_run(session, run_in(status="ok"), [], redactor=REDACTOR)
     record_run(session, run_in(status="error"), [], redactor=REDACTOR)

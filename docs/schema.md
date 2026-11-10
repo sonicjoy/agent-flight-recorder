@@ -138,7 +138,7 @@ The ingest code implements this mapping: [`ingest/mapping.py`](../src/flight_rec
 | `input` | `gen_ai.input.messages`, or `gen_ai.tool.call.arguments` on tool spans | `input.value` (parsed when `input.mime_type` is `application/json`) |
 | `output` | `gen_ai.output.messages`, or `gen_ai.tool.call.result` | `output.value` |
 | `name` on tool spans | `gen_ai.tool.name` | `tool.name` |
-| `runs.agent` | `service.name`, else the `gen_ai.agent.name` nearest the root | `service.name`, else the `agent.name` nearest the root |
+| `runs.agent` | The root's `service.name`, else the `gen_ai.agent.name` nearest the root | `service.name`, else the `agent.name` nearest the root |
 | `status`, `error` | Span status code and description; exception events | Span status code and description; exception events |
 
 Not mapped to columns, but kept (redacted) in `attributes`: `gen_ai.conversation.id` / `session.id`, cache and reasoning token counts, tool call ids, request parameters (temperature and so on), finish reasons.

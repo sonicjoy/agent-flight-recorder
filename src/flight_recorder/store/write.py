@@ -45,6 +45,11 @@ class RunIn(_In):
 
     A batch may send only what it knows: leave a field None (or status "unset") and the
     stored value is kept. started_at may be the earliest span in this batch.
+
+    fills_gaps marks a batch whose agent and attributes may describe something other than
+    the run, such as an OTel batch without the root span, which can come from a downstream
+    service. Its agent is stored only if none is, and its attributes never replace stored
+    ones.
     """
 
     source: Source
@@ -55,6 +60,7 @@ class RunIn(_In):
     started_at: datetime
     ended_at: datetime | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
+    fills_gaps: bool = False
 
 
 class SpanIn(_In):
@@ -106,21 +112,23 @@ _MAX_REDACTIONS = literal_column(
 )
 
 
-def _upsert_run(values: dict[str, Any]) -> Any:
+def _upsert_run(values: dict[str, Any], *, fills_gaps: bool) -> Any:
     """Each batch may know only part of a run, so a re-send merges into what is stored.
 
     A field the batch leaves out (None, or status "unset") keeps its stored value; the run
     spans the earliest start and the latest end seen; attributes merge, newer keys winning.
+    With fills_gaps, the stored agent and attribute keys win instead.
     """
     statement = insert(Run).values(**values)
     new = statement.excluded
+    first, second = (Run, new) if fills_gaps else (new, Run)
     changes = {
-        "agent": func.coalesce(new.agent, Run.agent),
+        "agent": func.coalesce(first.agent, second.agent),
         "name": func.coalesce(new.name, Run.name),
         "status": case((new.status == "unset", Run.status), else_=new.status),
         "started_at": func.least(Run.started_at, new.started_at),
         "ended_at": func.greatest(Run.ended_at, new.ended_at),  # greatest() skips NULLs
-        "attributes": Run.attributes.op("||")(new.attributes),
+        "attributes": second.attributes.op("||")(first.attributes),  # right-hand keys win
         "redactions": _MAX_REDACTIONS,
     }
     return statement.on_conflict_do_update(
@@ -144,7 +152,9 @@ def record_run(
         "attributes": redactor.value(run.attributes, counts),
         "redactions": dict(counts),
     }
-    run_id: uuid.UUID = session.execute(_upsert_run(run_values)).scalar_one()
+    run_id: uuid.UUID = session.execute(
+        _upsert_run(run_values, fills_gaps=run.fills_gaps)
+    ).scalar_one()
 
     for span in spans:
         counts = Counter()

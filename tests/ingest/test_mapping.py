@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue, ArrayValue, KeyValue, KeyValueList
 from opentelemetry.trace import Tracer
-from otlp_payloads import export, record, triage_run
+from otlp_payloads import export, record, triage_run, two_services
 
 from flight_recorder.ingest.mapping import any_value, map_trace, traces
 from flight_recorder.store.write import RunIn, SpanIn
@@ -121,6 +121,28 @@ def test_a_batch_without_the_root_leaves_run_fields_unknown() -> None:
     assert (run.name, run.status, run.ended_at) == (None, "unset", None)
     assert run.agent == "issue-triager"  # service.name comes with every batch
     assert run.started_at == min(s.started_at for s in mapped_spans)
+
+
+def test_a_trace_across_services_is_named_by_the_roots_service() -> None:
+    """The tool server's spans come in the same request; the run is still the triager's."""
+    triager, server = two_services()
+    [trace] = traces(export(triager + server))
+
+    run, spans = map_trace(trace)
+
+    assert len(spans) == 2
+    assert (run.agent, run.attributes["service.name"]) == ("issue-triager", "issue-triager")
+    assert not run.fills_gaps
+
+
+def test_a_batch_without_the_root_only_fills_gaps() -> None:
+    """It may come from another service the run called, so it mustn't rename the run."""
+    _, server = two_services()
+    [trace] = traces(export(server))
+
+    run, _ = map_trace(trace)
+
+    assert (run.agent, run.fills_gaps) == ("tool-server", True)
 
 
 def test_unknown_operation_is_other_and_no_attributes_is_step() -> None:

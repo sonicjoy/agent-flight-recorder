@@ -12,7 +12,7 @@ from fake_secrets import secrets_by_kind
 from fastapi.testclient import TestClient
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceResponse
 from opentelemetry.trace import Tracer
-from otlp_payloads import otlp_json, protobuf, record, triage_run
+from otlp_payloads import otlp_json, protobuf, record, triage_run, two_services
 from sqlalchemy import Engine, create_engine, func, select, text
 from sqlalchemy.orm import Session
 from typer.testing import CliRunner
@@ -264,6 +264,21 @@ def test_a_later_batch_does_not_rename_the_runs_agent(
 
     [run], _ = rows(store)
     assert run.agent == "triage_agent"
+
+
+@pytest.mark.parametrize("server_first", [True, False], ids=["server-first", "server-last"])
+def test_a_downstream_service_does_not_rename_the_run(
+    client: TestClient, store: Engine, server_first: bool
+) -> None:
+    """The tool server's spans usually end, and arrive, before the triager's root."""
+    triager, server = two_services()
+
+    for batch in (server, triager) if server_first else (triager, server):
+        post(client, protobuf(batch))
+
+    [run], spans = rows(store)
+    assert (run.agent, run.attributes["service.name"]) == ("issue-triager", "issue-triager")
+    assert len(spans) == 2 and run.name == "invoke_agent triage_agent"
 
 
 @pytest.mark.parametrize(

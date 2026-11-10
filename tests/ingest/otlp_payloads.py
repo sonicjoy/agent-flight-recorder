@@ -17,7 +17,7 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from opentelemetry.trace import Status, StatusCode, Tracer
+from opentelemetry.trace import Status, StatusCode, Tracer, set_span_in_context
 
 Attributes = Mapping[str, Any]
 
@@ -37,6 +37,30 @@ def record(
     build(provider.get_tracer("tests"))
     provider.shutdown()
     return list(exporter.get_finished_spans())
+
+
+def two_services() -> tuple[list[ReadableSpan], list[ReadableSpan]]:
+    """One trace across two services: the triager's root, and the instrumented tool server
+    it calls, which exports its spans under its own service.name. Returns (triager, server).
+    """
+    exporters = {name: InMemorySpanExporter() for name in ("issue-triager", "tool-server")}
+    providers = {
+        name: TracerProvider(resource=Resource.create({"service.name": name})) for name in exporters
+    }
+    for name, provider in providers.items():
+        provider.add_span_processor(SimpleSpanProcessor(exporters[name]))
+    triager, server = (p.get_tracer("tests") for p in providers.values())
+
+    agent = {"gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "triage_agent"}
+    with triager.start_as_current_span("invoke_agent triage_agent", attributes=agent) as root:
+        tool = {"gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "search_issues"}
+        with server.start_as_current_span(
+            "execute_tool search_issues", context=set_span_in_context(root), attributes=tool
+        ):
+            pass
+    for provider in providers.values():
+        provider.shutdown()
+    return tuple(list(e.get_finished_spans()) for e in exporters.values())  # pyright: ignore[reportReturnType]
 
 
 def export(spans: list[ReadableSpan]) -> ExportTraceServiceRequest:
