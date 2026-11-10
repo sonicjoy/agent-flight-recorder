@@ -65,7 +65,7 @@ One agent run (an OTel trace) or one Claude Code session.
 |---|---|
 | `source` | `otel` or `claude_code` |
 | `external_id` | OTel trace id, or the Claude Code session id. Unique with `source` |
-| `agent` | Agent or service name |
+| `agent` | The application that ran (OTel `service.name`); the agents it ran are spans of kind `agent` |
 | `name` | Root span name, or the session title (redacted: titles can quote the prompt) |
 | `status`, `started_at`, `ended_at` | `ended_at` is `NULL` while the run is going |
 | `input_tokens`, `output_tokens`, `cost_usd` | Totals over the run's spans. `cost_usd` is `NULL` if any priced span's model is unknown |
@@ -84,7 +84,7 @@ One step in a run.
 | `status`, `error` | `error` holds the status description or exception message, redacted |
 | `input_tokens`, `output_tokens`, `cost_usd` | `cost_usd` is priced at ingest |
 | `input`, `output` | Redacted message or argument JSON |
-| `attributes` | Every attribute as sent, after redaction |
+| `attributes` | Every attribute as sent, after redaction, except prompt and output content, which is in `input`/`output`. Events and links are in `attributes.events` and `attributes.links` |
 | `redactions` | `{"pattern": count}`. Never the values |
 
 Times are `timestamptz`, with microsecond precision; OTel's nanoseconds are truncated. Latency is `ended_at - started_at`.
@@ -116,7 +116,7 @@ Ids (`external_id`, `parent_external_id`), kinds, status, token counts, costs an
 
 ## Mapping sources onto the schema
 
-The ingest code (#8, #9) implements this mapping; this section is the contract. The GenAI conventions are still at **Development** status and have moved to their own repository ([open-telemetry/semantic-conventions-genai](https://github.com/open-telemetry/semantic-conventions-genai)). Names were checked on 9 Nov 2026, so expect changes, and keep the raw attributes.
+The ingest code implements this mapping: [`ingest/mapping.py`](../src/flight_recorder/ingest/mapping.py) for OTLP (#8, see [ingest.md](ingest.md)), and the Claude Code hook (#9). The GenAI conventions are still at **Development** status and have moved to their own repository ([open-telemetry/semantic-conventions-genai](https://github.com/open-telemetry/semantic-conventions-genai)). Names were checked on 9 Nov 2026, so expect changes, and keep the raw attributes.
 
 ### Span kind
 
@@ -138,7 +138,7 @@ The ingest code (#8, #9) implements this mapping; this section is the contract. 
 | `input` | `gen_ai.input.messages`, or `gen_ai.tool.call.arguments` on tool spans | `input.value` (parsed when `input.mime_type` is `application/json`) |
 | `output` | `gen_ai.output.messages`, or `gen_ai.tool.call.result` | `output.value` |
 | `name` on tool spans | `gen_ai.tool.name` | `tool.name` |
-| `runs.agent` | `gen_ai.agent.name`, else `service.name` | `agent.name`, else `service.name` |
+| `runs.agent` | The root's `service.name`, else the `gen_ai.agent.name` nearest the root | `service.name`, else the `agent.name` nearest the root |
 | `status`, `error` | Span status code and description; exception events | Span status code and description; exception events |
 
 Not mapped to columns, but kept (redacted) in `attributes`: `gen_ai.conversation.id` / `session.id`, cache and reasoning token counts, tool call ids, request parameters (temperature and so on), finish reasons.

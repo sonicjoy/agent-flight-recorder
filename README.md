@@ -23,8 +23,10 @@ uv run pre-commit install        # run checks on every commit
 cp .env.example .env             # then fill in your keys
 docker compose up -d             # Postgres 16 + pgvector on 127.0.0.1:5433
 uv run afr db upgrade            # create or update the tables; existing data is kept
-uv run afr --help
+uv run afr serve                 # record OTLP traces on http://127.0.0.1:4318/v1/traces
 ```
+
+Any OpenTelemetry-instrumented agent can send traces to `afr serve`: set `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318`. See [docs/ingest.md](docs/ingest.md).
 
 `docker compose down` stops Postgres and keeps the data; `docker compose down -v` deletes it. The schema, how traces map onto it, and the rules for changing it without losing data: [docs/schema.md](docs/schema.md).
 
