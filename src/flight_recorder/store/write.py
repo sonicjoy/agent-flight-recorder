@@ -32,6 +32,7 @@ from flight_recorder.store.models import Run, Span
 
 Source = Literal["otel", "claude_code"]
 Status = Literal["unset", "ok", "error"]
+SpanStatus = Literal["unset", "ok", "error", "rejected"]  # rejected: refused permission
 Kind = Literal["agent", "llm", "tool", "step", "other"]
 CENT_FRACTION = Decimal("0.00000001")  # matches numeric(14, 8)
 
@@ -71,7 +72,7 @@ class SpanIn(_In):
     kind: Kind
     name: str
     model: str | None = None
-    status: Status = "unset"
+    status: SpanStatus = "unset"
     error: str | None = None
     started_at: datetime
     ended_at: datetime | None = None

@@ -39,6 +39,7 @@ EMBEDDING_DIMENSIONS = 384  # bge-small (#11)
 
 SOURCES = ("otel", "claude_code")
 STATUSES = ("unset", "ok", "error")  # OTel span status codes
+SPAN_STATUSES = (*STATUSES, "rejected")  # rejected: a tool call refused permission
 SPAN_KINDS = ("agent", "llm", "tool", "step", "other")
 EMBEDDING_KINDS = ("run_summary", "failed_span")
 LABEL_SOURCES = ("human", "judge", "analyst")
@@ -208,7 +209,7 @@ class Span(Base):
             ["run_id", "parent_id"], ["spans.run_id", "spans.id"], ondelete="CASCADE"
         ),
         CheckConstraint(_one_of("kind", SPAN_KINDS), name="kind"),
-        CheckConstraint(_one_of("status", STATUSES), name="status"),
+        CheckConstraint(_one_of("status", SPAN_STATUSES), name="status"),
         *_measurements(),
         Index(None, "run_id", "started_at"),
         Index(None, "run_id", "parent_id"),

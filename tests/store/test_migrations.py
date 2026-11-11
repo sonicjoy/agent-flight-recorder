@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
 from flight_recorder.cli import app
-from flight_recorder.store.db import alembic_config, upgrade
+from flight_recorder.store.db import alembic_config, downgrade, upgrade
 from flight_recorder.store.models import EMBEDDING_DIMENSIONS, Run
 
 pytestmark = pytest.mark.db
@@ -73,6 +73,26 @@ def test_existing_rows_survive_every_migration(make_database: Callable[[], str])
                 text("SELECT parent_id FROM spans WHERE external_id='child'")
             )
         assert str(parent) == "00000000-0000-0000-0000-000000000011"
+    finally:
+        engine.dispose()
+
+
+def test_rejected_spans_become_errors_when_0005_is_undone(
+    make_database: Callable[[], str],
+) -> None:
+    url = make_database()
+    upgrade(url)
+    engine = create_engine(url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(SEED_AT_0001))
+            connection.execute(
+                text("UPDATE spans SET status = 'rejected' WHERE external_id='child'")
+            )
+        downgrade(url, "0004")
+        with engine.connect() as connection:
+            status = connection.scalar(text("SELECT status FROM spans WHERE external_id='child'"))
+        assert status == "error"
     finally:
         engine.dispose()
 

@@ -20,6 +20,11 @@ What it relies on, checked against Claude Code's transcripts on 11 Nov 2026:
   subagent's own transcript instead.
 - Messages Claude Code writes itself, such as a login error, have model "<synthetic>" and
   are skipped: no model was called. (Seen in a real session on 11 Nov 2026.)
+- A tool's result line ("type": "user", with "tool_result" blocks naming a "tool_use_id")
+  carries "permissionDecision": "decision" ("accept" or "reject"), "source" (such as
+  "config", "user_temporary", "user_permanent") and "reasonType" / "reasonCode" (such as
+  "classifier", "rule", "mode", "safetyCheck"). Hooks don't say whether a call was
+  rejected, so decisions are read from here.
 
 Where reading stopped is kept per transcript in <AFR_HOME>/hook-state/, so each turn reads
 only new lines. The position is saved only once the event carrying the usage has been sent
@@ -118,6 +123,29 @@ def response_usage(line: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def permission_decisions(line: dict[str, Any]) -> list[dict[str, Any]]:
+    """Who allowed or refused the tool calls whose results this line holds."""
+    decision = line.get("permissionDecision")
+    message = line.get("message")
+    if line.get("type") != "user" or not isinstance(decision, dict):
+        return []
+    content = cast("dict[str, Any]", message).get("content") if isinstance(message, dict) else None
+    blocks = cast("list[Any]", content) if isinstance(content, list) else []
+    made = cast("dict[str, Any]", decision)
+    return [
+        {
+            "tool_use_id": block["tool_use_id"],
+            "decision": made.get("decision"),
+            "source": made.get("source"),
+            "reason_type": made.get("reasonType"),
+            "reason_code": made.get("reasonCode"),
+            "at": line.get("timestamp"),
+        }
+        for block in (cast("dict[str, Any]", b) for b in blocks if isinstance(b, dict))
+        if block.get("type") == "tool_result" and isinstance(block.get("tool_use_id"), str)
+    ]
+
+
 @dataclass
 class TranscriptRead:
     """New model responses, and where to resume once they're safely sent or spooled."""
@@ -126,6 +154,7 @@ class TranscriptRead:
     state_file: Path | None = None
     offset: int = 0
     requests: dict[str, Any] = field(default_factory=dict[str, Any])
+    permissions: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
 
     def commit(self) -> None:
         if self.state_file is not None:
@@ -154,6 +183,7 @@ def read_new(
         chunk = file.read(MAX_READ_BYTES)
     complete = chunk[: chunk.rfind(b"\n") + 1]  # a half-written last line waits for next time
     responses: dict[str, dict[str, Any]] = {}
+    permissions: list[dict[str, Any]] = []
     # api-request id -> when it was sent, including requests read in earlier turns
     requests: dict[str, Any] = dict(cast("dict[str, Any]", kept)) if isinstance(kept, dict) else {}
     for raw in complete.splitlines():
@@ -169,6 +199,7 @@ def read_new(
             continue
         if line.get("isSidechain") and not include_sidechain:
             continue
+        permissions += permission_decisions(line)
         if (usage := response_usage(line)) is not None:
             earlier = responses.get(usage["message_id"])
             if earlier is not None:  # a later line of the same response: keep when it began
@@ -179,7 +210,9 @@ def read_new(
         usage["requested_at"] = requests.get(str(usage.pop("request_ref")))
         usage["output"] = _said(usage["output"])
     recent = dict(list(requests.items())[-KEPT_REQUESTS:])
-    return TranscriptRead(list(responses.values()), state, offset + len(complete), recent)
+    return TranscriptRead(
+        list(responses.values()), state, offset + len(complete), recent, permissions
+    )
 
 
 def new_usage(

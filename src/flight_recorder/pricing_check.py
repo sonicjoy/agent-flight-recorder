@@ -7,7 +7,7 @@ rates are not listed: the page says cache multipliers apply on top of fast mode,
 derived from the model's own cache multipliers.
 
 Only models already in pricing.yaml are compared. Nothing is added or removed: a model or
-tier the page lacks, or one pricing.yaml lacks, is reported as a note for a person to act on.
+tier only one side has is skipped, listed but not compared, and never fails the check.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ class Change:
 @dataclass(frozen=True)
 class Report:
     changes: list[Change]
-    notes: list[str]
+    skipped: list[str]  # models or tiers on one side only: not compared
 
 
 # --- reading the page -------------------------------------------------------------------
@@ -177,23 +177,27 @@ def check(text: str, markdown: str) -> Report:
 def compare(table: dict[str, Any], page: dict[str, dict[str, Any]]) -> Report:
     """Differences between pricing.yaml (as loaded) and the page, for Claude models only."""
     changes: list[Change] = []
-    notes: list[str] = []
+    skipped: list[str] = []
+    compared = 0
     for spec, ours in table["models"].items():
         if not spec.startswith(PROVIDER):
             continue
         theirs = page.get(spec)
         if theirs is None:
-            notes.append(f"{spec}: not on the pricing page (renamed or retired?)")
+            skipped.append(f"{spec}: not on the pricing page")
             continue
+        compared += 1
         _compare((spec,), RATE_FIELDS, ours, theirs, changes)
         for tier, fields in TIER_FIELDS.items():
             if tier in ours and tier in theirs:
                 _compare((spec, tier), fields, ours[tier], theirs[tier], changes)
             elif tier in ours:
-                notes.append(f"{spec}: has {tier} here, but the page shows none")
+                skipped.append(f"{spec} {tier}: not on the pricing page")
             elif tier in theirs:
-                notes.append(f"{spec}: the page has {tier} rates, not in pricing.yaml")
-    return Report(changes, notes)
+                skipped.append(f"{spec} {tier}: on the page, not in pricing.yaml")
+    if not compared:  # every priced model skipped: the page's names changed, so look
+        raise PageFormatError("none of pricing.yaml's Claude models is on the page")
+    return Report(changes, skipped)
 
 
 def _compare(

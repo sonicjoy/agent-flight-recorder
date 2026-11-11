@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from flight_recorder.hook.transcript import new_usage
+from flight_recorder.hook.transcript import new_usage, read_new
 
 
 def response(
@@ -70,6 +70,36 @@ def test_a_response_has_its_request_time_and_what_it_said(tmp_path: Path) -> Non
         "tool_calls": [{"id": "t1", "name": "Glob", "input": {"pattern": "*"}}],
     }
     assert (second["requested_at"], second["output"]) == (None, {})
+
+
+def test_permission_decisions_are_read_from_tool_results(tmp_path: Path) -> None:
+    transcript, state = tmp_path / "session.jsonl", tmp_path / "state"
+
+    def result(tool_use_id: str, decision: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "type": "user",
+            "timestamp": "2026-11-11T09:00:04Z",
+            "permissionDecision": decision,
+            "message": {"content": [{"type": "tool_result", "tool_use_id": tool_use_id}]},
+        }
+
+    write(
+        transcript,
+        result("t1", {"decision": "accept", "source": "user_temporary", "grantScope": "once"}),
+        result("t2", {"decision": "reject", "source": "config", "reasonType": "classifier",
+                      "reasonCode": "classifier:auto-mode"}),
+        {"type": "user", "message": {"content": "no decision here"}},
+    )  # fmt: skip
+
+    read = read_new(transcript, state)
+
+    assert read.permissions == [
+        {"tool_use_id": "t1", "decision": "accept", "source": "user_temporary",
+         "reason_type": None, "reason_code": None, "at": "2026-11-11T09:00:04Z"},
+        {"tool_use_id": "t2", "decision": "reject", "source": "config",
+         "reason_type": "classifier", "reason_code": "classifier:auto-mode",
+         "at": "2026-11-11T09:00:04Z"},
+    ]  # fmt: skip
 
 
 def test_a_request_read_a_turn_before_its_response_keeps_its_time(tmp_path: Path) -> None:

@@ -109,6 +109,7 @@ def build_event(
             include_sidechain=key == "agent_transcript_path",
         )
         event["usage"] = read.usage
+        event["permissions"] = read.permissions
     event["hook"] = {k: v for k, v in payload.items() if k not in PATH_KEYS}
     redacted = redactor.redact(event)
     event = cap(redacted.value)

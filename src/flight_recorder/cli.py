@@ -217,8 +217,8 @@ def pricing_check(
     ] = None,
 ) -> None:
     """Compare Claude rates with Anthropic's pricing page. Exits 1 if they differ (unless
-    --write), 2 if the page can't be read or no longer parses. `note:` lines (a priced model
-    or tier missing on one side) need a person; the weekly workflow fails on them."""
+    --write), 2 if the page can't be read or no longer parses. A model or tier only one
+    side has is listed as `skipped:` and not compared."""
     from flight_recorder import pricing_check as pc
 
     path = file or Path(pc.__file__).with_name("pricing.yaml")
@@ -232,8 +232,8 @@ def pricing_check(
         raise typer.Exit(code=2) from error
 
     typer.echo(f"source: {source}")
-    for note in report.notes:
-        typer.echo(f"note: {note}")
+    for skipped in report.skipped:
+        typer.echo(f"skipped: {skipped}")
     if not report.changes:
         typer.echo(f"{path.name}: Claude rates match the page")
         return

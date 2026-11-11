@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session
 
 from flight_recorder.redact import PATTERNS, Redactor
 from flight_recorder.store.models import Run, Span
-from flight_recorder.store.write import Kind, RunIn, SpanIn, Status, record_run
+from flight_recorder.store.write import Kind, RunIn, SpanIn, SpanStatus, record_run
 
 SOURCE = "claude_code"
 AGENT = "claude-code"
@@ -101,7 +101,7 @@ def _stored(session: Session, session_id: str, external_id: str) -> SpanIn | Non
         kind=cast("Kind", span.kind),  # the database checks it is one of these
         name=span.name,
         model=span.model,
-        status=cast("Status", span.status),
+        status=cast("SpanStatus", span.status),
         error=span.error,
         started_at=span.started_at,
         ended_at=span.ended_at,
@@ -192,10 +192,7 @@ def _responses(
     each part said.
     """
     spans: list[SpanIn] = []
-    for raw in cast("list[Any]", usage) if isinstance(usage, list) else []:
-        if not isinstance(raw, dict):
-            continue
-        item = cast("dict[str, Any]", raw)
+    for item in _items(usage):
         if not isinstance(item.get("message_id"), str):
             continue
         external_id = f"llm:{item['message_id']}"
@@ -388,6 +385,107 @@ def _placeholders(
     return added
 
 
+MAX_ITEMS = 1_000  # usage or decisions per event: far more than one turn has
+
+
+def _items(value: Any) -> list[dict[str, Any]]:
+    """The dict entries of a list the hook sent beside its payload, capped."""
+    entries = cast("list[Any]", value) if isinstance(value, list) else []
+    return [cast("dict[str, Any]", e) for e in entries[:MAX_ITEMS] if isinstance(e, dict)]
+
+
+WHO_BY_REASON = {
+    "classifier": "auto mode",
+    "rule": "a permission rule",
+    "mode": "the permission mode",
+    "safetyCheck": "a safety check",
+}
+
+
+def _who(source: Any, reason_type: Any) -> str:
+    """Who made a permission decision, in words."""
+    if isinstance(source, str) and source.startswith("user"):
+        return "you"
+    return WHO_BY_REASON.get(str(reason_type), "Claude Code")
+
+
+def _wait_outcome(tool: SpanIn | Span | None) -> tuple[SpanStatus, str | None]:
+    """How a wait for this tool ended: rejected with the tool, else ok."""
+    if tool is not None and tool.status == "rejected":
+        return "rejected", tool.error
+    return "ok", None
+
+
+def _decisions(session: Session, session_id: str, permissions: Any) -> list[SpanIn]:
+    """Each tool call's permission decision, from the transcript: who allowed or refused it.
+
+    A refused call is `rejected` (and ends, since it never ran), keeping any more detailed
+    reason already stored (PermissionDenied's, or your feedback in PostToolUseFailure).
+    Its wait is `rejected` too; an allowed call's wait ends when the tool starts, as usual.
+    """
+    spans: list[SpanIn] = []
+    for item in _items(permissions):
+        tool_use = item.get("tool_use_id")
+        if not isinstance(tool_use, str) or item.get("decision") not in ("accept", "reject"):
+            continue
+        spans += _decision(session, session_id, f"tool:{tool_use}", item)
+    return spans
+
+
+def _decision(
+    session: Session, session_id: str, tool_id: str, item: dict[str, Any]
+) -> list[SpanIn]:
+    rejected = item["decision"] == "reject"
+    who = _who(item.get("source"), item.get("reason_type"))
+    outcome = f"{'rejected' if rejected else 'allowed'} by {who}"
+    at = _time(item.get("at")) or datetime.now(UTC)
+    tool = _stored(session, session_id, tool_id)
+    fields: dict[str, Any] = {
+        "external_id": tool_id,
+        "attributes": {
+            "permission": {
+                "decision": item["decision"],
+                "by": who,
+                "source": item.get("source"),
+                "reason_type": item.get("reason_type"),
+                "reason_code": item.get("reason_code"),
+            }
+        },
+    }
+    if tool is None:  # its hook events were lost: the transcript still tells
+        fields |= {"parent_external_id": ROOT, "kind": "tool", "name": "tool", "started_at": at}
+    if rejected:
+        detail = tool.error if tool is not None else None
+        if detail and not detail.startswith("rejected"):
+            detail = f"{outcome}: {detail}"  # your feedback, from PostToolUseFailure
+        fields |= {"status": "rejected", "error": detail or outcome}
+        if tool is None or tool.ended_at is None:
+            fields["ended_at"] = at  # it never ran
+    spans = [_merge(session, session_id, at, **fields)]
+    if rejected:
+        error = spans[0].error
+        for wait in _waits_of(session, session_id, tool_id):
+            ended = wait.ended_at or max(at, wait.started_at)
+            update = {"status": "rejected", "output": error, "ended_at": ended}
+            spans.append(wait.model_copy(update=update))
+    return spans
+
+
+def _waits_of(session: Session, session_id: str, tool_id: str) -> list[SpanIn]:
+    """The permission waits already under a tool call."""
+    ids = session.scalars(
+        select(Span.external_id)
+        .join(Run, Run.id == Span.run_id)
+        .where(
+            Run.source == SOURCE,
+            Run.external_id == session_id,
+            Span.external_id.like("permission:%"),
+            Span.parent_external_id == tool_id,
+        )
+    ).all()
+    return [s for i in ids if (s := _stored(session, session_id, i))]
+
+
 PATTERN_NAMES = frozenset(p.name for p in PATTERNS)
 MAX_COUNT = 1_000_000
 
@@ -466,15 +564,19 @@ def apply_event(session: Session, redactor: Redactor, event: Mapping[str, Any]) 
         spans.append(merge(**tool, started_at=at))
     elif name in ("PostToolUse", "PostToolUseFailure"):
         failed = name == "PostToolUseFailure"
+        done = _stored(session, session_id, tool["external_id"])
+        rejected = done is not None and done.status == "rejected"
         if wait := _open_wait(session, session_id, hook, tool["external_id"]):
             ended = _wait_ended(wait.started_at, at, hook.get("duration_ms"))
+            status, output = _wait_outcome(done)
             spans.append(
                 merge(
                     external_id=wait.external_id,
                     parent_external_id=tool["external_id"],
                     kind="step",
                     ended_at=ended,
-                    status="ok",
+                    status=status,
+                    output=output,
                 )
             )
         spans.append(
@@ -482,8 +584,8 @@ def apply_event(session: Session, redactor: Redactor, event: Mapping[str, Any]) 
                 **tool,
                 output=hook.get("tool_response"),
                 ended_at=at,
-                status="error" if failed else "ok",
-                error=_str(hook, "error") if failed else None,
+                status=None if rejected else ("error" if failed else "ok"),
+                error=_str(hook, "error") if failed and not rejected else None,
                 attributes={
                     "interrupted": True if hook.get("is_interrupt") else None,
                     "duration_ms": hook.get("duration_ms"),
@@ -508,6 +610,7 @@ def apply_event(session: Session, redactor: Redactor, event: Mapping[str, Any]) 
             output = hook.get("last_assistant_message")
             spans.append(merge(**agent_fields, output=output, ended_at=at, status="ok"))
             spans += _responses(session, session_id, event.get("usage"), span_id, at)
+            spans += _decisions(session, session_id, event.get("permissions"))
     elif name in ("Stop", "StopFailure"):
         failed = name == "StopFailure"
         if turn:
@@ -522,6 +625,7 @@ def apply_event(session: Session, redactor: Redactor, event: Mapping[str, Any]) 
                 )
             )
         spans += _responses(session, session_id, event.get("usage"), turn or ROOT, at)
+        spans += _decisions(session, session_id, event.get("permissions"))
         stored_root = _stored(session, session_id, ROOT)
         latest = _time(stored_root.attributes.get("latest_reply_at")) if stored_root else None
         reply = hook.get("last_assistant_message")
@@ -536,10 +640,11 @@ def apply_event(session: Session, redactor: Redactor, event: Mapping[str, Any]) 
             parent: str | None = waiting.external_id
         else:  # its tool hasn't started yet: wait under the turn; the tool's end adopts it
             parent = None if known_wait else _parent(hook)
-        ended = None
+        ended, status, output = None, None, None
         if waiting is not None and waiting.ended_at is not None:  # the tool already finished
             ran = waiting.attributes.get("duration_ms")
             ended = _wait_ended(at, waiting.ended_at, ran)
+            status, output = _wait_outcome(waiting)
         spans.append(
             merge(
                 external_id=wait_id,
@@ -549,14 +654,15 @@ def apply_event(session: Session, redactor: Redactor, event: Mapping[str, Any]) 
                 input=hook.get("tool_input"),
                 started_at=at,
                 ended_at=ended,
-                status="ok" if ended else None,
+                status=status,
+                output=output,
                 attributes={"suggestions": hook.get("permission_suggestions")},
                 redactions=client,
             )
         )
     elif name == "PermissionDenied":
-        reason = f"denied: {_str(hook, 'reason') or 'no reason given'}"
-        spans.append(merge(**tool, ended_at=at, status="error", error=reason))
+        reason = f"rejected by auto mode: {_str(hook, 'reason') or 'no reason given'}"
+        spans.append(merge(**tool, ended_at=at, status="rejected", error=reason))
         if wait := _open_wait(session, session_id, hook, tool["external_id"]):
             spans.append(
                 merge(
@@ -564,7 +670,7 @@ def apply_event(session: Session, redactor: Redactor, event: Mapping[str, Any]) 
                     parent_external_id=tool["external_id"],
                     kind="step",
                     ended_at=max(at, wait.started_at),
-                    status="error",
+                    status="rejected",
                     output=reason,
                 )
             )
@@ -633,6 +739,7 @@ def apply_event(session: Session, redactor: Redactor, event: Mapping[str, Any]) 
     elif name == "SessionEnd":
         root |= {"ended_at": at, "status": "ok", "redactions": client}
         spans += _responses(session, session_id, event.get("usage"), ROOT, at)
+        spans += _decisions(session, session_id, event.get("permissions"))
         run |= {"ended_at": at, "status": "ok"}
     else:  # SessionStart, and events this version doesn't map
         root["redactions"] = client

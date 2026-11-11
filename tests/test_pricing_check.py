@@ -65,7 +65,7 @@ def test_page_names_become_specs() -> None:
 
 
 def test_committed_pricing_matches_the_saved_page() -> None:
-    assert pc.check(PRICING, PAGE) == pc.Report(changes=[], notes=[])
+    assert pc.check(PRICING, PAGE) == pc.Report(changes=[], skipped=[])
 
 
 def test_a_changed_rate_is_reported() -> None:
@@ -128,7 +128,7 @@ def test_write_keeps_crlf_line_endings() -> None:
     assert "    input: 4.50\r\n" in updated
 
 
-def test_tiers_and_models_the_other_side_lacks_are_notes_not_changes() -> None:
+def test_tiers_and_models_the_other_side_lacks_are_skipped() -> None:
     text = PRICING.replace("anthropic:claude-fable-5-1:", "anthropic:claude-fable-4-9:")
     page = pc.parse_page(PAGE)
     del page["anthropic:claude-opus-5-5"]["fast"]
@@ -137,10 +137,10 @@ def test_tiers_and_models_the_other_side_lacks_are_notes_not_changes() -> None:
     report = pc.compare(yaml.safe_load(text), page)
 
     assert report.changes == []
-    assert report.notes == [
-        "anthropic:claude-opus-5-5: has fast here, but the page shows none",
-        "anthropic:claude-sonnet-5-5: the page has fast rates, not in pricing.yaml",
-        "anthropic:claude-fable-4-9: not on the pricing page (renamed or retired?)",
+    assert report.skipped == [
+        "anthropic:claude-opus-5-5 fast: not on the pricing page",
+        "anthropic:claude-sonnet-5-5 fast: on the page, not in pricing.yaml",
+        "anthropic:claude-fable-4-9: not on the pricing page",
     ]
 
 
@@ -225,3 +225,11 @@ def test_cli_write_without_a_version_is_an_error(tmp_path: Path) -> None:
 
     assert result.exit_code == 2
     assert "no top-level version" in result.output
+
+
+def test_a_page_with_none_of_our_models_is_a_format_error_not_a_pass() -> None:
+    """Every model skipped means the names changed: someone must look, not a green run."""
+    renamed = {f"{spec}-renamed": rates for spec, rates in pc.parse_page(PAGE).items()}
+
+    with pytest.raises(pc.PageFormatError, match=r"none of pricing.yaml's Claude models"):
+        pc.compare(yaml.safe_load(PRICING), renamed)

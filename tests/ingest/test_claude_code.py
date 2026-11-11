@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Generator
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -44,8 +45,9 @@ def ev(name: str, at: float, **hook: Any) -> dict[str, Any]:
         "received_at": T0 + at,
         "hook": {"session_id": "sess-1", "hook_event_name": name} | hook,
     }
-    if "usage" in hook:
-        event["usage"] = event["hook"].pop("usage")
+    for key in ("usage", "permissions"):  # sent beside the hook payload, not in it
+        if key in hook:
+            event[key] = event["hook"].pop(key)
     return event
 
 
@@ -612,7 +614,11 @@ def test_an_auto_mode_denial_closes_the_wait(client: TestClient, store: Engine) 
     )
 
     [wait] = waits(stored(store)[1])
-    assert (wait.status, wait.output, seconds(wait)) == ("error", "denied: outside the project", 2)
+    assert (wait.status, wait.output, seconds(wait)) == (
+        "rejected",
+        "rejected by auto mode: outside the project",
+        2,
+    )
 
 
 def test_a_response_read_in_two_parts_keeps_both(client: TestClient, store: Engine) -> None:
@@ -708,7 +714,10 @@ def test_an_auto_mode_denial_fails_the_tool(client: TestClient, store: Engine) -
     )
 
     denied = stored(store)[1]["tool:t1"]
-    assert (denied.status, denied.error) == ("error", "denied: touches files outside the project")
+    assert (denied.status, denied.error) == (
+        "rejected",
+        "rejected by auto mode: touches files outside the project",
+    )
 
 
 def test_compaction_notifications_and_commands_are_part_of_the_story(
@@ -737,3 +746,147 @@ def test_compaction_notifications_and_commands_are_part_of_the_story(
     assert compaction.output == "We reviewed the diff."
     assert compaction.ended_at is not None
     assert (compaction.ended_at - compaction.started_at).total_seconds() == 4
+
+
+def decision(
+    tool_use_id: str, made: str, source: str, reason_type: str | None = None, at: float = 5
+) -> dict[str, Any]:
+    when = datetime.fromtimestamp(T0 + at, tz=UTC).isoformat()
+    return {"tool_use_id": tool_use_id, "decision": made, "source": source,
+            "reason_type": reason_type, "reason_code": None, "at": when}  # fmt: skip
+
+
+def one_by_one(client: TestClient, *events: dict[str, Any]) -> None:
+    """Each event alone, in this order (a batch would be sorted by time)."""
+    for event in events:
+        assert client.post(URL, json={"events": [event]}).json()["rejected"] == 0
+
+
+def stop_with(*decisions: dict[str, Any], at: float = 5) -> dict[str, Any]:
+    return ev("Stop", at, prompt_id="p1", permissions=list(decisions))
+
+
+def test_a_call_you_rejected_keeps_your_feedback_and_its_wait_is_rejected(
+    client: TestClient, store: Engine
+) -> None:
+    failure = ev("PostToolUseFailure", 4, tool_use_id="t1", error="use git mv instead", **BASH)
+    one_by_one(
+        client,
+        ev("PermissionRequest", 2, **BASH),  # before its tool's start
+        ev("PreToolUse", 1, tool_use_id="t1", **BASH),
+        stop_with(decision("t1", "reject", "user_reject")),  # before the failure
+        failure,
+        failure,  # re-sent: still rejected
+    )
+
+    spans = stored(store)[1]
+    tool, [wait] = spans["tool:t1"], waits(spans)
+    assert (tool.status, tool.error) == ("rejected", "rejected by you")
+    assert (wait.status, wait.output, wait.parent_id) == ("rejected", "rejected by you", tool.id)
+
+
+def test_your_feedback_stays_when_the_decision_comes_after_it(
+    client: TestClient, store: Engine
+) -> None:
+    one_by_one(
+        client,
+        ev("PreToolUse", 1, tool_use_id="t1", **BASH),
+        ev("PostToolUseFailure", 4, tool_use_id="t1", error="use git mv instead", **BASH),
+        stop_with(decision("t1", "reject", "user_reject")),
+    )
+
+    tool = stored(store)[1]["tool:t1"]
+    assert (tool.status, tool.error) == ("rejected", "rejected by you: use git mv instead")
+
+
+@pytest.mark.parametrize("decision_first", [True, False])
+def test_an_auto_mode_reason_survives_the_turn_end(
+    client: TestClient, store: Engine, decision_first: bool
+) -> None:
+    denied = ev("PermissionDenied", 3, tool_use_id="t1", reason="outside the project", **BASH)
+    stop = stop_with(decision("t1", "reject", "config", "classifier"))
+    pre = ev("PreToolUse", 1, tool_use_id="t1", **BASH)
+    one_by_one(client, pre, *((stop, denied) if decision_first else (denied, stop)))
+
+    tool = stored(store)[1]["tool:t1"]
+    assert (tool.status, tool.error) == ("rejected", "rejected by auto mode: outside the project")
+
+
+def test_a_wait_whose_request_arrives_after_the_rejection_is_rejected(
+    client: TestClient, store: Engine
+) -> None:
+    one_by_one(
+        client,
+        ev("PreToolUse", 1, tool_use_id="t1", **BASH),
+        stop_with(decision("t1", "reject", "user_reject")),
+        ev("PermissionRequest", 2, **BASH),  # arrived last
+    )
+
+    spans = stored(store)[1]
+    [wait] = waits(spans)
+    assert (wait.status, wait.parent_id) == ("rejected", spans["tool:t1"].id)
+
+
+def test_an_allowed_calls_wait_ends_when_the_tool_starts(client: TestClient, store: Engine) -> None:
+    one_by_one(
+        client,
+        ev("PreToolUse", 1, tool_use_id="t1", **BASH),
+        ev("PermissionRequest", 2, **BASH),
+        stop_with(decision("t1", "accept", "user_temporary"), at=9),  # before PostToolUse
+        ev("PostToolUse", 10, tool_use_id="t1", duration_ms=5_000, **BASH),
+    )
+
+    spans = stored(store)[1]
+    tool, [wait] = spans["tool:t1"], waits(spans)
+    assert (tool.status, tool.attributes["permission"]["by"]) == ("ok", "you")
+    assert (wait.status, seconds(wait)) == ("ok", 3)  # 2 s to 10 s - 5 s
+
+
+def test_the_transcript_tells_of_a_call_whose_hook_events_were_lost(
+    client: TestClient, store: Engine
+) -> None:
+    client.post(URL, json={"events": [stop_with(decision("t9", "reject", "user_reject"))]})
+
+    spans = stored(store)[1]
+    lost = spans["tool:t9"]
+    assert (lost.status, lost.parent_id, lost.ended_at is not None) == (
+        "rejected",
+        spans["session"].id,
+        True,
+    )
+
+    client.post(URL, json={"events": [ev("PreToolUse", 1, tool_use_id="t9", **BASH)]})
+    found = stored(store)[1]["tool:t9"]
+    assert (found.name, found.parent_id, found.status) == ("Bash", spans["turn:p1"].id, "rejected")
+
+
+@pytest.mark.parametrize(
+    ("source", "reason_type", "who"),
+    [
+        ("user_temporary", None, "you"),
+        ("user_permanent", "rule", "you"),
+        ("config", "classifier", "auto mode"),
+        ("config", "rule", "a permission rule"),
+        ("config", "mode", "the permission mode"),
+        ("config", "safetyCheck", "a safety check"),
+        ("config", "other", "Claude Code"),
+        ("config", None, "Claude Code"),
+    ],
+)
+def test_who_allowed_a_call_is_kept(
+    client: TestClient, store: Engine, source: str, reason_type: str | None, who: str
+) -> None:
+    tool = {"prompt_id": "p1", "tool_name": "Read", "tool_input": {}}
+    one_by_one(
+        client,
+        ev("PreToolUse", 1, tool_use_id="t1", **tool),
+        ev("PostToolUse", 2, tool_use_id="t1", **tool),
+        stop_with(decision("t1", "accept", source, reason_type)),
+    )
+
+    read = stored(store)[1]["tool:t1"]
+    assert read.status == "ok"
+    assert read.attributes["permission"] == {
+        "decision": "accept", "by": who, "source": source, "reason_type": reason_type,
+        "reason_code": None,
+    }  # fmt: skip

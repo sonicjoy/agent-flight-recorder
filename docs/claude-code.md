@@ -39,7 +39,7 @@ Claude Code session (agent)            SessionStart ... SessionEnd; your first p
     command: /review (other)           a slash command, with its arguments and the prompt it became
     claude-opus-5-5 (llm)              one per model response, from request sent to last block:
                                        what it said, its thinking, the tools it called, tokens, cost
-    Read / Bash / Edit ... (tool)      input and output; failures and denials are errors
+    Read / Bash / Edit ... (tool)      input and output; failures are `error`, refused calls `rejected`
       permission: Bash (step)          waiting for your approval, until the tool started
     Explore (agent)                    a subagent: SubagentStart ... SubagentStop
       Grep ... (tool), ... (llm)
@@ -50,7 +50,8 @@ Claude Code session (agent)            SessionStart ... SessionEnd; your first p
 The trace is meant to tell the whole story of a session: what you asked, what Claude said and decided at each step, what ran and for how long, where it waited for you, and when its context was compacted.
 
 - **Model responses** come from the transcript, which records when each request was sent (`api-request` lines, linked by `requestRef`), so an llm span covers the model's whole time, not just its streaming. `first_output_at` and `stop_reason` are in its attributes.
-- **Waiting for permission:** a PermissionRequest carries no tool_use_id, so it's matched to the latest call of that tool, with the same input, that was still running at the request. If the request arrives before the tool's start, it waits under the turn, and the tool's end moves it under the tool. The wait ends when the tool started: PostToolUse's time minus its `duration_ms`, but never before the wait began. An auto-mode denial (PermissionDenied) marks the tool and its wait `error`.
+- **Waiting for permission:** a PermissionRequest carries no tool_use_id, so it's matched to the latest call of that tool, with the same input, that was still running at the request. If the request arrives before the tool's start, it waits under the turn, and the tool's end moves it under the tool. The wait ends when the tool started: PostToolUse's time minus its `duration_ms`, but never before the wait began.
+- **Who allowed or refused each call:** hooks don't say, so the hook reads it from the transcript at each turn end: every tool result records the decision and who made it. It's stored on the tool span (`attributes.permission`: `by` is "you", "auto mode", "a permission rule", "the permission mode", "a safety check" or, for anything else, "Claude Code"; plus the raw `source`, `reason_type` and `reason_code`). A refused call, and its wait, get the span status `rejected` (spans only; runs keep `unset`/`ok`/`error`), with `error` saying who refused it and keeping any detail (the auto-mode reason from PermissionDenied, or your feedback). An auto-mode denial (PermissionDenied) is `rejected` too. A rejected call isn't a failure: it's left out of `status = 'error'` queries.
 - **Read twice or in parts:** a response split across two turn-end reads keeps its request time, its earliest output and everything it said. Request times are kept between reads, since a queued prompt's request line can be read a turn early. The session keeps its earliest prompt and latest reply, however late events arrive.
 - **No loose ends:** if a span's turn or subagent hasn't arrived (its event was lost or is late), a placeholder parent is created under the session, and the real event fills it in later. A subagent with no `agent_type` is named `subagent <first 8 characters of its id>`.
 - **Compaction:** PostCompact closes the latest compaction still open.

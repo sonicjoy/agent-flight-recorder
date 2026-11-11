@@ -280,3 +280,20 @@ def test_transcript_paths_are_not_sent(tmp_path: Path, recorder: Recorder) -> No
     [[sent]] = recorder.batches
     assert "transcript_path" not in sent["hook"]
     assert sent["client_redactions"] == {}
+
+
+def test_a_turn_end_sends_the_permission_decisions(tmp_path: Path, recorder: Recorder) -> None:
+    transcript = tmp_path / "t.jsonl"
+    result = {
+        "type": "user",
+        "timestamp": "2026-11-11T09:00:04Z",
+        "permissionDecision": {"decision": "reject", "source": "user_reject"},
+        "message": {"content": [{"type": "tool_result", "tool_use_id": "t1"}]},
+    }
+    transcript.write_text(json.dumps(result) + "\n", encoding="utf-8")
+    stop = {"session_id": "s", "hook_event_name": "Stop", "transcript_path": str(transcript)}
+
+    run(json.dumps(stop), config(tmp_path, recorder.url))
+
+    [[sent]] = recorder.batches
+    assert [(p["tool_use_id"], p["decision"]) for p in sent["permissions"]] == [("t1", "reject")]

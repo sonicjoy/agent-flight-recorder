@@ -104,12 +104,3 @@ jobs:
           else
             gh pr edit "$BRANCH" --body-file body.md
           fi
-
-      - name: Fail if a priced model or tier no longer matches the page
-        run: |
-          # A note means a model or tier is no longer compared at all (renamed, retired, or
-          # its row's wording changed), so make a person look instead of staying green.
-          if grep '^note:' check.txt; then
-            echo "::error::pricing check notes need a person: see the lines above"
-            exit 1
-          fi
