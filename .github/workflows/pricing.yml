@@ -1,0 +1,102 @@
+name: Pricing check
+
+# Keeps the Claude rates in pricing.yaml in line with Anthropic's public pricing page
+# (docs/llm-providers.md). When they differ, opens or updates one PR; never merges.
+# No secrets: the page is public, and the PR is opened with the workflow's own token.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+  workflow_dispatch:
+  pull_request: # changes to the check itself run it against the live page, without a PR
+    paths:
+      - .github/workflows/pricing.yml
+      - src/flight_recorder/pricing_check.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pricing-check-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash # -eo pipefail: a failed check isn't hidden by `| tee`
+
+env:
+  BRANCH: pricing-update
+  PRICING: src/flight_recorder/pricing.yaml
+
+jobs:
+  check:
+    name: Compare pricing.yaml with Anthropic's pricing page
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the pricing-update branch
+      pull-requests: write # open or update its PR
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --locked --no-dev
+
+      - name: Check, and update pricing.yaml if a rate differs
+        id: check
+        run: |
+          # Exit 2 (page unreadable or changed shape) fails the run, so someone looks.
+          uv run afr pricing check --write | tee check.txt
+          if git diff --quiet -- "$PRICING"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo '### Pricing check'
+            echo '```'
+            cat check.txt
+            echo '```'
+            git diff -- "$PRICING" | sed -e '1i ```diff' -e '$a ```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open or update the pricing PR
+        if: steps.check.outputs.changed == 'true' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "Anthropic's [pricing page](https://platform.claude.com/docs/en/about-claude/pricing) no longer matches \`pricing.yaml\`. Found by the weekly [pricing check]($RUN_URL)."
+            echo
+            echo '```'
+            cat check.txt
+            echo '```'
+            echo
+            echo 'Check the page before merging: a parse that went wrong looks like a price change. Spans priced before this merges keep the old `pricing_version`.'
+            echo
+            echo "This PR was opened by the workflow's token, so CI doesn't start on its own: close and reopen it (or push to it) to run CI."
+          } > body.md
+
+          # Leave an open PR alone if it already has these rates (only the version date differs).
+          if git fetch --quiet origin "$BRANCH" 2>/dev/null \
+              && git diff --quiet -I '^version:' FETCH_HEAD -- "$PRICING"; then
+            echo "$BRANCH already has these rates"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git switch --create "$BRANCH"
+            git commit --quiet --message "Update Claude prices from Anthropic's pricing page" -- "$PRICING"
+            git push --force origin "$BRANCH"
+          fi
+
+          if [ "$(gh pr list --head "$BRANCH" --state open --json number --jq length)" = 0 ]; then
+            gh pr create --base "$BASE" --head "$BRANCH" \
+              --title "Update Claude prices from Anthropic's pricing page" --body-file body.md
+          else
+            gh pr edit "$BRANCH" --body-file body.md
+          fi

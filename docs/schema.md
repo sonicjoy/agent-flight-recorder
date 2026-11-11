@@ -48,7 +48,7 @@ Migrations change a database in place: `afr db upgrade` runs only the migrations
 | Canonical model | OpenTelemetry GenAI conventions, plus OpenInference | Any instrumented agent works without custom code (plan decision 1) |
 | Identity | Our own UUID per row, plus the source's id in `external_id`, unique per source (`runs`) or per run (`spans`) | Re-sent data updates a row instead of duplicating it (`INSERT ... ON CONFLICT`). A span is replaced; a run is merged, so a batch that knows less (no name, status `unset`) keeps what's stored, and the run spans the earliest start and latest end seen. Claude Code ids aren't OTel ids, and don't have to be |
 | Span kind | Our five kinds: `agent`, `llm`, `tool`, `step`, `other` | Queries and the UI work the same for every source. The source's own words stay in `attributes` |
-| Cost | Priced at ingest from `pricing.yaml` and stored as `numeric(14,8)` | A later price change doesn't rewrite history. An unknown model's cost is `NULL`, never $0 |
+| Cost | Priced at ingest from `pricing.yaml` and stored as `numeric(14,8)`, with the `pricing.yaml` version that priced it | A later price change doesn't rewrite history, and the version says which prices to recompute from. An unknown model's cost is `NULL`, never $0 |
 | Status | OTel's span status codes: `unset`, `ok`, `error` | No translation for OTel sources. A run is still going while `ended_at` is `NULL` |
 | Raw data | Every source attribute is kept in `attributes` (JSONB), **after redaction** | Nothing is lost in mapping, and a later mapping can re-read it |
 | Redaction | Everything a source sends is redacted before mapping, not just `input`/`output`; see the [redaction contract](#redaction-contract). `redactions` holds counts per pattern | The original values are never written (plan decision 3). Prompts also arrive as attributes (`gen_ai.input.messages`), so redacting only the mapped columns would leak them |
@@ -83,6 +83,7 @@ One step in a run.
 | `name`, `model` | `model` is `<provider>:<model>` when known, the same format as `pricing.yaml` |
 | `status`, `error` | `error` holds the status description or exception message, redacted |
 | `input_tokens`, `output_tokens`, `cost_usd` | `cost_usd` is priced at ingest |
+| `pricing_version` | The `version` of `pricing.yaml` that priced `cost_usd` (the date its prices were checked). `NULL` if the span isn't priced, or was priced before migration 0004 |
 | `input`, `output` | Redacted message or argument JSON |
 | `attributes` | Every attribute as sent, after redaction, except prompt and output content, which is in `input`/`output`. Events and links are in `attributes.events` and `attributes.links` |
 | `redactions` | `{"pattern": count}`. Never the values |

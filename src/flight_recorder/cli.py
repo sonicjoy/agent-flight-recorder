@@ -21,6 +21,8 @@ hook_app = typer.Typer(
     help="Record Claude Code sessions (docs/claude-code.md).", no_args_is_help=True
 )
 app.add_typer(hook_app, name="hook")
+pricing_app = typer.Typer(help="Model prices in pricing.yaml.", no_args_is_help=True)
+app.add_typer(pricing_app, name="pricing")
 
 
 @app.callback()
@@ -200,6 +202,47 @@ def hook_uninstall(
     from flight_recorder.hook.install import uninstall
 
     typer.echo("hooks removed" if uninstall(project) else "no recorder hooks found")
+
+
+@pricing_app.command("check")
+def pricing_check(
+    write: Annotated[
+        bool, typer.Option("--write", help="Update pricing.yaml and its version to match.")
+    ] = False,
+    file: Annotated[
+        Path | None, typer.Option(help="pricing.yaml to check [default: the package's own]")
+    ] = None,
+    page: Annotated[
+        Path | None, typer.Option(help="A saved copy of the page's Markdown, instead of fetching")
+    ] = None,
+) -> None:
+    """Compare Claude rates with Anthropic's pricing page. Exits 1 if they differ (unless
+    --write), 2 if the page can't be read or no longer parses."""
+    from flight_recorder import pricing_check as pc
+
+    path = file or Path(pc.__file__).with_name("pricing.yaml")
+    text = path.read_bytes().decode("utf-8")  # bytes: keep the file's line endings as they are
+    try:
+        markdown = page.read_text(encoding="utf-8") if page else pc.fetch_page()
+        report = pc.check(text, markdown)
+    except (OSError, pc.PageFormatError) as error:
+        typer.echo(f"error: {pc.MARKDOWN_URL if page is None else page}: {error}", err=True)
+        raise typer.Exit(code=2) from error
+
+    typer.echo(f"source: {pc.PRICING_URL if page is None else page}")
+    for note in report.notes:
+        typer.echo(f"note: {note}")
+    if not report.changes:
+        typer.echo(f"{path.name}: Claude rates match the page")
+        return
+    typer.echo(f"{len(report.changes)} rate(s) differ from the page:")
+    for change in report.changes:
+        typer.echo(f"  {change}")
+    if not write:
+        raise typer.Exit(code=1)
+    version = pc.today()
+    path.write_bytes(pc.apply(text, report.changes, version).encode("utf-8"))
+    typer.echo(f"updated {path}, version {version}")
 
 
 if __name__ == "__main__":  # python -m flight_recorder.cli, as the installed hook runs it

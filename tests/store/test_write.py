@@ -11,6 +11,7 @@ from fake_secrets import in_context, secrets_by_kind
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from flight_recorder.pricing import price_table
 from flight_recorder.redact import Redactor
 from flight_recorder.store.models import Run, Span
 from flight_recorder.store.write import RunIn, SpanIn, record_run
@@ -108,6 +109,9 @@ def test_spans_are_priced_and_runs_totalled(session: Session) -> None:
     priced = session.scalars(select(Span).where(Span.external_id == "a")).one()
     assert priced.cost_usd is not None and priced.cost_usd > 0
     assert (run.input_tokens, run.output_tokens, run.cost_usd) == (1000, 65, priced.cost_usd)
+    assert priced.pricing_version == price_table().version  # so the cost can be recomputed
+    tool = session.scalars(select(Span).where(Span.external_id == "b")).one()
+    assert tool.pricing_version is None
 
 
 def test_unknown_model_makes_the_run_cost_unknown_not_zero(session: Session) -> None:
@@ -124,6 +128,8 @@ def test_unknown_model_makes_the_run_cost_unknown_not_zero(session: Session) -> 
 
     assert session.get_one(Run, run_id).cost_usd is None
     assert session.get_one(Run, run_id).input_tokens == 20
+    unpriced = session.scalars(select(Span).where(Span.external_id == "b")).one()
+    assert unpriced.pricing_version is None
 
 
 def test_resending_updates_instead_of_duplicating(session: Session) -> None:
