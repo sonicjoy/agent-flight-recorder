@@ -4,7 +4,9 @@ With the key and a database dump, anyone could test guesses ("is alice@example.c
 here?") against the fingerprints, so the key lives with the deployment, not the data:
 
 1. AFR_REDACTION_KEY (environment, .env, or Secret Manager when deployed)
-2. otherwise .afr/redaction.key, generated on first use with owner-only permissions
+2. otherwise <AFR_HOME>/redaction.key (default ~/.afr), generated on first use with
+   owner-only permissions. User-level, so the Claude Code hook, which runs in other
+   projects' folders, and the server use the same key and their placeholders match.
 
 Changing the key changes every new fingerprint, so the same secret recorded before and
 after gets different placeholders. Nothing breaks; they just stop matching.
@@ -16,11 +18,14 @@ import logging
 import os
 import secrets
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from flight_recorder.redact.redactor import Redactor
-from flight_recorder.settings import Settings
 
-KEY_FILE = Path(".afr/redaction.key")
+if TYPE_CHECKING:  # pydantic-settings is slow to import; the hook gets by without it
+    from flight_recorder.settings import Settings
+
+KEY_NAME = "redaction.key"
 MIN_KEY_CHARS = 32
 
 log = logging.getLogger(__name__)
@@ -30,10 +35,19 @@ class RedactionKeyError(ValueError):
     pass
 
 
-def load_key(settings: Settings | None = None, *, key_file: Path = KEY_FILE) -> bytes:
-    settings = settings or Settings()
-    if settings.redaction_key is not None:
-        key = settings.redaction_key.get_secret_value().strip()
+def load_key(settings: Settings | None = None, *, key_file: Path | None = None) -> bytes:
+    if settings is None:
+        from flight_recorder.settings import Settings
+
+        settings = Settings()
+    configured = settings.redaction_key.get_secret_value() if settings.redaction_key else None
+    return key_from(configured, key_file or settings.afr_home / KEY_NAME)
+
+
+def key_from(configured: str | None, key_file: Path) -> bytes:
+    """The configured key if there is one, else the key file's (made on first use)."""
+    if configured is not None:
+        key = configured.strip()
         if len(key) < MIN_KEY_CHARS:
             raise RedactionKeyError(
                 f"AFR_REDACTION_KEY must be at least {MIN_KEY_CHARS} characters; "

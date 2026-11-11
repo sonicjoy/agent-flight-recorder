@@ -51,11 +51,23 @@ uv run pytest -m smoke -v -rs
 | `anthropic:claude-opus-5-5` | $4.00 | $20.00 | Anthropic API reference, 5 Nov 2026 |
 | `anthropic:claude-sonnet-5-5` | $2.00 | $10.00 | Anthropic API reference, 5 Nov 2026 |
 | `anthropic:claude-haiku-5-5` | $0.10 ($0.50 above 100K input tokens) | $0.50 ($2.50 above 100K) | Anthropic API reference, 5 Nov 2026 |
+| `anthropic:claude-fable-5-1` | $10.00 | $50.00 | platform.claude.com/docs/en/about-claude/pricing, 11 Nov 2026 |
 | `openai:gpt-5.4-nano` | $0.20 | $1.25 | [OpenAI pricing](https://developers.openai.com/api/docs/pricing), 5 Nov 2026 |
 | `openai:gpt-5.4-mini` | $0.75 | $4.50 | [OpenAI pricing](https://developers.openai.com/api/docs/pricing), 5 Nov 2026 |
 | `openai:gpt-5.5` | $5.00 ($10.00 above 272K input tokens) | $30.00 ($45.00 above 272K) | [OpenAI pricing](https://developers.openai.com/api/docs/pricing), 5 Nov 2026 |
 | `google_genai:gemini-3.8-flash` | free tier | free tier | [AI Studio pricing](https://aistudio.google.com/docs/pricing), 5 Nov 2026 |
 | `google_genai:gemini-3.5-flash-lite` | free tier | free tier | [AI Studio pricing](https://aistudio.google.com/docs/pricing), 5 Nov 2026 |
+
+Claude cache prices per 1M tokens (platform.claude.com/docs/en/about-claude/pricing, checked 11 Nov 2026):
+
+| Model | Cache read | 5-minute write | 1-hour write |
+|---|---|---|---|
+| Opus 5.5 | $0.20 (0.05x) | $5.00 | $8.00 |
+| Sonnet 5.5 | $0.10 (0.05x) | $2.50 | $4.00 |
+| Haiku 5.5 | $0.01 ($0.05 above 100K) | $0.125 ($0.625) | $0.20 ($1.00) |
+| Fable 5.1 | $0.25 (0.025x) | $12.50 | $20.00 |
+
+Opus 5.5 fast mode is $8 input / $40 output, and stacks with the cache multipliers. Recorded Claude Code sessions are priced at these API rates: on a subscription, that's the API-equivalent cost, not what was paid.
 
 Not yet modelled: prompt-cache read and write prices.
 

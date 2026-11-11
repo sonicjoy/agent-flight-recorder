@@ -76,19 +76,47 @@ class SpanIn(_In):
     started_at: datetime
     ended_at: datetime | None = None
     input_tokens: int | None = Field(default=None, ge=0)
+    """All input tokens, cached or not (the OTel GenAI convention)."""
     output_tokens: int | None = Field(default=None, ge=0)
+    cache_read_tokens: int | None = Field(default=None, ge=0)
+    """Part of input_tokens: read from the prompt cache."""
+    cache_write_5m_tokens: int | None = Field(default=None, ge=0)
+    cache_write_1h_tokens: int | None = Field(default=None, ge=0)
+    fast: bool = False
+    """Claude fast mode, priced at its premium rates."""
     input: Any = None
     output: Any = None
     attributes: dict[str, Any] = Field(default_factory=dict)
 
 
-def _price(
-    model: str | None, input_tokens: int | None, output_tokens: int | None
-) -> Decimal | None:
-    if model is None or (input_tokens is None and output_tokens is None):
+def _price(model: str | None, span: SpanIn) -> Decimal | None:
+    if model is None or (span.input_tokens is None and span.output_tokens is None):
         return None
-    cost = cost_usd(model, input_tokens or 0, output_tokens or 0)
+    read = span.cache_read_tokens or 0
+    write_5m = span.cache_write_5m_tokens or 0
+    write_1h = span.cache_write_1h_tokens or 0
+    cost = cost_usd(
+        model,
+        max((span.input_tokens or 0) - read - write_5m - write_1h, 0),  # uncached input
+        span.output_tokens or 0,
+        cache_read=read,
+        cache_write_5m=write_5m,
+        cache_write_1h=write_1h,
+        fast=span.fast,
+    )
     return None if cost is None else Decimal(str(cost)).quantize(CENT_FRACTION)
+
+
+def _usage(span: SpanIn) -> dict[str, Any]:
+    """Cache and speed details, kept in attributes so a later reprice can use them."""
+    usage = {
+        "cache_read_tokens": span.cache_read_tokens,
+        "cache_write_5m_tokens": span.cache_write_5m_tokens,
+        "cache_write_1h_tokens": span.cache_write_1h_tokens,
+        "fast": span.fast or None,
+    }
+    present = {k: v for k, v in usage.items() if v is not None}
+    return {"usage": present} if present else {}
 
 
 def _upsert_span(values: dict[str, Any]) -> Any:
@@ -172,10 +200,10 @@ def record_run(
             "ended_at": span.ended_at,
             "input_tokens": span.input_tokens,
             "output_tokens": span.output_tokens,
-            "cost_usd": _price(model, span.input_tokens, span.output_tokens),
+            "cost_usd": _price(model, span),
             "input": redactor.value(span.input, counts),
             "output": redactor.value(span.output, counts),
-            "attributes": redactor.value(span.attributes, counts),
+            "attributes": redactor.value(span.attributes | _usage(span), counts),
             "redactions": dict(counts),
         }
         session.execute(_upsert_span(values))

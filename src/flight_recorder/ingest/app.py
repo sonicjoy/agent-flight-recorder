@@ -1,4 +1,5 @@
-"""The ingest API: POST /v1/traces takes standard OTLP/HTTP trace exports.
+"""The ingest API: POST /v1/traces takes standard OTLP/HTTP trace exports, and
+POST /v1/claude-code/events takes Claude Code hook events (ingest/claude_code.py).
 
 Each trace in a request is written in its own transaction through record_run(), which
 redacts first. A trace that can't be mapped is rejected on its own and reported in the
@@ -11,7 +12,8 @@ No authentication yet (#25): serve on 127.0.0.1 only.
 
 from __future__ import annotations
 
-from typing import Annotated
+import json
+from typing import Annotated, Any, cast
 
 from fastapi import FastAPI, Header, Request, Response
 from fastapi.responses import JSONResponse
@@ -22,6 +24,7 @@ from sqlalchemy.exc import TimeoutError as PoolTimeout
 from starlette.concurrency import run_in_threadpool
 
 from flight_recorder.ingest import otlp
+from flight_recorder.ingest.claude_code import EventError, apply_event
 from flight_recorder.ingest.mapping import MappingError, map_trace, traces
 from flight_recorder.redact import Redactor
 from flight_recorder.store.db import session_scope
@@ -71,12 +74,47 @@ def _ingest(
             rejected += len(trace.spans)
             reasons.append(f"trace {trace.trace_id or '?'}: {_reason(error)}")
         except UNAVAILABLE as error:
-            return JSONResponse(
-                {"error": f"database unavailable ({type(error).__name__}); retry later"},
-                status_code=503,
-                headers={"Retry-After": RETRY_AFTER_SECONDS},
-            )
+            return _unavailable(error)
     return Response(otlp.response_body(kind, rejected, "; ".join(reasons)[:1000]), media_type=kind)
+
+
+def _unavailable(error: Exception) -> Response:
+    return JSONResponse(
+        {"error": f"database unavailable ({type(error).__name__}); retry later"},
+        status_code=503,
+        headers={"Retry-After": RETRY_AFTER_SECONDS},
+    )
+
+
+def _ingest_claude_code(engine: Engine, redactor: Redactor, body: bytes) -> Response:
+    """Apply hook events in the order they fired, each in its own transaction."""
+    try:
+        document = json.loads(body)
+        raw = document["events"]
+        if not isinstance(raw, list):
+            raise TypeError
+        events = cast("list[Any]", raw)
+    except (ValueError, KeyError, TypeError):
+        return JSONResponse({"error": 'expected {"events": [...]}'}, status_code=400)
+
+    def fired_at(event: dict[str, Any]) -> float:
+        value = event.get("received_at")
+        return float(value) if isinstance(value, int | float) else 0.0
+
+    valid = [cast("dict[str, Any]", e) for e in events if isinstance(e, dict)]
+    ordered = sorted(valid, key=fired_at)
+    accepted, reasons = 0, list[str]()
+    for event in ordered:
+        try:
+            with session_scope(engine) as session:
+                apply_event(session, redactor, event)
+            accepted += 1
+        except TRACE_ERRORS as error:
+            reasons.append(str(error) if isinstance(error, EventError) else _reason(error))
+        except UNAVAILABLE as error:  # the hook keeps the events and sends them again
+            return _unavailable(error)
+    rejected = len(events) - accepted
+    return JSONResponse({"accepted": accepted, "rejected": rejected, "errors": reasons[:20]})
 
 
 def create_app(engine: Engine, redactor: Redactor) -> FastAPI:
@@ -105,5 +143,18 @@ def create_app(engine: Engine, redactor: Redactor) -> FastAPI:
         return await run_in_threadpool(
             _ingest, engine, redactor, bytes(body), content_encoding, kind
         )
+
+    @app.post("/v1/claude-code/events")
+    async def claude_code_events(  # pyright: ignore[reportUnusedFunction]
+        request: Request, content_type: Annotated[str | None, Header()] = None
+    ) -> Response:
+        if (content_type or "").split(";")[0].strip().lower() != otlp.JSON:
+            return JSONResponse({"error": "Content-Type must be application/json"}, status_code=415)
+        body = bytearray()
+        async for chunk in request.stream():
+            body += chunk
+            if len(body) > otlp.MAX_BODY_BYTES:
+                return JSONResponse({"error": "body too large"}, status_code=413)
+        return await run_in_threadpool(_ingest_claude_code, engine, redactor, bytes(body))
 
     return app

@@ -3,6 +3,8 @@
 Every setting here must also be documented in `.env.example` (enforced by a test).
 """
 
+from pathlib import Path
+
 from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -42,7 +44,17 @@ class Settings(BaseSettings):
     redaction_key: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices("AFR_REDACTION_KEY"),
-        description="Key for redaction fingerprints; unset locally means .afr/redaction.key.",
+        description="Key for redaction fingerprints; unset means <AFR_HOME>/redaction.key.",
+    )
+    afr_home: Path = Field(
+        default_factory=lambda: Path.home() / ".afr",
+        validation_alias=AliasChoices("AFR_HOME"),
+        description="User-level folder for the redaction key and the hook's spool and state.",
+    )
+    hook_url: str = Field(
+        default="http://127.0.0.1:4318/v1/claude-code/events",
+        validation_alias=AliasChoices("AFR_HOOK_URL"),
+        description="Where the Claude Code hook sends events.",
     )
 
 

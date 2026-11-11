@@ -3,20 +3,47 @@
 # A model missing from this file has an unknown cost (reported as None, never as $0).
 
 models:
+  # Cache writes are 1.25x input (5-minute cache) or 2x (1 hour). Cache reads vary by model:
+  # 0.05x on Opus 5.5 and Sonnet 5.5, 0.025x on Fable 5.1, 0.1x elsewhere.
+  # Not modelled: the 1.1x for US-only inference (inference_geo "us").
   anthropic:claude-opus-5-5:
     input: 4.00
     output: 20.00
+    cache_read: 0.20
+    cache_write_5m: 5.00
+    cache_write_1h: 8.00
+    fast:
+      input: 8.00
+      output: 40.00
+      cache_read: 0.40
+      cache_write_5m: 10.00
+      cache_write_1h: 16.00
   anthropic:claude-sonnet-5-5:
     input: 2.00
     output: 10.00
+    cache_read: 0.10
+    cache_write_5m: 2.50
+    cache_write_1h: 4.00
   anthropic:claude-haiku-5-5:
     input: 0.10
     output: 0.50
-    # Prompts over 100K input tokens are billed at a higher rate.
+    cache_read: 0.01
+    cache_write_5m: 0.125
+    cache_write_1h: 0.20
+    # Prompts over 100K input tokens, counting cache reads and writes, are billed higher.
     long_context:
       above_input_tokens: 100000
       input: 0.50
       output: 2.50
+      cache_read: 0.05
+      cache_write_5m: 0.625
+      cache_write_1h: 1.00
+  anthropic:claude-fable-5-1:
+    input: 10.00
+    output: 50.00
+    cache_read: 0.25
+    cache_write_5m: 12.50
+    cache_write_1h: 20.00
 
   # OpenAI standard tier (not batch, flex or priority).
   openai:gpt-5.4-nano:

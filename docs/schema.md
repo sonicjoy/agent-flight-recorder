@@ -116,17 +116,19 @@ Ids (`external_id`, `parent_external_id`), kinds, status, token counts, costs an
 
 ## Mapping sources onto the schema
 
-The ingest code implements this mapping: [`ingest/mapping.py`](../src/flight_recorder/ingest/mapping.py) for OTLP (#8, see [ingest.md](ingest.md)), and the Claude Code hook (#9). The GenAI conventions are still at **Development** status and have moved to their own repository ([open-telemetry/semantic-conventions-genai](https://github.com/open-telemetry/semantic-conventions-genai)). Names were checked on 9 Nov 2026, so expect changes, and keep the raw attributes.
+The ingest code implements this mapping: [`ingest/mapping.py`](../src/flight_recorder/ingest/mapping.py) for OTLP (#8, see [ingest.md](ingest.md)), and [`ingest/claude_code.py`](../src/flight_recorder/ingest/claude_code.py) for the Claude Code hook (#9). The GenAI conventions are still at **Development** status and have moved to their own repository ([open-telemetry/semantic-conventions-genai](https://github.com/open-telemetry/semantic-conventions-genai)). Names were checked on 9 Nov 2026, so expect changes, and keep the raw attributes.
 
 ### Span kind
 
 | Our kind | OTel `gen_ai.operation.name` | OpenInference `openinference.span.kind` | Claude Code hook |
 |---|---|---|---|
-| `llm` | `chat`, `text_completion`, `generate_content`, `embeddings` | `LLM`, `EMBEDDING` | (token usage from the transcript) |
-| `tool` | `execute_tool` | `TOOL`, `RETRIEVER` | `PreToolUse` / `PostToolUse` pair |
-| `agent` | `invoke_agent`, `create_agent` | `AGENT` | session root, `SubagentStop` |
-| `step` | `invoke_workflow`, `retrieval`, no operation name | `CHAIN`, `RERANKER`, `GUARDRAIL`, `EVALUATOR`, `PROMPT`, `DECISION` | `UserPromptSubmit` |
-| `other` | any other value | any other value | any other event |
+| `llm` | `chat`, `text_completion`, `generate_content`, `embeddings` | `LLM`, `EMBEDDING` | each model response in the session transcript, read at turn end |
+| `tool` | `execute_tool` | `TOOL`, `RETRIEVER` | `PreToolUse` with `PostToolUse` or `PostToolUseFailure`, paired by `tool_use_id` |
+| `agent` | `invoke_agent`, `create_agent` | `AGENT` | the session (root), each subagent (`agent_id`, ended by `SubagentStop`) |
+| `step` | `invoke_workflow`, `retrieval`, no operation name | `CHAIN`, `RERANKER`, `GUARDRAIL`, `EVALUATOR`, `PROMPT`, `DECISION` | a turn: `UserPromptSubmit` to `Stop` or `StopFailure` |
+| `other` | any other value | any other value | (not used) |
+
+The Claude Code mapping in full: [claude-code.md](claude-code.md).
 
 ### Attributes
 

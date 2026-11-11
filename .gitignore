@@ -31,3 +31,6 @@ node_modules/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Personal Claude Code settings, such as `afr hook install` (machine-specific paths)
+.claude/settings.local.json
