@@ -172,6 +172,9 @@ class Span(Base):
     input_tokens: Mapped[int | None]
     output_tokens: Mapped[int | None]
     cost_usd: Mapped[Decimal | None] = mapped_column(Money, comment="Priced at ingest")
+    pricing_version: Mapped[str | None] = mapped_column(
+        Text, comment="Version of pricing.yaml that priced cost_usd; null if not priced"
+    )
     input: Mapped[Any | None] = mapped_column(JSONB, comment="Redacted before storing")
     output: Mapped[Any | None] = mapped_column(JSONB, comment="Redacted before storing")
     attributes: Mapped[dict[str, Any]] = _json("Every attribute as sent, after redaction")

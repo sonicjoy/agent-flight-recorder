@@ -21,6 +21,8 @@ hook_app = typer.Typer(
     help="Record Claude Code sessions (docs/claude-code.md).", no_args_is_help=True
 )
 app.add_typer(hook_app, name="hook")
+pricing_app = typer.Typer(help="Model prices in pricing.yaml.", no_args_is_help=True)
+app.add_typer(pricing_app, name="pricing")
 
 
 @app.callback()
@@ -200,3 +202,51 @@ def hook_uninstall(
     from flight_recorder.hook.install import uninstall
 
     typer.echo("hooks removed" if uninstall(project) else "no recorder hooks found")
+
+
+@pricing_app.command("check")
+def pricing_check(
+    write: Annotated[
+        bool, typer.Option("--write", help="Update pricing.yaml and its version to match.")
+    ] = False,
+    file: Annotated[
+        Path | None, typer.Option(help="pricing.yaml to check [default: the package's own]")
+    ] = None,
+    page: Annotated[
+        Path | None, typer.Option(help="A saved copy of the page's Markdown, instead of fetching")
+    ] = None,
+) -> None:
+    """Compare Claude rates with Anthropic's pricing page. Exits 1 if they differ (unless
+    --write), 2 if the page can't be read or no longer parses. `note:` lines (a priced model
+    or tier missing on one side) need a person; the weekly workflow fails on them."""
+    from flight_recorder import pricing_check as pc
+
+    path = file or Path(pc.__file__).with_name("pricing.yaml")
+    text = path.read_bytes().decode("utf-8")  # bytes: keep the file's line endings as they are
+    source = page or pc.MARKDOWN_URL
+    try:
+        markdown = page.read_text(encoding="utf-8") if page else pc.fetch_page()
+        report = pc.check(text, markdown)
+    except (OSError, pc.PageFormatError) as error:
+        typer.echo(f"error: {source}: {error}", err=True)
+        raise typer.Exit(code=2) from error
+
+    typer.echo(f"source: {source}")
+    for note in report.notes:
+        typer.echo(f"note: {note}")
+    if not report.changes:
+        typer.echo(f"{path.name}: Claude rates match the page")
+        return
+    typer.echo(f"{len(report.changes)} rate(s) differ from the page:")
+    for change in report.changes:
+        typer.echo(f"  {change}")
+    if not write:
+        raise typer.Exit(code=1)
+    version = pc.today()
+    try:
+        updated = pc.apply(text, report.changes, version)
+    except ValueError as error:  # pricing.yaml lacks a version or the mapping to add a rate to
+        typer.echo(f"error: {path}: {error}", err=True)
+        raise typer.Exit(code=2) from error
+    path.write_bytes(updated.encode("utf-8"))
+    typer.echo(f"updated {path}, version {version}")

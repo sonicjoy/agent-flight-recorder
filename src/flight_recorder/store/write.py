@@ -26,7 +26,7 @@ from sqlalchemy import case, func, literal_column, text
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.orm import Session
 
-from flight_recorder.pricing import cost_usd
+from flight_recorder.pricing import cost_usd, price_table
 from flight_recorder.redact import Redactor
 from flight_recorder.store.models import Run, Span
 
@@ -190,6 +190,7 @@ def record_run(
     for span in spans:
         counts = Counter()
         model = redactor.value(span.model, counts)
+        cost = _price(model, span)
         values = {
             "run_id": run_id,
             "external_id": span.external_id,
@@ -203,7 +204,8 @@ def record_run(
             "ended_at": span.ended_at,
             "input_tokens": span.input_tokens,
             "output_tokens": span.output_tokens,
-            "cost_usd": _price(model, span),
+            "cost_usd": cost,
+            "pricing_version": None if cost is None else price_table().version,
             "input": redactor.value(span.input, counts),
             "output": redactor.value(span.output, counts),
             "attributes": redactor.value(span.attributes | _usage(span), counts),

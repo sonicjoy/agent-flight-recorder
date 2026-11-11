@@ -44,7 +44,22 @@ uv run pytest -m smoke -v -rs
 
 ## Prices
 
-`src/flight_recorder/pricing.yaml` holds USD per 1M tokens. A model missing from it has an unknown cost, reported as `None`, never as $0.
+`src/flight_recorder/pricing.yaml` holds USD per 1M tokens. A model missing from it has an unknown cost, reported as `None`, never as $0. Its `version` is the date the prices were last changed; each priced span stores it, so a cost can be recomputed from that version of the file in git history.
+
+### Keeping Claude prices current
+
+`afr pricing check` compares the Claude models in `pricing.yaml` with [Anthropic's pricing page](https://platform.claude.com/docs/en/about-claude/pricing): input, output, cache read, 5-minute and 1-hour cache writes, Haiku 5.5's long-context tier (and its threshold) and Opus fast mode. It reads the page's Markdown version (the same URL plus `.md`). Fast-mode cache rates aren't listed on the page; they're derived from the model's own cache multipliers, which the page says apply on top of fast mode.
+
+```bash
+uv run afr pricing check            # exit 0: rates match; 1: they differ; 2: page unreadable or changed shape
+uv run afr pricing check --write    # update pricing.yaml and set its version to today
+```
+
+It only compares models already in `pricing.yaml`. A priced model or tier missing on one side (renamed, retired, or a row whose wording changed) is printed as a `note:`; nothing is added or removed automatically, and the weekly workflow fails so a person looks. OpenAI and Gemini prices are still checked by hand.
+
+The [Pricing check](../.github/workflows/pricing.yml) workflow runs it every Monday and on demand (`workflow_dispatch`). When a rate differs, it opens or updates one pull request from the `pricing-update` branch, with the differences in its description. It never merges. Each run rebuilds that branch from the base, so fix a wrong rate in the PR by fixing the check, not by pushing to the branch. If the page no longer parses, the run fails, so someone looks. Pull requests opened by the workflow's token don't start CI on their own: close and reopen the PR, or push to it, to run CI before merging.
+
+The tables below record the rates when they were last checked by hand; `pricing.yaml` is the source of truth.
 
 | Model | Input | Output | Source, checked |
 |---|---|---|---|
@@ -68,7 +83,6 @@ Claude cache prices per 1M tokens (platform.claude.com/docs/en/about-claude/pric
 | Fable 5.1 | $0.25 (0.025x) | $12.50 | $20.00 |
 
 Opus 5.5 fast mode is $8 input / $40 output, and stacks with the cache multipliers. Recorded Claude Code sessions are priced at these API rates: on a subscription, that's the API-equivalent cost, not what was paid.
-
 
 ## Gemini free tier
 
