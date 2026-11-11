@@ -36,6 +36,54 @@ def write(path: Path, *lines: Any, end: str = "\n") -> None:
             file.write((line if isinstance(line, str) else json.dumps(line)) + end)
 
 
+def test_a_response_has_its_request_time_and_what_it_said(tmp_path: Path) -> None:
+    """Blocks of one response arrive on separate lines; the api-request line says when it
+    was sent."""
+    transcript = tmp_path / "session.jsonl"
+
+    def block(at: str, content: dict[str, Any], stop: str | None = None) -> dict[str, Any]:
+        line: dict[str, Any] = response("msg_1", 5) | {"timestamp": at, "requestRef": "req-1"}
+        line["message"] = line["message"] | {"content": [content], "stop_reason": stop}
+        return line
+
+    write(
+        transcript,
+        {"type": "api-request", "id": "req-1", "timestamp": "2026-11-11T09:00:00.000Z"},
+        block("2026-11-11T09:00:02.000Z", {"type": "thinking", "thinking": "Look first."}),
+        block("2026-11-11T09:00:02.500Z", {"type": "text", "text": "Let me look."}),
+        block("2026-11-11T09:00:03.000Z", {"type": "tool_use", "id": "t1", "name": "Glob",
+                                          "input": {"pattern": "*"}}, "tool_use"),
+        response("msg_2", 1),  # no request line seen, no content
+    )  # fmt: skip
+
+    first, second = new_usage(transcript, tmp_path / "state")
+
+    assert (first["requested_at"], first["started_at"], first["timestamp"]) == (
+        "2026-11-11T09:00:00.000Z",
+        "2026-11-11T09:00:02.000Z",
+        "2026-11-11T09:00:03.000Z",
+    )
+    assert first["stop_reason"] == "tool_use"
+    assert first["output"] == {
+        "thinking": "Look first.",
+        "text": "Let me look.",
+        "tool_calls": [{"id": "t1", "name": "Glob", "input": {"pattern": "*"}}],
+    }
+    assert (second["requested_at"], second["output"]) == (None, {})
+
+
+def test_a_request_read_a_turn_before_its_response_keeps_its_time(tmp_path: Path) -> None:
+    """A queued prompt: the previous turn's Stop reads the next request line."""
+    transcript, state = tmp_path / "session.jsonl", tmp_path / "state"
+    write(transcript, {"type": "api-request", "id": "req-2", "timestamp": "2026-11-11T09:00:05Z"})
+    assert new_usage(transcript, state) == []
+
+    write(transcript, response("msg_2", 3) | {"requestRef": "req-2"})
+    [later] = new_usage(transcript, state)
+
+    assert later["requested_at"] == "2026-11-11T09:00:05Z"
+
+
 def test_one_entry_per_response_with_cache_tokens(tmp_path: Path) -> None:
     transcript = tmp_path / "session.jsonl"
     write(

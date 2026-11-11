@@ -250,7 +250,3 @@ def pricing_check(
         raise typer.Exit(code=2) from error
     path.write_bytes(updated.encode("utf-8"))
     typer.echo(f"updated {path}, version {version}")
-
-
-if __name__ == "__main__":  # python -m flight_recorder.cli, as the installed hook runs it
-    app()

@@ -63,7 +63,7 @@ def key_from(configured: str | None, key_file: Path) -> bytes:
 
 
 def _create_key_file(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)  # owner-only where modes apply
     # O_EXCL: if another process created it first, fail rather than overwrite its key.
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

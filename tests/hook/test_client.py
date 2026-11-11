@@ -81,7 +81,7 @@ def test_recorder_down_spools_a_redacted_event_and_logs_no_content(
     assert event["client_redactions"] == {"openai_key": 1}
     assert event["hook"]["tool_response"]["stdout"].endswith("...[truncated 500 chars]")
     log = (tmp_path / "hook.log").read_text(encoding="utf-8")
-    assert "spooled PostToolUse" in log and secret not in log
+    assert "spooled 1 (PostToolUse)" in log and secret not in log
     assert capsys.readouterr() == ("", "")  # async hook output would reach the model
 
 

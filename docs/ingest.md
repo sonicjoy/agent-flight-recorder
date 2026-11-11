@@ -26,7 +26,7 @@ The issue triager does this with `triager run --record http://127.0.0.1:4318`.
 | Refused | 415 for any other content type, 400 for a body that can't be decoded, 413 for one over the limit. Nothing is stored |
 | Database unavailable | 503 with `Retry-After: 5`, so the exporter sends the request again. Traces already written by then are updated on the retry, not duplicated |
 
-`afr serve` listens on `127.0.0.1:4318`, the standard OTLP/HTTP port, so exporters work with their defaults. It refuses to listen on any other interface until the API has authentication (#25), and refuses to start if the database has migrations it hasn't run (`afr db upgrade`).
+`afr serve` listens on `127.0.0.1:4318`, the standard OTLP/HTTP port, so exporters work with their defaults. It refuses to listen on any other interface until the API has authentication (#25), and refuses to start if the database has migrations it hasn't run (`afr db upgrade`). Requests must also name a loopback host (`127.0.0.1`, `localhost` or `[::1]`), or they get a 421: a web page can't reach the API by pointing its own domain name at 127.0.0.1 (DNS rebinding).
 
 ## What happens to a request
 
