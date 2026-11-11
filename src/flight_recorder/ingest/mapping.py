@@ -13,7 +13,7 @@ import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
@@ -336,7 +336,7 @@ def map_trace(trace: Trace) -> tuple[RunIn, list[SpanIn]]:
         external_id=trace.trace_id,
         agent=agent,
         name=root.name if root else None,
-        status=root.status if root else "unset",
+        status=cast("Status", root.status) if root else "unset",  # OTel spans: never rejected
         started_at=min(s.started_at for s in spans),
         ended_at=root.ended_at if root else None,  # only the root says when the run ended
         attributes=resource,

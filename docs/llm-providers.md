@@ -44,20 +44,45 @@ uv run pytest -m smoke -v -rs
 
 ## Prices
 
-`src/flight_recorder/pricing.yaml` holds USD per 1M tokens. A model missing from it has an unknown cost, reported as `None`, never as $0.
+`src/flight_recorder/pricing.yaml` holds USD per 1M tokens. A model missing from it has an unknown cost, reported as `None`, never as $0. Its `version` is the date the prices were last changed; each priced span stores it, so a cost can be recomputed from that version of the file in git history.
+
+### Keeping Claude prices current
+
+`afr pricing check` compares the Claude models in `pricing.yaml` with [Anthropic's pricing page](https://platform.claude.com/docs/en/about-claude/pricing): input, output, cache read, 5-minute and 1-hour cache writes, Haiku 5.5's long-context tier (and its threshold) and Opus fast mode. It reads the page's Markdown version (the same URL plus `.md`). Fast-mode cache rates aren't listed on the page; they're derived from the model's own cache multipliers, which the page says apply on top of fast mode.
+
+```bash
+uv run afr pricing check            # exit 0: rates match; 1: they differ; 2: page unreadable or changed shape
+uv run afr pricing check --write    # update pricing.yaml and set its version to today
+```
+
+It only compares models already in `pricing.yaml`. A model or tier only one side has (renamed, retired, or not priced here) is skipped: listed as `skipped:` in the output and the run's summary, but not compared, and the run doesn't fail. Nothing is added or removed automatically. OpenAI and Gemini prices are still checked by hand.
+
+The [Pricing check](../.github/workflows/pricing.yml) workflow runs it every Monday and on demand (`workflow_dispatch`). When a rate differs, it opens or updates one pull request from the `pricing-update` branch, with the differences in its description. It never merges. Each run rebuilds that branch from the base, so fix a wrong rate in the PR by fixing the check, not by pushing to the branch. If the page no longer parses, the run fails, so someone looks. Pull requests opened by the workflow's token don't start CI on their own: close and reopen the PR, or push to it, to run CI before merging.
+
+The tables below record the rates when they were last checked by hand; `pricing.yaml` is the source of truth.
 
 | Model | Input | Output | Source, checked |
 |---|---|---|---|
 | `anthropic:claude-opus-5-5` | $4.00 | $20.00 | Anthropic API reference, 5 Nov 2026 |
 | `anthropic:claude-sonnet-5-5` | $2.00 | $10.00 | Anthropic API reference, 5 Nov 2026 |
 | `anthropic:claude-haiku-5-5` | $0.10 ($0.50 above 100K input tokens) | $0.50 ($2.50 above 100K) | Anthropic API reference, 5 Nov 2026 |
+| `anthropic:claude-fable-5-1` | $10.00 | $50.00 | platform.claude.com/docs/en/about-claude/pricing, 11 Nov 2026 |
 | `openai:gpt-5.4-nano` | $0.20 | $1.25 | [OpenAI pricing](https://developers.openai.com/api/docs/pricing), 5 Nov 2026 |
 | `openai:gpt-5.4-mini` | $0.75 | $4.50 | [OpenAI pricing](https://developers.openai.com/api/docs/pricing), 5 Nov 2026 |
 | `openai:gpt-5.5` | $5.00 ($10.00 above 272K input tokens) | $30.00 ($45.00 above 272K) | [OpenAI pricing](https://developers.openai.com/api/docs/pricing), 5 Nov 2026 |
 | `google_genai:gemini-3.8-flash` | free tier | free tier | [AI Studio pricing](https://aistudio.google.com/docs/pricing), 5 Nov 2026 |
 | `google_genai:gemini-3.5-flash-lite` | free tier | free tier | [AI Studio pricing](https://aistudio.google.com/docs/pricing), 5 Nov 2026 |
 
-Not yet modelled: prompt-cache read and write prices.
+Claude cache prices per 1M tokens (platform.claude.com/docs/en/about-claude/pricing, checked 11 Nov 2026):
+
+| Model | Cache read | 5-minute write | 1-hour write |
+|---|---|---|---|
+| Opus 5.5 | $0.20 (0.05x) | $5.00 | $8.00 |
+| Sonnet 5.5 | $0.10 (0.05x) | $2.50 | $4.00 |
+| Haiku 5.5 | $0.01 ($0.05 above 100K) | $0.125 ($0.625) | $0.20 ($1.00) |
+| Fable 5.1 | $0.25 (0.025x) | $12.50 | $20.00 |
+
+Opus 5.5 fast mode is $8 input / $40 output, and stacks with the cache multipliers. Recorded Claude Code sessions are priced at these API rates: on a subscription, that's the API-equivalent cost, not what was paid.
 
 ## Gemini free tier
 

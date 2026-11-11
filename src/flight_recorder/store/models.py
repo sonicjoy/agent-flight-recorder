@@ -39,6 +39,7 @@ EMBEDDING_DIMENSIONS = 384  # bge-small (#11)
 
 SOURCES = ("otel", "claude_code")
 STATUSES = ("unset", "ok", "error")  # OTel span status codes
+SPAN_STATUSES = (*STATUSES, "rejected")  # rejected: a tool call refused permission
 SPAN_KINDS = ("agent", "llm", "tool", "step", "other")
 EMBEDDING_KINDS = ("run_summary", "failed_span")
 LABEL_SOURCES = ("human", "judge", "analyst")
@@ -172,6 +173,9 @@ class Span(Base):
     input_tokens: Mapped[int | None]
     output_tokens: Mapped[int | None]
     cost_usd: Mapped[Decimal | None] = mapped_column(Money, comment="Priced at ingest")
+    pricing_version: Mapped[str | None] = mapped_column(
+        Text, comment="Version of pricing.yaml that priced cost_usd; null if not priced"
+    )
     input: Mapped[Any | None] = mapped_column(JSONB, comment="Redacted before storing")
     output: Mapped[Any | None] = mapped_column(JSONB, comment="Redacted before storing")
     attributes: Mapped[dict[str, Any]] = _json("Every attribute as sent, after redaction")
@@ -205,7 +209,7 @@ class Span(Base):
             ["run_id", "parent_id"], ["spans.run_id", "spans.id"], ondelete="CASCADE"
         ),
         CheckConstraint(_one_of("kind", SPAN_KINDS), name="kind"),
-        CheckConstraint(_one_of("status", STATUSES), name="status"),
+        CheckConstraint(_one_of("status", SPAN_STATUSES), name="status"),
         *_measurements(),
         Index(None, "run_id", "started_at"),
         Index(None, "run_id", "parent_id"),

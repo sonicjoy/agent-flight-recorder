@@ -48,8 +48,8 @@ Migrations change a database in place: `afr db upgrade` runs only the migrations
 | Canonical model | OpenTelemetry GenAI conventions, plus OpenInference | Any instrumented agent works without custom code (plan decision 1) |
 | Identity | Our own UUID per row, plus the source's id in `external_id`, unique per source (`runs`) or per run (`spans`) | Re-sent data updates a row instead of duplicating it (`INSERT ... ON CONFLICT`). A span is replaced; a run is merged, so a batch that knows less (no name, status `unset`) keeps what's stored, and the run spans the earliest start and latest end seen. Claude Code ids aren't OTel ids, and don't have to be |
 | Span kind | Our five kinds: `agent`, `llm`, `tool`, `step`, `other` | Queries and the UI work the same for every source. The source's own words stay in `attributes` |
-| Cost | Priced at ingest from `pricing.yaml` and stored as `numeric(14,8)` | A later price change doesn't rewrite history. An unknown model's cost is `NULL`, never $0 |
-| Status | OTel's span status codes: `unset`, `ok`, `error` | No translation for OTel sources. A run is still going while `ended_at` is `NULL` |
+| Cost | Priced at ingest from `pricing.yaml` and stored as `numeric(14,8)`, with the `pricing.yaml` version that priced it | A later price change doesn't rewrite history, and the version says which prices to recompute from. An unknown model's cost is `NULL`, never $0 |
+| Status | OTel's span status codes: `unset`, `ok`, `error`; spans can also be `rejected` (a tool call refused permission, Claude Code only) | No translation for OTel sources. A run is still going while `ended_at` is `NULL` |
 | Raw data | Every source attribute is kept in `attributes` (JSONB), **after redaction** | Nothing is lost in mapping, and a later mapping can re-read it |
 | Redaction | Everything a source sends is redacted before mapping, not just `input`/`output`; see the [redaction contract](#redaction-contract). `redactions` holds counts per pattern | The original values are never written (plan decision 3). Prompts also arrive as attributes (`gen_ai.input.messages`), so redacting only the mapped columns would leak them |
 | Integrity | A span's parent, and a label's or embedding's span, must belong to the same run (composite foreign keys on `(run_id, id)`). Tokens and cost can't be negative, and nothing ends before it starts. Every foreign key has an index | A replay can't show another run's steps, and impossible numbers fail at write time. A test checks the indexes |
@@ -83,6 +83,7 @@ One step in a run.
 | `name`, `model` | `model` is `<provider>:<model>` when known, the same format as `pricing.yaml` |
 | `status`, `error` | `error` holds the status description or exception message, redacted |
 | `input_tokens`, `output_tokens`, `cost_usd` | `cost_usd` is priced at ingest |
+| `pricing_version` | The `version` of `pricing.yaml` that priced `cost_usd` (the date its prices last changed). `NULL` if the span isn't priced, or was priced before migration 0004 |
 | `input`, `output` | Redacted message or argument JSON |
 | `attributes` | Every attribute as sent, after redaction, except prompt and output content, which is in `input`/`output`. Events and links are in `attributes.events` and `attributes.links` |
 | `redactions` | `{"pattern": count}`. Never the values |
@@ -116,17 +117,19 @@ Ids (`external_id`, `parent_external_id`), kinds, status, token counts, costs an
 
 ## Mapping sources onto the schema
 
-The ingest code implements this mapping: [`ingest/mapping.py`](../src/flight_recorder/ingest/mapping.py) for OTLP (#8, see [ingest.md](ingest.md)), and the Claude Code hook (#9). The GenAI conventions are still at **Development** status and have moved to their own repository ([open-telemetry/semantic-conventions-genai](https://github.com/open-telemetry/semantic-conventions-genai)). Names were checked on 9 Nov 2026, so expect changes, and keep the raw attributes.
+The ingest code implements this mapping: [`ingest/mapping.py`](../src/flight_recorder/ingest/mapping.py) for OTLP (#8, see [ingest.md](ingest.md)), and [`ingest/claude_code.py`](../src/flight_recorder/ingest/claude_code.py) for the Claude Code hook (#9). The GenAI conventions are still at **Development** status and have moved to their own repository ([open-telemetry/semantic-conventions-genai](https://github.com/open-telemetry/semantic-conventions-genai)). Names were checked on 9 Nov 2026, so expect changes, and keep the raw attributes.
 
 ### Span kind
 
 | Our kind | OTel `gen_ai.operation.name` | OpenInference `openinference.span.kind` | Claude Code hook |
 |---|---|---|---|
-| `llm` | `chat`, `text_completion`, `generate_content`, `embeddings` | `LLM`, `EMBEDDING` | (token usage from the transcript) |
-| `tool` | `execute_tool` | `TOOL`, `RETRIEVER` | `PreToolUse` / `PostToolUse` pair |
-| `agent` | `invoke_agent`, `create_agent` | `AGENT` | session root, `SubagentStop` |
-| `step` | `invoke_workflow`, `retrieval`, no operation name | `CHAIN`, `RERANKER`, `GUARDRAIL`, `EVALUATOR`, `PROMPT`, `DECISION` | `UserPromptSubmit` |
-| `other` | any other value | any other value | any other event |
+| `llm` | `chat`, `text_completion`, `generate_content`, `embeddings` | `LLM`, `EMBEDDING` | each model response in the session transcript, read at turn end |
+| `tool` | `execute_tool` | `TOOL`, `RETRIEVER` | `PreToolUse` with `PostToolUse` or `PostToolUseFailure`, paired by `tool_use_id` |
+| `agent` | `invoke_agent`, `create_agent` | `AGENT` | the session (root), each subagent (`agent_id`, ended by `SubagentStop`) |
+| `step` | `invoke_workflow`, `retrieval`, no operation name | `CHAIN`, `RERANKER`, `GUARDRAIL`, `EVALUATOR`, `PROMPT`, `DECISION` | a turn: `UserPromptSubmit` to `Stop` or `StopFailure` |
+| `other` | any other value | any other value | (not used) |
+
+The Claude Code mapping in full: [claude-code.md](claude-code.md).
 
 ### Attributes
 
