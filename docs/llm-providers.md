@@ -44,7 +44,7 @@ uv run pytest -m smoke -v -rs
 
 ## Prices
 
-`src/flight_recorder/pricing.yaml` holds USD per 1M tokens. A model missing from it has an unknown cost, reported as `None`, never as $0. Its `version` is the date the prices were last changed or checked; each priced span stores it, so a cost can be recomputed from that version of the file in git history.
+`src/flight_recorder/pricing.yaml` holds USD per 1M tokens. A model missing from it has an unknown cost, reported as `None`, never as $0. Its `version` is the date the prices were last changed; each priced span stores it, so a cost can be recomputed from that version of the file in git history.
 
 ### Keeping Claude prices current
 
@@ -55,9 +55,9 @@ uv run afr pricing check            # exit 0: rates match; 1: they differ; 2: pa
 uv run afr pricing check --write    # update pricing.yaml and set its version to today
 ```
 
-It only compares models already in `pricing.yaml`. A model or tier missing on one side is printed as a `note:` for a person to act on; nothing is added or removed automatically. OpenAI and Gemini prices are still checked by hand.
+It only compares models already in `pricing.yaml`. A priced model or tier missing on one side (renamed, retired, or a row whose wording changed) is printed as a `note:`; nothing is added or removed automatically, and the weekly workflow fails so a person looks. OpenAI and Gemini prices are still checked by hand.
 
-The [Pricing check](../.github/workflows/pricing.yml) workflow runs it every Monday and on demand (`workflow_dispatch`). When a rate differs, it opens or updates one pull request from the `pricing-update` branch, with the differences in its description. It never merges. If the page no longer parses, the run fails, so someone looks. Pull requests opened by the workflow's token don't start CI on their own: close and reopen the PR, or push to it, to run CI before merging.
+The [Pricing check](../.github/workflows/pricing.yml) workflow runs it every Monday and on demand (`workflow_dispatch`). When a rate differs, it opens or updates one pull request from the `pricing-update` branch, with the differences in its description. It never merges. Each run rebuilds that branch from the base, so fix a wrong rate in the PR by fixing the check, not by pushing to the branch. If the page no longer parses, the run fails, so someone looks. Pull requests opened by the workflow's token don't start CI on their own: close and reopen the PR, or push to it, to run CI before merging.
 
 The tables below record the rates when they were last checked by hand; `pricing.yaml` is the source of truth.
 

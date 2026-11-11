@@ -37,7 +37,7 @@ class ModelPrice(Rates):
 
 class PriceTable(BaseModel):
     version: str
-    """When the prices were last changed or checked; stored on each span it prices."""
+    """The date the prices were last changed; stored on each span it prices."""
     models: dict[str, ModelPrice]
 
 

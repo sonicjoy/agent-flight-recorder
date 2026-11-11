@@ -2,9 +2,9 @@
 # Sources and the date each price was checked: docs/llm-providers.md
 # A model missing from this file has an unknown cost (reported as None, never as $0).
 
-# The date these prices were last changed or checked. Each priced span stores it
-# (spans.pricing_version), so its cost can be recomputed from this file at that version.
-# `afr pricing check --write` sets it when it changes a Claude rate; set it by hand otherwise.
+# The date these prices were last changed. Each priced span stores it (spans.pricing_version),
+# so its cost can be recomputed from this file at that version. `afr pricing check --write`
+# sets it when it changes a Claude rate; set it by hand when you change a price.
 version: "2026-11-11"
 
 models:

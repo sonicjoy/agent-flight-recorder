@@ -217,19 +217,21 @@ def pricing_check(
     ] = None,
 ) -> None:
     """Compare Claude rates with Anthropic's pricing page. Exits 1 if they differ (unless
-    --write), 2 if the page can't be read or no longer parses."""
+    --write), 2 if the page can't be read or no longer parses. `note:` lines (a priced model
+    or tier missing on one side) need a person; the weekly workflow fails on them."""
     from flight_recorder import pricing_check as pc
 
     path = file or Path(pc.__file__).with_name("pricing.yaml")
     text = path.read_bytes().decode("utf-8")  # bytes: keep the file's line endings as they are
+    source = page or pc.MARKDOWN_URL
     try:
         markdown = page.read_text(encoding="utf-8") if page else pc.fetch_page()
         report = pc.check(text, markdown)
     except (OSError, pc.PageFormatError) as error:
-        typer.echo(f"error: {pc.MARKDOWN_URL if page is None else page}: {error}", err=True)
+        typer.echo(f"error: {source}: {error}", err=True)
         raise typer.Exit(code=2) from error
 
-    typer.echo(f"source: {pc.PRICING_URL if page is None else page}")
+    typer.echo(f"source: {source}")
     for note in report.notes:
         typer.echo(f"note: {note}")
     if not report.changes:
@@ -241,7 +243,12 @@ def pricing_check(
     if not write:
         raise typer.Exit(code=1)
     version = pc.today()
-    path.write_bytes(pc.apply(text, report.changes, version).encode("utf-8"))
+    try:
+        updated = pc.apply(text, report.changes, version)
+    except ValueError as error:  # pricing.yaml lacks a version or the mapping to add a rate to
+        typer.echo(f"error: {path}: {error}", err=True)
+        raise typer.Exit(code=2) from error
+    path.write_bytes(updated.encode("utf-8"))
     typer.echo(f"updated {path}, version {version}")
 
 

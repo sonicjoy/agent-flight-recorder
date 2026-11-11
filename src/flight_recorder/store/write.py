@@ -187,6 +187,7 @@ def record_run(
     for span in spans:
         counts = Counter()
         model = redactor.value(span.model, counts)
+        cost = _price(model, span)
         values = {
             "run_id": run_id,
             "external_id": span.external_id,
@@ -200,7 +201,7 @@ def record_run(
             "ended_at": span.ended_at,
             "input_tokens": span.input_tokens,
             "output_tokens": span.output_tokens,
-            "cost_usd": (cost := _price(model, span)),
+            "cost_usd": cost,
             "pricing_version": None if cost is None else price_table().version,
             "input": redactor.value(span.input, counts),
             "output": redactor.value(span.output, counts),

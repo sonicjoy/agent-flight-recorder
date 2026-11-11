@@ -83,7 +83,7 @@ One step in a run.
 | `name`, `model` | `model` is `<provider>:<model>` when known, the same format as `pricing.yaml` |
 | `status`, `error` | `error` holds the status description or exception message, redacted |
 | `input_tokens`, `output_tokens`, `cost_usd` | `cost_usd` is priced at ingest |
-| `pricing_version` | The `version` of `pricing.yaml` that priced `cost_usd` (the date its prices were checked). `NULL` if the span isn't priced, or was priced before migration 0004 |
+| `pricing_version` | The `version` of `pricing.yaml` that priced `cost_usd` (the date its prices last changed). `NULL` if the span isn't priced, or was priced before migration 0004 |
 | `input`, `output` | Redacted message or argument JSON |
 | `attributes` | Every attribute as sent, after redaction, except prompt and output content, which is in `input`/`output`. Events and links are in `attributes.events` and `attributes.links` |
 | `redactions` | `{"pattern": count}`. Never the values |

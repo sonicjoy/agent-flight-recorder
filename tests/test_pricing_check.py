@@ -190,3 +190,38 @@ def test_cli_explains_a_page_it_cannot_read(tmp_path: Path) -> None:
 
     assert result.exit_code == 2
     assert "no 'model pricing' section" in result.output
+
+
+def test_a_row_with_missing_cells_is_a_format_error_not_a_crash() -> None:
+    page = PAGE.replace("| $10 / MTok             |\n| Claude Sonnet 5 ", "\n| Claude Sonnet 5 ", 1)
+
+    with pytest.raises(pc.PageFormatError, match="cells"):
+        pc.parse_page(page)
+
+
+def test_an_escaped_pipe_in_a_name_is_not_a_column() -> None:
+    page = PAGE.replace("| Claude Opus 4.7  ", r"| Claude Opus 4.7 \| preview ", 1)
+
+    assert pc.check(PRICING, page).changes == []
+
+
+def test_a_null_rate_counts_as_missing() -> None:
+    text = PRICING.replace("    cache_read: 0.10\n", "    cache_read: null\n", 1)  # Sonnet 5.5
+
+    assert [str(c) for c in pc.check(text, PAGE).changes] == [
+        "anthropic:claude-sonnet-5-5.cache_read: (missing) -> 0.10"
+    ]
+
+
+def test_cli_write_without_a_version_is_an_error(tmp_path: Path) -> None:
+    pricing = tmp_path / "pricing.yaml"
+    pricing.write_text(re.sub(r"^version: .*\n", "", PRICING, flags=re.MULTILINE), "utf-8")
+    page = tmp_path / "page.md"
+    page.write_text(edit_row(PAGE, "Claude Opus 5.5", 1, "$4.50 / MTok"), encoding="utf-8")
+
+    result = runner.invoke(
+        app, ["pricing", "check", "--file", str(pricing), "--page", str(page), "--write"]
+    )
+
+    assert result.exit_code == 2
+    assert "no top-level version" in result.output

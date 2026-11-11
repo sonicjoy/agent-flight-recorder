@@ -61,10 +61,12 @@ class Report:
 
 # --- reading the page -------------------------------------------------------------------
 
+TIER = re.compile(r"\(for prompts (up to|over) ([\d,]+) tokens\)")
 
-def fetch_page(url: str = MARKDOWN_URL, timeout: float = 30) -> str:
-    request = urllib.request.Request(url, headers={"User-Agent": "agent-flight-recorder"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+
+def fetch_page() -> str:
+    request = urllib.request.Request(MARKDOWN_URL, headers={"User-Agent": "agent-flight-recorder"})
+    with urllib.request.urlopen(request, timeout=30) as response:
         body: bytes = response.read()
     return body.decode("utf-8")
 
@@ -83,7 +85,8 @@ def _tables(text: str) -> list[list[list[str]]]:
     current: list[list[str]] = []
     for line in [*text.splitlines(), ""]:
         if line.startswith("|"):
-            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            row = line.strip().removeprefix("|").removesuffix("|")
+            cells = [cell.strip() for cell in re.split(r"(?<!\\)\|", row)]  # "\|" is not a split
             if not all(re.fullmatch(r":?-+:?", cell) for cell in cells):
                 current.append(cells)
         elif current:
@@ -92,15 +95,26 @@ def _tables(text: str) -> list[list[list[str]]]:
     return tables
 
 
-def _table(sections: dict[str, str], section: str, columns: dict[str, str]) -> list[list[str]]:
-    """The first table in a section whose header has every wanted column."""
+def _rows(
+    sections: dict[str, str], section: str, columns: dict[str, str]
+) -> list[tuple[str, dict[str, float]]]:
+    """(model name, rates) from the first table in a section whose header has every column."""
     if section not in sections:
         raise PageFormatError(f"no {section!r} section on the page")
     for table in _tables(sections[section]):
         header = [cell.lower() for cell in table[0]]
         if header[0] == "model" and set(columns) <= set(header):
-            return table
-    raise PageFormatError(f"no table with columns {sorted(columns)} in {section!r}")
+            break
+    else:
+        raise PageFormatError(f"no table with columns {sorted(columns)} in {section!r}")
+
+    index = {field: header.index(column) for column, field in columns.items()}
+    rows: list[tuple[str, dict[str, float]]] = []
+    for cells in table[1:]:
+        if len(cells) != len(header):
+            raise PageFormatError(f"row with {len(cells)} cells, not {len(header)}: {cells[0]!r}")
+        rows.append((cells[0], {field: _rate(cells[i]) for field, i in index.items()}))
+    return rows
 
 
 def _rate(cell: str) -> float:
@@ -115,24 +129,11 @@ def _spec(name: str) -> str:
     return PROVIDER + re.sub(r"[\s.]+", "-", name.strip().lower())
 
 
-TIER = re.compile(r"\(for prompts (up to|over) ([\d,]+) tokens\)")
-
-
-def _rows(table: list[list[str]], columns: dict[str, str]) -> list[tuple[str, dict[str, float]]]:
-    header = [cell.lower() for cell in table[0]]
-    index = {field: header.index(column) for column, field in columns.items()}
-    rows: list[tuple[str, dict[str, float]]] = []
-    for cells in table[1:]:
-        rates = {field: _rate(cells[i]) for field, i in index.items()}
-        rows.append((cells[0], rates))
-    return rows
-
-
 def parse_page(markdown: str) -> dict[str, dict[str, Any]]:
     """Rates per model spec, in pricing.yaml's shape (long_context and fast as nested maps)."""
     sections = _sections(markdown)
     models: dict[str, dict[str, Any]] = {}
-    for name, rates in _rows(_table(sections, "model pricing", MODEL_COLUMNS), MODEL_COLUMNS):
+    for name, rates in _rows(sections, "model pricing", MODEL_COLUMNS):
         name = re.sub(r"\(\[.*?\]\(.*?\)\)", "", name)  # "([limited availability](...))"
         tier = TIER.search(name)
         spec = _spec(TIER.sub("", name))
@@ -143,7 +144,7 @@ def parse_page(markdown: str) -> dict[str, dict[str, Any]]:
             threshold = int(tier.group(2).replace(",", ""))
             entry["long_context"] = {"above_input_tokens": threshold, **rates}
 
-    for name, rates in _rows(_table(sections, "fast mode pricing", FAST_COLUMNS), FAST_COLUMNS):
+    for name, rates in _rows(sections, "fast mode pricing", FAST_COLUMNS):
         for one in name.split(" / "):  # "Claude Opus 5 / Claude Opus 4.8"
             entry = models.setdefault(_spec(one), {})
             entry["fast"] = {**rates, **_fast_cache_rates(entry, rates["input"])}
@@ -166,6 +167,12 @@ def _fast_cache_rates(base: dict[str, Any], fast_input: float) -> dict[str, floa
 
 # --- comparing --------------------------------------------------------------------------
 
+TIER_FIELDS = {"long_context": (*RATE_FIELDS, "above_input_tokens"), "fast": RATE_FIELDS}
+
+
+def check(text: str, markdown: str) -> Report:
+    return compare(yaml.safe_load(text), parse_page(markdown))
+
 
 def compare(table: dict[str, Any], page: dict[str, dict[str, Any]]) -> Report:
     """Differences between pricing.yaml (as loaded) and the page, for Claude models only."""
@@ -178,14 +185,10 @@ def compare(table: dict[str, Any], page: dict[str, dict[str, Any]]) -> Report:
         if theirs is None:
             notes.append(f"{spec}: not on the pricing page (renamed or retired?)")
             continue
-        _compare_rates((spec,), ours, theirs, changes)
-        for tier in ("long_context", "fast"):
+        _compare((spec,), RATE_FIELDS, ours, theirs, changes)
+        for tier, fields in TIER_FIELDS.items():
             if tier in ours and tier in theirs:
-                _compare_rates((spec, tier), ours[tier], theirs[tier], changes)
-                if tier == "long_context":
-                    _compare_one(
-                        (spec, tier, "above_input_tokens"), ours[tier], theirs[tier], changes
-                    )
+                _compare((spec, tier), fields, ours[tier], theirs[tier], changes)
             elif tier in ours:
                 notes.append(f"{spec}: has {tier} here, but the page shows none")
             elif tier in theirs:
@@ -193,23 +196,17 @@ def compare(table: dict[str, Any], page: dict[str, dict[str, Any]]) -> Report:
     return Report(changes, notes)
 
 
-def _compare_rates(
-    path: FieldPath, ours: dict[str, Any], theirs: dict[str, Any], changes: list[Change]
+def _compare(
+    path: FieldPath,
+    fields: tuple[str, ...],
+    ours: dict[str, Any],
+    theirs: dict[str, Any],
+    changes: list[Change],
 ) -> None:
-    for field in RATE_FIELDS:
-        _compare_one((*path, field), ours, theirs, changes)
-
-
-def _compare_one(
-    path: FieldPath, ours: dict[str, Any], theirs: dict[str, Any], changes: list[Change]
-) -> None:
-    field = path[-1]
-    if field in theirs and (field not in ours or not _same(ours[field], theirs[field])):
-        changes.append(Change(path, ours.get(field), theirs[field]))
-
-
-def _same(a: float, b: float) -> bool:
-    return abs(a - b) < 1e-9
+    for field in fields:
+        old = ours.get(field)  # a missing field and `field: null` are both missing
+        if field in theirs and (old is None or abs(old - theirs[field]) > 1e-9):
+            changes.append(Change((*path, field), old, theirs[field]))
 
 
 # --- writing ----------------------------------------------------------------------------
@@ -277,7 +274,3 @@ def _fmt(value: float | int) -> str:
 
 def today() -> str:
     return datetime.now(UTC).date().isoformat()
-
-
-def check(text: str, markdown: str) -> Report:
-    return compare(yaml.safe_load(text), parse_page(markdown))
