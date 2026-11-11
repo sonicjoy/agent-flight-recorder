@@ -424,3 +424,316 @@ def test_a_response_moves_to_its_turn_even_when_session_end_came_first(
 
     spans = stored(store)[1]
     assert spans["llm:msg_1"].parent_id == spans["turn:p1"].id
+
+
+def test_a_response_runs_from_its_request_and_says_what_it_did(
+    client: TestClient, store: Engine
+) -> None:
+    said = {"text": "Let me look.", "tool_calls": [{"id": "t1", "name": "Glob", "input": {}}]}
+    item = usage("msg_1", input_tokens=1, output_tokens=1) | {
+        "requested_at": "2026-11-11T09:00:00Z",
+        "started_at": "2026-11-11T09:00:02Z",
+        "timestamp": "2026-11-11T09:00:03Z",
+        "stop_reason": "tool_use",
+        "output": said,
+    }
+    client.post(URL, json={"events": [ev("Stop", 4, prompt_id="p1", usage=[item])]})
+
+    llm = stored(store)[1]["llm:msg_1"]
+    assert llm.ended_at is not None
+    assert (llm.ended_at - llm.started_at).total_seconds() == 3  # request sent to last block
+    assert llm.output == said
+    assert llm.attributes["stop_reason"] == "tool_use"
+    assert llm.attributes["first_output_at"] == "2026-11-11T09:00:02+00:00"
+
+
+def test_the_session_span_reads_as_a_summary(client: TestClient, store: Engine) -> None:
+    client.post(URL, json={"events": session_events()})
+    client.post(
+        URL,
+        json={
+            "events": [
+                ev("UserPromptSubmit", 11, prompt_id="p2", prompt="and the tests?"),
+                ev("Stop", 12, prompt_id="p2", last_assistant_message="There are 3 tests."),
+            ]
+        },
+    )
+
+    root = stored(store)[1]["session"]
+    assert root.input == "Count the files in src\nthen stop"  # the first prompt
+    assert root.output == "There are 3 tests."  # the latest reply
+
+
+def test_a_subagent_without_a_type_is_named_by_its_id_and_keeps_a_known_name(
+    client: TestClient, store: Engine
+) -> None:
+    client.post(URL, json={"events": [ev("SubagentStop", 2, agent_id="abcdef1234567")]})
+    assert stored(store)[1]["agent:abcdef1234567"].name == "subagent abcdef12"
+
+    client.post(URL, json={"events": [ev("SubagentStart", 1, agent_id="b1", agent_type="Plan")]})
+    client.post(URL, json={"events": [ev("SubagentStop", 2, agent_id="b1")]})
+    assert stored(store)[1]["agent:b1"].name == "Plan"
+
+
+def test_a_span_whose_parent_never_arrived_gets_a_placeholder(
+    client: TestClient, store: Engine
+) -> None:
+    """The turn's UserPromptSubmit was lost: the tool still hangs off the session."""
+    pre = ev("PreToolUse", 2, prompt_id="lost", tool_name="Read", tool_use_id="t1", tool_input={})
+    inside = ev(
+        "PreToolUse", 3, prompt_id="lost", agent_id="a9", tool_name="Grep", tool_use_id="t2",
+        tool_input={},
+    )  # fmt: skip
+    client.post(URL, json={"events": [pre, inside]})
+
+    spans = stored(store)[1]
+    turn, agent = spans["turn:lost"], spans["agent:a9"]
+    assert (turn.kind, turn.parent_id) == ("step", spans["session"].id)
+    assert spans["tool:t1"].parent_id == turn.id
+    assert (agent.name, spans["tool:t2"].parent_id) == ("subagent a9", agent.id)
+
+    client.post(URL, json={"events": [ev("UserPromptSubmit", 1, prompt_id="lost", prompt="hi")]})
+    turn = stored(store)[1]["turn:lost"]
+    assert turn.input == "hi" and turn.started_at.timestamp() == T0 + 1  # filled in later
+
+
+def test_waiting_for_permission_is_a_span_under_its_tool(client: TestClient, store: Engine) -> None:
+    tool = {"prompt_id": "p1", "tool_name": "Bash", "tool_input": {"command": "rm -r build"}}
+    client.post(
+        URL,
+        json={
+            "events": [
+                ev("PreToolUse", 1, tool_use_id="t1", **tool),
+                ev("PermissionRequest", 2, **tool),  # no tool_use_id
+                ev("PostToolUse", 10, tool_use_id="t1", duration_ms=1_500, **tool),
+            ]
+        },
+    )
+
+    spans = stored(store)[1]
+    [wait] = waits(spans)
+    assert (wait.name, wait.parent_id, wait.status) == (
+        "permission: Bash",
+        spans["tool:t1"].id,
+        "ok",
+    )
+    assert wait.ended_at is not None
+    assert (wait.ended_at - wait.started_at).total_seconds() == 6.5  # until the tool began
+
+
+BASH = {"prompt_id": "p1", "tool_name": "Bash", "tool_input": {"command": "rm -r build"}}
+
+
+def waits(spans: dict[str, Span]) -> list[Span]:
+    return sorted(
+        (s for s in spans.values() if s.external_id.startswith("permission:")),
+        key=lambda s: s.started_at,
+    )
+
+
+def seconds(span: Span) -> float | None:
+    return (span.ended_at - span.started_at).total_seconds() if span.ended_at else None
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        ["PreToolUse", "PermissionRequest", "PostToolUse"],
+        ["PermissionRequest", "PreToolUse", "PostToolUse"],  # the request arrived first
+        ["PreToolUse", "PostToolUse", "PermissionRequest"],  # the tool's end arrived first
+        ["PostToolUse", "PermissionRequest", "PreToolUse"],
+    ],
+)
+def test_a_permission_wait_ends_under_its_tool_whatever_the_arrival_order(
+    client: TestClient, store: Engine, order: list[str]
+) -> None:
+    events = {
+        "PreToolUse": ev("PreToolUse", 1, tool_use_id="t1", **BASH),
+        "PermissionRequest": ev("PermissionRequest", 2, **BASH),
+        "PostToolUse": ev("PostToolUse", 10, tool_use_id="t1", duration_ms=1_500, **BASH),
+    }
+    for name in order:
+        assert client.post(URL, json={"events": [events[name]]}).json()["rejected"] == 0
+
+    for _ in range(2):  # as it arrived, then after the request is re-sent
+        spans = stored(store)[1]
+        [wait] = waits(spans)  # one wait, not a duplicate
+        assert (wait.parent_id, wait.status, seconds(wait)) == (spans["tool:t1"].id, "ok", 6.5)
+        client.post(URL, json={"events": [events["PermissionRequest"]]})
+
+
+def test_a_fast_approval_never_ends_before_it_began(client: TestClient, store: Engine) -> None:
+    """Each hook stamps its own time, a little late: the tool's run time can exceed the gap."""
+    response = client.post(
+        URL,
+        json={
+            "events": [
+                ev("PreToolUse", 1, tool_use_id="t1", **BASH),
+                ev("PermissionRequest", 2, **BASH),
+                ev("PostToolUse", 3, tool_use_id="t1", duration_ms=1_500, **BASH),
+            ]
+        },
+    )
+
+    assert response.json()["rejected"] == 0
+    spans = stored(store)[1]
+    assert spans["tool:t1"].ended_at is not None
+    assert seconds(waits(spans)[0]) == 0
+
+
+def test_the_same_command_twice_gets_a_wait_each(client: TestClient, store: Engine) -> None:
+    events = [
+        ev("PreToolUse", 1, tool_use_id="t1", **BASH),
+        ev("PermissionRequest", 2, **BASH),
+        ev("PostToolUse", 3, tool_use_id="t1", **BASH),
+        ev("PermissionRequest", 12, **BASH),  # before the second call's start arrives
+        ev("PreToolUse", 11, tool_use_id="t2", **BASH),
+        ev("PostToolUse", 15, tool_use_id="t2", **BASH),
+    ]
+    for event in events:  # one at a time, in this order
+        client.post(URL, json={"events": [event]})
+
+    spans = stored(store)[1]
+    first, second = waits(spans)
+    assert (first.parent_id, seconds(first)) == (spans["tool:t1"].id, 1)
+    assert (second.parent_id, seconds(second)) == (spans["tool:t2"].id, 3)
+
+
+def test_an_auto_mode_denial_closes_the_wait(client: TestClient, store: Engine) -> None:
+    client.post(
+        URL,
+        json={
+            "events": [
+                ev("PreToolUse", 1, tool_use_id="t1", **BASH),
+                ev("PermissionRequest", 2, **BASH),
+                ev("PermissionDenied", 4, tool_use_id="t1", reason="outside the project", **BASH),
+            ]
+        },
+    )
+
+    [wait] = waits(stored(store)[1])
+    assert (wait.status, wait.output, seconds(wait)) == ("error", "denied: outside the project", 2)
+
+
+def test_a_response_read_in_two_parts_keeps_both(client: TestClient, store: Engine) -> None:
+    """A queued prompt: one Stop read the first blocks, the next read the rest."""
+    head = usage("msg_1", input_tokens=5, output_tokens=1) | {
+        "requested_at": "2026-11-11T09:00:00Z",
+        "started_at": "2026-11-11T09:00:01Z",
+        "timestamp": "2026-11-11T09:00:02Z",
+        "output": {"thinking": "Look first.", "tool_calls": [{"id": "t1", "name": "Glob"}]},
+    }
+    tail = usage("msg_1", input_tokens=5, output_tokens=9) | {
+        "started_at": "2026-11-11T09:00:03Z",
+        "timestamp": "2026-11-11T09:00:04Z",
+        "output": {"text": "Found them.", "tool_calls": [{"id": "t2", "name": "Read"}]},
+    }
+    client.post(URL, json={"events": [ev("Stop", 3, prompt_id="p1", usage=[head])]})
+    client.post(URL, json={"events": [ev("Stop", 5, prompt_id="p2", usage=[tail])]})
+    client.post(URL, json={"events": [ev("Stop", 5, prompt_id="p2", usage=[tail])]})  # re-sent
+
+    llm = stored(store)[1]["llm:msg_1"]
+    assert seconds(llm) == 4  # request sent to the last block
+    assert llm.attributes["first_output_at"] == "2026-11-11T09:00:01+00:00"
+    assert llm.output == {
+        "thinking": "Look first.",
+        "text": "Found them.",
+        "tool_calls": [{"id": "t1", "name": "Glob"}, {"id": "t2", "name": "Read"}],
+    }
+    assert llm.output_tokens == 9  # the last line's usage
+
+
+def test_a_late_old_reply_does_not_replace_the_latest(client: TestClient, store: Engine) -> None:
+    client.post(
+        URL,
+        json={
+            "events": [
+                ev("UserPromptSubmit", 5, prompt_id="p2", prompt="second"),
+                ev("Stop", 6, prompt_id="p2", last_assistant_message="second reply"),
+            ]
+        },
+    )
+    client.post(
+        URL,
+        json={
+            "events": [
+                ev("UserPromptSubmit", 1, prompt_id="p1", prompt="first"),  # arrived late
+                ev("Stop", 2, prompt_id="p1", last_assistant_message="first reply"),
+            ]
+        },
+    )
+
+    root = stored(store)[1]["session"]
+    assert (root.input, root.output) == ("first", "second reply")
+
+
+def test_a_compaction_whose_end_arrived_first_is_one_span(
+    client: TestClient, store: Engine
+) -> None:
+    post = ev("PostCompact", 9, trigger="auto", compact_summary="summary")
+    pre = ev("PreCompact", 5, trigger="auto")
+    for event in (post, pre, pre, post):  # out of order, each re-sent
+        client.post(URL, json={"events": [event]})
+
+    [compaction] = [s for s in stored(store)[1].values() if s.external_id.startswith("compact:")]
+    assert (seconds(compaction), compaction.output) == (4, "summary")
+
+
+def test_placeholders_nest_and_start_with_their_earliest_child(
+    client: TestClient, store: Engine
+) -> None:
+    def grep(at: float, tool_use_id: str) -> dict[str, Any]:
+        return ev("PreToolUse", at, prompt_id="p9", agent_id="a9", tool_name="Grep",
+                  tool_use_id=tool_use_id, tool_input={})  # fmt: skip
+
+    client.post(URL, json={"events": [grep(5, "t1")]})
+    client.post(URL, json={"events": [grep(3, "t2")]})  # an earlier child, arriving later
+
+    spans = stored(store)[1]
+    agent, turn = spans["agent:a9"], spans["turn:p9"]
+    assert agent.parent_id == turn.id  # the subagent sits in its turn, not the session
+    assert agent.started_at.timestamp() == turn.started_at.timestamp() == T0 + 3
+
+
+def test_an_auto_mode_denial_fails_the_tool(client: TestClient, store: Engine) -> None:
+    tool = {"prompt_id": "p1", "tool_name": "Bash", "tool_use_id": "t1", "tool_input": {}}
+    client.post(
+        URL,
+        json={
+            "events": [
+                ev("PreToolUse", 1, **tool),
+                ev("PermissionDenied", 2, reason="touches files outside the project", **tool),
+            ]
+        },
+    )
+
+    denied = stored(store)[1]["tool:t1"]
+    assert (denied.status, denied.error) == ("error", "denied: touches files outside the project")
+
+
+def test_compaction_notifications_and_commands_are_part_of_the_story(
+    client: TestClient, store: Engine
+) -> None:
+    events = [
+        ev("UserPromptSubmit", 1, prompt_id="p1", prompt="Review the diff"),
+        ev("UserPromptExpansion", 1.5, prompt_id="p1", command_name="review",
+           command_args="--quick", prompt="Review the diff", command_source="project"),
+        ev("Notification", 3, prompt_id="p1", notification_type="permission_prompt",
+           message="Claude needs your permission to use Bash"),
+        ev("PreCompact", 5, trigger="auto", custom_instructions=None),
+        ev("PostCompact", 9, trigger="auto", compact_summary="We reviewed the diff."),
+    ]  # fmt: skip
+    client.post(URL, json={"events": events})
+    client.post(URL, json={"events": events[-1:]})  # PostCompact re-sent: same span
+
+    spans = stored(store)[1]
+    turn, root = spans["turn:p1"], spans["session"]
+    by_name = {s.name: s for s in spans.values()}
+    command, note = by_name["command: /review"], by_name["notification: permission_prompt"]
+    assert (command.parent_id, command.input) == (turn.id, "--quick")
+    assert (note.parent_id, note.output) == (turn.id, "Claude needs your permission to use Bash")
+    [compaction] = [s for s in spans.values() if s.external_id.startswith("compact:")]
+    assert (compaction.name, compaction.parent_id) == ("compaction (auto)", root.id)
+    assert compaction.output == "We reviewed the diff."
+    assert compaction.ended_at is not None
+    assert (compaction.ended_at - compaction.started_at).total_seconds() == 4

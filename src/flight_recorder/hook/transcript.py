@@ -8,8 +8,14 @@ What it relies on, checked against Claude Code's transcripts on 11 Nov 2026:
 - JSON Lines; model responses have "type": "assistant" and a "message" with "id", "model"
   and "usage" (input_tokens, output_tokens, cache_read_input_tokens, and cache_creation
   with ephemeral_5m_input_tokens / ephemeral_1h_input_tokens, or cache_creation_input_tokens).
-- One response can span several lines (one per content block) that repeat its usage, so
-  responses are keyed by message id and the last line wins.
+- One response can span several lines (one per content block: "text", "thinking" or
+  "tool_use") that repeat its usage, so responses are keyed by message id, their blocks are
+  joined, and the last line's usage and "stop_reason" win.
+- Before each model request Claude Code writes an "api-request" line with an "id" and a
+  "timestamp"; the response's lines point back to it with "requestRef". That's when the
+  request was sent, so the span starts there. Recent request times are kept with the read
+  position, since a request line can be read a turn before its response (a queued prompt).
+  Without one, the span starts at the response's first line.
 - Subagent turns in the main transcript are marked "isSidechain"; they're read from the
   subagent's own transcript instead.
 - Messages Claude Code writes itself, such as a login error, have model "<synthetic>" and
@@ -25,11 +31,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 MAX_READ_BYTES = 50 * 1024 * 1024  # a turn that wrote more than this is read in later turns
+KEPT_REQUESTS = 50  # request times kept between reads, newest
 SYNTHETIC = "<synthetic>"  # the "model" of messages Claude Code writes itself, such as errors
 
 
@@ -40,6 +47,37 @@ def _state_file(state_dir: Path, transcript: Path) -> Path:
 
 def _int(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _blocks(content: Any) -> dict[str, Any]:
+    """What a response said: its text, any thinking, and the tools it called."""
+    said: dict[str, Any] = {"text": "", "thinking": "", "tool_calls": []}
+    blocks = cast("list[Any]", content) if isinstance(content, list) else []
+    for raw in blocks:
+        if not isinstance(raw, dict):
+            continue
+        block = cast("dict[str, Any]", raw)
+        kind, text, thought = block.get("type"), block.get("text"), block.get("thinking")
+        if kind == "text" and isinstance(text, str):
+            said["text"] += text
+        elif kind == "thinking" and isinstance(thought, str):
+            said["thinking"] += thought
+        elif kind == "tool_use":
+            said["tool_calls"].append({k: block.get(k) for k in ("id", "name", "input")})
+    return said
+
+
+def _joined(earlier: dict[str, Any], later: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "text": earlier["text"] + later["text"],
+        "thinking": earlier["thinking"] + later["thinking"],
+        "tool_calls": earlier["tool_calls"] + later["tool_calls"],
+    }
+
+
+def _said(output: dict[str, Any]) -> dict[str, Any]:
+    """Only the parts a response has: no empty text or empty tool list."""
+    return {k: v for k, v in output.items() if v}
 
 
 def response_usage(line: dict[str, Any]) -> dict[str, Any] | None:
@@ -61,11 +99,15 @@ def response_usage(line: dict[str, Any]) -> dict[str, Any] | None:
     model = message.get("model")  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
     if model == SYNTHETIC:  # Claude Code's own message (an error, say): no model call happened
         return None
+    stop_reason = message.get("stop_reason")  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
     return {
         "message_id": message_id,
         "model": model if isinstance(model, str) else None,
         "started_at": line.get("timestamp"),  # the first line's; the response may span several
         "timestamp": line.get("timestamp"),  # the last line's: when the response finished
+        "request_ref": line.get("requestRef"),
+        "stop_reason": stop_reason if isinstance(stop_reason, str) else None,
+        "output": _blocks(message.get("content")),  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
         # input_tokens here means all input, as in OTel: Anthropic reports uncached input alone.
         "input_tokens": _int(usage.get("input_tokens")) + read + write_5m + write_1h,  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
         "output_tokens": _int(usage.get("output_tokens")),  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
@@ -83,11 +125,13 @@ class TranscriptRead:
     usage: list[dict[str, Any]]
     state_file: Path | None = None
     offset: int = 0
+    requests: dict[str, Any] = field(default_factory=dict[str, Any])
 
     def commit(self) -> None:
         if self.state_file is not None:
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            self.state_file.write_text(json.dumps({"offset": self.offset}), encoding="utf-8")
+            state = {"offset": self.offset, "requests": self.requests}
+            self.state_file.write_text(json.dumps(state), encoding="utf-8")
 
 
 def read_new(
@@ -98,29 +142,44 @@ def read_new(
         return TranscriptRead([])
     state = _state_file(state_dir, transcript)
     try:
-        offset = int(json.loads(state.read_text(encoding="utf-8"))["offset"])
+        saved = json.loads(state.read_text(encoding="utf-8"))
+        offset = int(saved["offset"])
     except (OSError, ValueError, KeyError, TypeError):
-        offset = 0
+        saved, offset = {}, 0
     if offset > transcript.stat().st_size:  # rewritten or replaced: start again
-        offset = 0
+        saved, offset = {}, 0
+    kept: Any = cast("dict[str, Any]", saved).get("requests") if isinstance(saved, dict) else None
     with transcript.open("rb") as file:
         file.seek(offset)
         chunk = file.read(MAX_READ_BYTES)
     complete = chunk[: chunk.rfind(b"\n") + 1]  # a half-written last line waits for next time
     responses: dict[str, dict[str, Any]] = {}
+    # api-request id -> when it was sent, including requests read in earlier turns
+    requests: dict[str, Any] = dict(cast("dict[str, Any]", kept)) if isinstance(kept, dict) else {}
     for raw in complete.splitlines():
         try:
             line = json.loads(raw)
         except ValueError:
             continue
-        if not isinstance(line, dict) or (line.get("isSidechain") and not include_sidechain):  # pyright: ignore[reportUnknownMemberType]
+        if not isinstance(line, dict):
             continue
-        if (usage := response_usage(line)) is not None:  # pyright: ignore[reportUnknownArgumentType]
+        line = cast("dict[str, Any]", line)
+        if line.get("type") == "api-request" and isinstance(line.get("id"), str):
+            requests[line["id"]] = line.get("timestamp")
+            continue
+        if line.get("isSidechain") and not include_sidechain:
+            continue
+        if (usage := response_usage(line)) is not None:
             earlier = responses.get(usage["message_id"])
             if earlier is not None:  # a later line of the same response: keep when it began
                 usage["started_at"] = earlier["started_at"]
+                usage["output"] = _joined(earlier["output"], usage["output"])
             responses[usage["message_id"]] = usage
-    return TranscriptRead(list(responses.values()), state, offset + len(complete))
+    for usage in responses.values():
+        usage["requested_at"] = requests.get(str(usage.pop("request_ref")))
+        usage["output"] = _said(usage["output"])
+    recent = dict(list(requests.items())[-KEPT_REQUESTS:])
+    return TranscriptRead(list(responses.values()), state, offset + len(complete), recent)
 
 
 def new_usage(

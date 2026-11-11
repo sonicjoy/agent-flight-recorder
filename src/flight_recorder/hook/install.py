@@ -24,6 +24,12 @@ ASYNC_EVENTS = (
     "PreToolUse",
     "PostToolUse",
     "PostToolUseFailure",
+    "PermissionRequest",
+    "PermissionDenied",
+    "UserPromptExpansion",
+    "Notification",
+    "PreCompact",
+    "PostCompact",
     "SubagentStart",
     "SubagentStop",
     "Stop",
@@ -31,7 +37,13 @@ ASYNC_EVENTS = (
 )
 SYNC_EVENTS = ("SessionEnd",)
 SYNC_TIMEOUT_SECONDS = 5
-TOOL_EVENTS = {"PreToolUse", "PostToolUse", "PostToolUseFailure"}
+TOOL_EVENTS = {
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "PermissionRequest",
+    "PermissionDenied",
+}
 
 
 class InstallError(ValueError):

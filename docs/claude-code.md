@@ -22,7 +22,7 @@ It refuses to install in your home folder, which would amount to user-level sett
 
 | | |
 |---|---|
-| Async | Every event except SessionEnd runs as an `async` hook, so Claude Code doesn't wait for it. SessionEnd runs once, at exit: it sends only its own event (no backlog), with a 0.5 s send timeout |
+| Async | Every event except SessionEnd runs as an `async` hook, so Claude Code doesn't wait for it. SessionEnd runs once, at exit: it sends only its own event (no backlog), with a 0.5 s send timeout, well inside the 1.5 s Claude Code allows SessionEnd hooks. It stays synchronous because under `claude -p` Claude Code kills async hooks still running at exit, and the run would then never be closed |
 | Fails open | The hook always exits 0, so it never blocks anything. It prints nothing; an async hook's output would reach the model. Errors go to `~/.afr/hook.log`, without content |
 | Recorder down | Events are kept in `~/.afr/spool.jsonl` and sent, oldest first, by the next async event that gets through. A backlog goes in chunks of at most 50 events and 4 MB, so each chunk finishes within the timeout and under the recorder's 10 MB request limit |
 | Refused | If the recorder refuses the events themselves (400, 413 or 422), they're dropped and logged, not retried for ever. Anything else, such as a 404 from an older recorder, a 421 from a host name in `AFR_HOOK_URL`, a 5xx or no answer, keeps them. One hook sends at most 10 chunks; a bigger backlog carries on with the next hook, so progress is never lost |
@@ -34,13 +34,26 @@ It refuses to install in your home folder, which would amount to user-level sett
 ## What is recorded
 
 ```
-Claude Code session (agent)            SessionStart ... SessionEnd
+Claude Code session (agent)            SessionStart ... SessionEnd; your first prompt, the last reply
   turn (step)                          your prompt in, Claude's last reply out
-    Read / Bash / Edit ... (tool)      input and output; failures are errors
-    claude-opus-5-5 (llm)              one per model response: tokens, cache, cost
+    command: /review (other)           a slash command, with its arguments and the prompt it became
+    claude-opus-5-5 (llm)              one per model response, from request sent to last block:
+                                       what it said, its thinking, the tools it called, tokens, cost
+    Read / Bash / Edit ... (tool)      input and output; failures and denials are errors
+      permission: Bash (step)          waiting for your approval, until the tool started
     Explore (agent)                    a subagent: SubagentStart ... SubagentStop
       Grep ... (tool), ... (llm)
+    notification: idle_prompt (other)  what Claude Code told you
+  compaction (auto) (step)             the context was compacted: instructions in, summary out
 ```
+
+The trace is meant to tell the whole story of a session: what you asked, what Claude said and decided at each step, what ran and for how long, where it waited for you, and when its context was compacted.
+
+- **Model responses** come from the transcript, which records when each request was sent (`api-request` lines, linked by `requestRef`), so an llm span covers the model's whole time, not just its streaming. `first_output_at` and `stop_reason` are in its attributes.
+- **Waiting for permission:** a PermissionRequest carries no tool_use_id, so it's matched to the latest call of that tool, with the same input, that was still running at the request. If the request arrives before the tool's start, it waits under the turn, and the tool's end moves it under the tool. The wait ends when the tool started: PostToolUse's time minus its `duration_ms`, but never before the wait began. An auto-mode denial (PermissionDenied) marks the tool and its wait `error`.
+- **Read twice or in parts:** a response split across two turn-end reads keeps its request time, its earliest output and everything it said. Request times are kept between reads, since a queued prompt's request line can be read a turn early. The session keeps its earliest prompt and latest reply, however late events arrive.
+- **No loose ends:** if a span's turn or subagent hasn't arrived (its event was lost or is late), a placeholder parent is created under the session, and the real event fills it in later. A subagent with no `agent_type` is named `subagent <first 8 characters of its id>`.
+- **Compaction:** PostCompact closes the latest compaction still open.
 
 | Run field | From |
 |---|---|
