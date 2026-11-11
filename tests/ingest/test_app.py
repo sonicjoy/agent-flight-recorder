@@ -41,7 +41,7 @@ def store(make_database: Callable[[], str]) -> Generator[Engine]:
 
 @pytest.fixture
 def client(store: Engine) -> TestClient:
-    return TestClient(create_app(store, REDACTOR))
+    return TestClient(create_app(store, REDACTOR), base_url="http://127.0.0.1:4318")
 
 
 def post(client: TestClient, body: bytes, kind: str = PROTOBUF, **headers: str) -> Any:
@@ -224,7 +224,10 @@ def test_an_unreachable_database_is_a_503_so_the_exporter_retries() -> None:
         "postgresql+psycopg://afr@127.0.0.1:1/afr", connect_args={"connect_timeout": 2}
     )  # nothing listens on port 1
     try:
-        response = post(TestClient(create_app(engine, REDACTOR)), protobuf(record(triage_run())))
+        response = post(
+            TestClient(create_app(engine, REDACTOR), base_url="http://127.0.0.1:4318"),
+            protobuf(record(triage_run())),
+        )
     finally:
         engine.dispose()
 

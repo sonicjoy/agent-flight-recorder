@@ -7,12 +7,14 @@ response's partial_success; the others are still stored. Error messages never in
 the rejected data, which may be sensitive. If the database can't be reached, the request
 gets a 503 so the exporter sends it again.
 
-No authentication yet (#25): serve on 127.0.0.1 only.
+No authentication yet (#25): serve on 127.0.0.1 only. Requests must also name a loopback
+host, so a web page can't reach the API through DNS rebinding.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from typing import Annotated, Any, cast
 
 from fastapi import FastAPI, Header, Request, Response
@@ -117,8 +119,28 @@ def _ingest_claude_code(engine: Engine, redactor: Redactor, body: bytes) -> Resp
     return JSONResponse({"accepted": accepted, "rejected": rejected, "errors": reasons[:20]})
 
 
-def create_app(engine: Engine, redactor: Redactor) -> FastAPI:
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]"})
+
+
+def _host(header: str) -> str:
+    """The host part of a Host header, without the port ("[::1]:4318" -> "[::1]")."""
+    return header.rsplit(":", 1)[0] if header.count(":") == 1 or "]:" in header else header
+
+
+def create_app(
+    engine: Engine, redactor: Redactor, *, allowed_hosts: frozenset[str] = LOOPBACK_HOSTS
+) -> FastAPI:
     app = FastAPI(title="Agent Flight Recorder ingest", docs_url=None, redoc_url=None)
+
+    @app.middleware("http")
+    async def loopback_only(  # pyright: ignore[reportUnusedFunction]
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        if _host(request.headers.get("host", "").lower()) not in allowed_hosts:
+            return JSONResponse(
+                {"error": "requests must be addressed to a loopback host"}, status_code=421
+            )
+        return await call_next(request)
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]

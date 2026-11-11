@@ -26,7 +26,7 @@ def hooks_in(project: Path) -> dict[str, list[dict[str, object]]]:
     return json.loads(settings_file(project).read_text(encoding="utf-8"))["hooks"]
 
 
-def test_install_adds_every_event_async_except_turn_ends(tmp_path: Path) -> None:
+def test_install_adds_every_event_async_except_session_end(tmp_path: Path) -> None:
     path = install(tmp_path)
 
     assert path == tmp_path / ".claude" / "settings.local.json"
@@ -38,6 +38,7 @@ def test_install_adds_every_event_async_except_turn_ends(tmp_path: Path) -> None
         assert handler.get("async") is (True if event in ASYNC_EVENTS else None)  # pyright: ignore[reportAttributeAccessIssue]
     assert hooks["PreToolUse"][0]["matcher"] == "*"
     assert "matcher" not in hooks["Stop"][0]
+    assert hooks["SessionEnd"][0]["hooks"][0]["timeout"] == 5  # pyright: ignore[reportIndexIssue, reportArgumentType, reportCallIssue]
 
 
 def test_other_settings_and_hooks_are_kept_and_reinstall_does_not_duplicate(tmp_path: Path) -> None:
@@ -87,13 +88,22 @@ def test_cli_install_and_uninstall(tmp_path: Path) -> None:
     assert removed.exit_code == 0 and "hooks removed" in removed.output
 
 
-def test_reinstall_replaces_hooks_from_an_earlier_version(tmp_path: Path) -> None:
-    old = {"type": "command", "command": '"python" -m flight_recorder.cli hook run', "async": True}
-    path = settings_file(tmp_path)
-    path.parent.mkdir()
-    path.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [old]}]}}), encoding="utf-8")
-
+def test_uninstall_keeps_someone_elses_handler_in_a_shared_group(tmp_path: Path) -> None:
     install(tmp_path)
+    path = settings_file(tmp_path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["hooks"]["Stop"][0]["hooks"].append(THEIRS)  # another tool joined our group
+    path.write_text(json.dumps(data), encoding="utf-8")
 
-    [group] = hooks_in(tmp_path)["Stop"]
-    assert "flight_recorder.cli" not in json.dumps(group)
+    uninstall(tmp_path)
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "hooks": {"Stop": [{"hooks": [THEIRS]}]}
+    }
+
+
+def test_the_hook_runs_python_isolated() -> None:
+    """-I: a json.py or hmac.py in the project folder must not replace the standard module."""
+    from flight_recorder.hook.install import hook_command
+
+    assert " -I -m flight_recorder.hook" in hook_command()

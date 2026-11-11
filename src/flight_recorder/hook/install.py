@@ -24,6 +24,7 @@ ASYNC_EVENTS = (
     "PreToolUse",
     "PostToolUse",
     "PostToolUseFailure",
+    "SubagentStart",
     "SubagentStop",
     "Stop",
     "StopFailure",
@@ -38,29 +39,23 @@ class InstallError(ValueError):
 
 
 def hook_command() -> str:
-    """This install's Python, so the hook works from any project's folder."""
-    return f'"{Path(sys.executable).as_posix()}" -m {MARKER}'
+    """This install's Python, so the hook works from any project's folder.
+
+    -I (isolated): Claude Code runs hooks in the project folder, and without it `-m` would
+    put that folder first on the import path, so a json.py or hmac.py there would run, as
+    you, on every event, outside Claude Code's approvals. -I also ignores PYTHON* variables.
+    """
+    return f'"{Path(sys.executable).as_posix()}" -I -m {MARKER}'
 
 
 def settings_file(project: Path) -> Path:
     return project / ".claude" / "settings.local.json"
 
 
-def _ours(group: Any) -> bool:
-    if not isinstance(group, dict):
-        return False
-    hooks = cast("dict[str, Any]", group).get("hooks")
-    if not isinstance(hooks, list):
-        return False
-    return any(
-        isinstance(h, dict) and _is_recorder(str(cast("dict[str, Any]", h).get("command", "")))
-        for h in cast("list[Any]", hooks)
+def _ours(handler: Any) -> bool:
+    return isinstance(handler, dict) and MARKER in str(
+        cast("dict[str, Any]", handler).get("command", "")
     )
-
-
-def _is_recorder(command: str) -> bool:
-    """Ours, including commands from earlier versions (`-m flight_recorder.cli hook run`)."""
-    return MARKER in command or ("flight_recorder" in command and " hook" in command)
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -73,10 +68,21 @@ def _load(path: Path) -> dict[str, Any]:
 
 
 def _without_ours(data: dict[str, Any]) -> dict[str, Any]:
+    """Remove our handlers only: a group shared with someone else's handler keeps theirs."""
     hooks = cast("dict[str, Any]", data.get("hooks") or {})
     kept: dict[str, Any] = {}
     for event, groups in hooks.items():
-        remaining = [g for g in cast("list[Any]", groups) if not _ours(g)]
+        remaining: list[Any] = []
+        for group in cast("list[Any]", groups):
+            handlers = (
+                cast("dict[str, Any]", group).get("hooks") if isinstance(group, dict) else None
+            )
+            if not isinstance(handlers, list):
+                remaining.append(group)
+                continue
+            others = [h for h in cast("list[Any]", handlers) if not _ours(h)]
+            if others:
+                remaining.append(cast("dict[str, Any]", group) | {"hooks": others})
         if remaining:
             kept[event] = remaining
     result = {k: v for k, v in data.items() if k != "hooks"}

@@ -16,13 +16,16 @@ What it relies on, checked against Claude Code's transcripts on 11 Nov 2026:
   are skipped: no model was called. (Seen in a real session on 11 Nov 2026.)
 
 Where reading stopped is kept per transcript in <AFR_HOME>/hook-state/, so each turn reads
-only new lines. Reading a line twice is harmless: the recorder keys responses by id.
+only new lines. The position is saved only once the event carrying the usage has been sent
+or spooled (TranscriptRead.commit): a hook killed before that leaves the lines for the next
+turn end or SessionEnd. Reading a line twice is harmless: the recorder keys responses by id.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -61,7 +64,8 @@ def response_usage(line: dict[str, Any]) -> dict[str, Any] | None:
     return {
         "message_id": message_id,
         "model": model if isinstance(model, str) else None,
-        "timestamp": line.get("timestamp"),
+        "started_at": line.get("timestamp"),  # the first line's; the response may span several
+        "timestamp": line.get("timestamp"),  # the last line's: when the response finished
         # input_tokens here means all input, as in OTel: Anthropic reports uncached input alone.
         "input_tokens": _int(usage.get("input_tokens")) + read + write_5m + write_1h,  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
         "output_tokens": _int(usage.get("output_tokens")),  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
@@ -72,19 +76,32 @@ def response_usage(line: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def new_usage(
+@dataclass
+class TranscriptRead:
+    """New model responses, and where to resume once they're safely sent or spooled."""
+
+    usage: list[dict[str, Any]]
+    state_file: Path | None = None
+    offset: int = 0
+
+    def commit(self) -> None:
+        if self.state_file is not None:
+            self.state_file.parent.mkdir(parents=True, exist_ok=True)
+            self.state_file.write_text(json.dumps({"offset": self.offset}), encoding="utf-8")
+
+
+def read_new(
     transcript: Path, state_dir: Path, *, include_sidechain: bool = False
-) -> list[dict[str, Any]]:
-    """Usage of the model responses written since the last call, one entry per response."""
+) -> TranscriptRead:
+    """Usage of the model responses written since the last commit, one entry per response."""
     if not transcript.is_file():
-        return []
+        return TranscriptRead([])
     state = _state_file(state_dir, transcript)
     try:
         offset = int(json.loads(state.read_text(encoding="utf-8"))["offset"])
     except (OSError, ValueError, KeyError, TypeError):
         offset = 0
-    size = transcript.stat().st_size
-    if offset > size:  # rewritten or replaced: start again
+    if offset > transcript.stat().st_size:  # rewritten or replaced: start again
         offset = 0
     with transcript.open("rb") as file:
         file.seek(offset)
@@ -99,7 +116,17 @@ def new_usage(
         if not isinstance(line, dict) or (line.get("isSidechain") and not include_sidechain):  # pyright: ignore[reportUnknownMemberType]
             continue
         if (usage := response_usage(line)) is not None:  # pyright: ignore[reportUnknownArgumentType]
+            earlier = responses.get(usage["message_id"])
+            if earlier is not None:  # a later line of the same response: keep when it began
+                usage["started_at"] = earlier["started_at"]
             responses[usage["message_id"]] = usage
-    state_dir.mkdir(parents=True, exist_ok=True)
-    state.write_text(json.dumps({"offset": offset + len(complete)}), encoding="utf-8")
-    return list(responses.values())
+    return TranscriptRead(list(responses.values()), state, offset + len(complete))
+
+
+def new_usage(
+    transcript: Path, state_dir: Path, *, include_sidechain: bool = False
+) -> list[dict[str, Any]]:
+    """read_new, committed straight away."""
+    read = read_new(transcript, state_dir, include_sidechain=include_sidechain)
+    read.commit()
+    return read.usage

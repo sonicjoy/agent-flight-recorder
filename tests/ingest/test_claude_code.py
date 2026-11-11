@@ -36,7 +36,7 @@ def store(make_database: Callable[[], str]) -> Generator[Engine]:
 
 @pytest.fixture
 def client(store: Engine) -> TestClient:
-    return TestClient(create_app(store, REDACTOR))
+    return TestClient(create_app(store, REDACTOR), base_url="http://127.0.0.1:4318")
 
 
 def ev(name: str, at: float, **hook: Any) -> dict[str, Any]:
@@ -309,3 +309,118 @@ def test_refused_bodies(client: TestClient, body: bytes, content_type: str, stat
     assert (
         client.post(URL, content=body, headers={"Content-Type": content_type}).status_code == status
     )
+
+
+def test_the_hooks_redaction_counts_are_stored(client: TestClient, store: Engine) -> None:
+    """The hook already replaced the secret, so only its own counts say one was there."""
+    pre = ev("PreToolUse", 2, prompt_id="p1", tool_name="Bash", tool_use_id="t1", tool_input={})
+    pre["client_redactions"] = {"openai_key": 1}
+    post = ev("PostToolUse", 3, prompt_id="p1", tool_name="Bash", tool_use_id="t1", tool_input={})
+    post["client_redactions"] = {"openai_key": 1, "email": 2}
+
+    client.post(URL, json={"events": [pre, post]})
+
+    tool = stored(store)[1]["tool:t1"]
+    assert tool.redactions == {"openai_key": 1, "email": 2}  # the larger count per pattern
+
+
+def test_events_arriving_one_by_one_in_reverse_make_the_same_run(
+    client: TestClient, store: Engine
+) -> None:
+    """Each request applied as it comes, so the merge, not the server's sort, is tested."""
+    for event in reversed(session_events()):
+        assert client.post(URL, json={"events": [event]}).status_code == 200
+
+    [run], spans = stored(store)
+    glob = spans["tool:t1"]
+    assert (glob.input, glob.output, glob.status) == ({"pattern": "src/**"}, {"files": 12}, "ok")
+    assert glob.ended_at is not None and glob.started_at < glob.ended_at
+    turn = spans["turn:p1"]
+    assert (turn.input, turn.output) == ("Count the files in src\nthen stop", "There are 12 files.")
+    assert run.name == "Count the files in src" and run.status == "ok"
+
+
+def test_a_response_read_again_at_session_end_keeps_its_turn(
+    client: TestClient, store: Engine
+) -> None:
+    response = [usage("msg_1", input_tokens=10, output_tokens=2)]
+    client.post(
+        URL,
+        json={
+            "events": [
+                ev("UserPromptSubmit", 1, prompt_id="p1", prompt="hi"),
+                ev("Stop", 2, prompt_id="p1", usage=response),
+                ev("SessionEnd", 3, usage=response),  # read again before Stop's position was saved
+            ]
+        },
+    )
+
+    spans = stored(store)[1]
+    assert spans["llm:msg_1"].parent_id == spans["turn:p1"].id
+
+
+def test_subagent_start_gives_the_subagent_a_real_duration(
+    client: TestClient, store: Engine
+) -> None:
+    client.post(
+        URL,
+        json={
+            "events": [
+                ev("SubagentStart", 1, prompt_id="p1", agent_id="a1", agent_type="Explore"),
+                ev("SubagentStop", 5, prompt_id="p1", agent_id="a1", agent_type="Explore"),
+            ]
+        },
+    )
+
+    agent = stored(store)[1]["agent:a1"]
+    assert agent.ended_at is not None
+    assert (agent.ended_at - agent.started_at).total_seconds() == 4
+
+
+def test_a_response_spans_from_its_first_transcript_line_to_its_last(
+    client: TestClient, store: Engine
+) -> None:
+    item = usage("msg_1", input_tokens=1, output_tokens=1) | {
+        "started_at": "2026-11-11T09:00:00Z",
+        "timestamp": "2026-11-11T09:00:03Z",
+    }
+    client.post(URL, json={"events": [ev("Stop", 4, prompt_id="p1", usage=[item])]})
+
+    llm = stored(store)[1]["llm:msg_1"]
+    assert llm.ended_at is not None
+    assert (llm.ended_at - llm.started_at).total_seconds() == 3
+
+
+@pytest.mark.parametrize(
+    ("host", "status"),
+    [("127.0.0.1:4318", 200), ("localhost:4318", 200), ("[::1]:4318", 200), ("evil.example", 421)],
+)
+def test_only_loopback_hosts_are_served(client: TestClient, host: str, status: int) -> None:
+    """A web page using DNS rebinding sends its own host name: refuse it (until #25)."""
+    response = client.post(URL, json={"events": []}, headers={"Host": host})
+
+    assert response.status_code == status
+
+
+def test_only_known_pattern_names_are_kept_from_the_hooks_counts(
+    client: TestClient, store: Engine
+) -> None:
+    """The keys are stored unredacted, and anything local can post: accept pattern names only."""
+    pre = ev("PreToolUse", 2, prompt_id="p1", tool_name="Bash", tool_use_id="t1", tool_input={})
+    pre["client_redactions"] = {"openai_key": 10**9, "free text: a secret": 1, "email": -3}
+
+    client.post(URL, json={"events": [pre]})
+
+    assert stored(store)[1]["tool:t1"].redactions == {"openai_key": 1_000_000}
+
+
+def test_a_response_moves_to_its_turn_even_when_session_end_came_first(
+    client: TestClient, store: Engine
+) -> None:
+    response = [usage("msg_1", input_tokens=10, output_tokens=2)]
+    client.post(URL, json={"events": [ev("UserPromptSubmit", 1, prompt_id="p1", prompt="hi")]})
+    client.post(URL, json={"events": [ev("SessionEnd", 3, usage=response)]})  # arrived first
+    client.post(URL, json={"events": [ev("Stop", 2, prompt_id="p1", usage=response)]})
+
+    spans = stored(store)[1]
+    assert spans["llm:msg_1"].parent_id == spans["turn:p1"].id

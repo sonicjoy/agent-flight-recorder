@@ -49,12 +49,8 @@ class Settings(BaseSettings):
     afr_home: Path = Field(
         default_factory=lambda: Path.home() / ".afr",
         validation_alias=AliasChoices("AFR_HOME"),
-        description="User-level folder for the redaction key and the hook's spool and state.",
-    )
-    hook_url: str = Field(
-        default="http://127.0.0.1:4318/v1/claude-code/events",
-        validation_alias=AliasChoices("AFR_HOOK_URL"),
-        description="Where the Claude Code hook sends events.",
+        description="User-level folder for the key and the hook's files; set it in the "
+        "environment, not .env, so the hook (which reads only the environment) agrees.",
     )
 
 

@@ -22,9 +22,13 @@ It refuses to install in your home folder, which would amount to user-level sett
 
 | | |
 |---|---|
-| Async | Every event except SessionEnd runs as an `async` hook, so Claude Code doesn't wait for it. SessionEnd runs once, at exit, with a 0.5 s send timeout |
+| Async | Every event except SessionEnd runs as an `async` hook, so Claude Code doesn't wait for it. SessionEnd runs once, at exit: it sends only its own event (no backlog), with a 0.5 s send timeout |
 | Fails open | The hook always exits 0, so it never blocks anything. It prints nothing; an async hook's output would reach the model. Errors go to `~/.afr/hook.log`, without content |
-| Recorder down | Events are kept in `~/.afr/spool.jsonl` (capped at 20 MB) and sent, oldest first, with the next event that gets through |
+| Recorder down | Events are kept in `~/.afr/spool.jsonl` and sent, oldest first, by the next async event that gets through. A backlog goes in chunks of at most 50 events and 4 MB, so each chunk finishes within the timeout and under the recorder's 10 MB request limit |
+| Refused | If the recorder refuses the events themselves (400, 413 or 422), they're dropped and logged, not retried for ever. Anything else, such as a 404 from an older recorder, a 421 from a host name in `AFR_HOOK_URL`, a 5xx or no answer, keeps them. One hook sends at most 10 chunks; a bigger backlog carries on with the next hook, so progress is never lost |
+| Capped | The spool keeps at most 20 MB, newest events first; anything dropped is logged |
+| Crash-safe | A hook killed mid-send leaves its batch claimed; the next hook sends it once it's two minutes old. A turn end's transcript position is saved only once its event is sent or spooled, so a killed hook's token usage is read again later. Transcript paths aren't sent: the recorder doesn't need them |
+| Isolated | The hook runs as `python -I -m flight_recorder.hook`. Claude Code runs hooks in the project folder, and without `-I` a file such as `json.py` or `hmac.py` there would replace the standard module and run, as you, on every event, outside Claude Code's approvals |
 | Cost per event | About 260 ms of process time in the background (measured on Windows), or about 0.7 s for SessionEnd when the recorder is down |
 
 ## What is recorded
@@ -34,7 +38,7 @@ Claude Code session (agent)            SessionStart ... SessionEnd
   turn (step)                          your prompt in, Claude's last reply out
     Read / Bash / Edit ... (tool)      input and output; failures are errors
     claude-opus-5-5 (llm)              one per model response: tokens, cache, cost
-    Explore (agent)                    a subagent
+    Explore (agent)                    a subagent: SubagentStart ... SubagentStop
       Grep ... (tool), ... (llm)
 ```
 
@@ -47,7 +51,7 @@ Claude Code session (agent)            SessionStart ... SessionEnd
 
 A turn that ends in an API error (StopFailure) is marked `error`.
 
-**Content is redacted twice and capped.** The hook redacts before anything is sent or spooled, and the recorder redacts again before storing ([redaction.md](redaction.md)). Each string is capped at 32 KB, since a tool can return a whole file. Both sides use the key in `~/.afr/redaction.key`, so their placeholders match.
+**Content is redacted twice and capped.** The hook redacts before anything is sent or spooled, and the recorder redacts again before storing ([redaction.md](redaction.md)). Each string is capped at 32 KB, since a tool can return a whole file. Both sides use the key in `~/.afr/redaction.key`, so their placeholders match. The hook sends the counts of what it redacted with each event, and the recorder stores them on that event's span; without them, Claude Code runs would show almost no redactions, since the server finds nothing left to replace. On Linux and macOS, `~/.afr` and the spool are owner-only (0700 and 0600).
 
 ## Tokens and cost
 
@@ -69,8 +73,8 @@ The hook runs in other projects' folders, so it reads only environment variables
 | Variable | Default |
 |---|---|
 | `AFR_HOME` | `~/.afr`: the key, spool, transcript positions and log |
-| `AFR_HOOK_URL` | `http://127.0.0.1:4318/v1/claude-code/events` |
-| `AFR_REDACTION_KEY` | The key file in `AFR_HOME`. Set it in the environment, not in the recorder's `.env`, or the hook won't see it |
+| `AFR_HOOK_URL` | `http://127.0.0.1:4318/v1/claude-code/events`. A loopback address bypasses any system proxy |
+| `AFR_REDACTION_KEY` | The key file in `AFR_HOME`. Set it, and `AFR_HOME`, in the environment, not in the recorder's `.env`: the server reads `.env` but the hook doesn't, and the two would then use different keys |
 
 ## Checked against Claude Code 2.1.321
 

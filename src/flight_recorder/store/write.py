@@ -87,6 +87,9 @@ class SpanIn(_In):
     input: Any = None
     output: Any = None
     attributes: dict[str, Any] = Field(default_factory=dict)
+    redactions: dict[str, int] = Field(default_factory=dict)
+    """Counts of redactions already applied upstream (by the Claude Code hook, or from a
+    stored span being merged): record_run keeps, per pattern, the larger of these and its own."""
 
 
 def _price(model: str | None, span: SpanIn) -> Decimal | None:
@@ -204,7 +207,10 @@ def record_run(
             "input": redactor.value(span.input, counts),
             "output": redactor.value(span.output, counts),
             "attributes": redactor.value(span.attributes | _usage(span), counts),
-            "redactions": dict(counts),
+            "redactions": {
+                pattern: max(span.redactions.get(pattern, 0), counts[pattern])
+                for pattern in {*span.redactions, *counts}
+            },
         }
         session.execute(_upsert_span(values))
 

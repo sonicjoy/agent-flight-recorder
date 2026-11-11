@@ -200,7 +200,3 @@ def hook_uninstall(
     from flight_recorder.hook.install import uninstall
 
     typer.echo("hooks removed" if uninstall(project) else "no recorder hooks found")
-
-
-if __name__ == "__main__":  # python -m flight_recorder.cli, as the installed hook runs it
-    app()

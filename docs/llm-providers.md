@@ -69,7 +69,6 @@ Claude cache prices per 1M tokens (platform.claude.com/docs/en/about-claude/pric
 
 Opus 5.5 fast mode is $8 input / $40 output, and stacks with the cache multipliers. Recorded Claude Code sessions are priced at these API rates: on a subscription, that's the API-equivalent cost, not what was paid.
 
-Not yet modelled: prompt-cache read and write prices.
 
 ## Gemini free tier
 

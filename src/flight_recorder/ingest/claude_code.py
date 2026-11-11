@@ -4,13 +4,15 @@
       turn (step)                        UserPromptSubmit ... Stop: prompt in, reply out
         Read / Bash / ... (tool)         PreToolUse ... PostToolUse / PostToolUseFailure
         claude-opus-5-5 (llm)            each model response, from the transcript at Stop
-        Explore (agent)                  a subagent, ended by SubagentStop
+        Explore (agent)                  a subagent: SubagentStart ... SubagentStop
           Grep (tool), ... (llm)
 
 Async hooks can arrive in any order (a tool's end before its start), and a span's fields
 come from several events, so each event merges into what is stored. Events of one session
 are applied one at a time under a Postgres advisory lock. Writes go through record_run(),
-which redacts again (the hook already did once) and prices the model responses.
+which redacts again (the hook already did once) and prices the model responses. The counts
+of what the hook redacted are stored on the event's span, since the server's own pass finds
+nothing left to count.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from typing import Any, cast
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from flight_recorder.redact import Redactor
+from flight_recorder.redact import PATTERNS, Redactor
 from flight_recorder.store.models import Run, Span
 from flight_recorder.store.write import Kind, RunIn, SpanIn, Status, record_run
 
@@ -104,7 +106,17 @@ def _stored(session: Session, session_id: str, external_id: str) -> SpanIn | Non
         input=span.input,
         output=span.output,
         attributes=attributes,
+        redactions=dict(span.redactions),
     )
+
+
+def max_counts(*counts: dict[str, int]) -> dict[str, int]:
+    """Per pattern, the largest count: the same secret seen by two events isn't two secrets."""
+    merged: dict[str, int] = {}
+    for item in counts:
+        for pattern, n in item.items():
+            merged[pattern] = max(merged.get(pattern, 0), n)
+    return merged
 
 
 def _merge(session: Session, session_id: str, at: datetime, **fields: Any) -> SpanIn:
@@ -120,11 +132,26 @@ def _merge(session: Session, session_id: str, at: datetime, **fields: Any) -> Sp
         known["ended_at"] = max(known["ended_at"], stored.ended_at)
     if "attributes" in known:
         known["attributes"] = stored.attributes | known["attributes"]
+    if "redactions" in known:
+        known["redactions"] = max_counts(stored.redactions, known["redactions"])
     return stored.model_copy(update=known)
 
 
-def _responses(usage: Any, parent: str, at: datetime) -> list[SpanIn]:
-    """One llm span per model response read from the transcript."""
+def _better_parent(stored: str | None, new: str) -> str:
+    """A response read twice (by Stop and by SessionEnd, in either order) belongs to its turn
+    or subagent rather than the session."""
+    if stored and stored != ROOT:
+        return stored
+    return new
+
+
+def _responses(
+    session: Session, session_id: str, usage: Any, parent: str, at: datetime
+) -> list[SpanIn]:
+    """One llm span per model response read from the transcript.
+
+    A response read twice keeps the more specific parent (see _better_parent).
+    """
     spans: list[SpanIn] = []
     for raw in cast("list[Any]", usage) if isinstance(usage, list) else []:
         if not isinstance(raw, dict):
@@ -132,18 +159,23 @@ def _responses(usage: Any, parent: str, at: datetime) -> list[SpanIn]:
         item = cast("dict[str, Any]", raw)
         if not isinstance(item.get("message_id"), str):
             continue
+        external_id = f"llm:{item['message_id']}"
+        stored = _stored(session, session_id, external_id)
         model = item.get("model")
-        when = _time(item.get("timestamp")) or at
+        ended = _time(item.get("timestamp")) or at
+        started = _time(item.get("started_at")) or ended
         spans.append(
             SpanIn(
-                external_id=f"llm:{item['message_id']}",
-                parent_external_id=parent,
+                external_id=external_id,
+                parent_external_id=_better_parent(
+                    stored.parent_external_id if stored else None, parent
+                ),
                 kind="llm",
                 name=str(model or "model response"),
                 model=f"anthropic:{model}" if isinstance(model, str) else None,
                 status="ok",
-                started_at=when,
-                ended_at=when,
+                started_at=min(started, ended),
+                ended_at=ended,
                 input_tokens=item.get("input_tokens"),
                 output_tokens=item.get("output_tokens"),
                 cache_read_tokens=item.get("cache_read_tokens"),
@@ -160,6 +192,26 @@ def _session_attributes(hook: Mapping[str, Any]) -> dict[str, Any]:
     return {f"claude_code.{k}": hook[k] for k in keys if hook.get(k) not in (None, "")}
 
 
+PATTERN_NAMES = frozenset(p.name for p in PATTERNS)
+MAX_COUNT = 1_000_000
+
+
+def _client_counts(event: Mapping[str, Any]) -> dict[str, int]:
+    """What the hook redacted before sending, per pattern.
+
+    Only known pattern names are kept, and counts are clamped: the keys are stored as they
+    come (they aren't redacted), and anything local can post to the API until #25.
+    """
+    counts = event.get("client_redactions")
+    if not isinstance(counts, dict):
+        return {}
+    return {
+        k: min(v, MAX_COUNT)
+        for k, v in cast("dict[Any, Any]", counts).items()
+        if k in PATTERN_NAMES and isinstance(v, int) and not isinstance(v, bool) and v > 0
+    }
+
+
 def apply_event(session: Session, redactor: Redactor, event: Mapping[str, Any]) -> None:
     raw = event.get("hook")
     if not isinstance(raw, dict):
@@ -172,129 +224,94 @@ def apply_event(session: Session, redactor: Redactor, event: Mapping[str, Any]) 
     session.execute(
         text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"{SOURCE}:{session_id}"}
     )
+    client = _client_counts(event)
+
+    def merge(**fields: Any) -> SpanIn:
+        return _merge(session, session_id, at, **fields)
 
     run: dict[str, Any] = {"started_at": at, "attributes": _session_attributes(hook)}
-    spans = [
-        _merge(
-            session,
-            session_id,
-            at,
-            external_id=ROOT,
-            kind="agent",
-            name="Claude Code session",
-            started_at=at,
-        )
-    ]
-    status: Status = "error" if name == "PostToolUseFailure" else "ok"
+    root: dict[str, Any] = {
+        "external_id": ROOT,
+        "kind": "agent",
+        "name": "Claude Code session",
+        "started_at": at,
+    }
+    spans: list[SpanIn] = []
+    turn = _turn(hook)
+    tool: dict[str, Any] = {
+        "external_id": _tool_id(hook),
+        "parent_external_id": _parent(hook),
+        "kind": "tool",
+        "name": _str(hook, "tool_name") or "tool",
+        "input": hook.get("tool_input"),
+        "redactions": client,
+    }
+    turn_fields: dict[str, Any] = {
+        "external_id": turn,
+        "parent_external_id": ROOT,
+        "kind": "step",
+        "name": "turn",
+        "redactions": client,
+    }
 
-    if name == "UserPromptSubmit" and (turn := _turn(hook)):
+    if name == "UserPromptSubmit" and turn:
         prompt = _str(hook, "prompt") or ""
-        spans.append(
-            _merge(
-                session,
-                session_id,
-                at,
-                external_id=turn,
-                parent_external_id=ROOT,
-                kind="step",
-                name="turn",
-                input=prompt,
-                started_at=at,
-            )
-        )
-        if not session.scalar(
+        spans.append(merge(**turn_fields, input=prompt, started_at=at))
+        named = session.scalar(
             select(Run.name).where(Run.source == SOURCE, Run.external_id == session_id)
-        ):
-            run["name"] = prompt.strip().splitlines()[0][:NAME_CHARS] if prompt.strip() else None
-    elif name == "PreToolUse":
-        spans.append(
-            _merge(
-                session,
-                session_id,
-                at,
-                external_id=_tool_id(hook),
-                parent_external_id=_parent(hook),
-                kind="tool",
-                name=_str(hook, "tool_name") or "tool",
-                input=hook.get("tool_input"),
-                started_at=at,
-            )
         )
+        if not named and prompt.strip():
+            run["name"] = prompt.strip().splitlines()[0][:NAME_CHARS]
+    elif name == "PreToolUse":
+        spans.append(merge(**tool, started_at=at))
     elif name in ("PostToolUse", "PostToolUseFailure"):
-        error = _str(hook, "error") if status == "error" else None
+        failed = name == "PostToolUseFailure"
         spans.append(
-            _merge(
-                session,
-                session_id,
-                at,
-                external_id=_tool_id(hook),
-                parent_external_id=_parent(hook),
-                kind="tool",
-                name=_str(hook, "tool_name") or "tool",
-                input=hook.get("tool_input"),
+            merge(
+                **tool,
                 output=hook.get("tool_response"),
                 ended_at=at,
-                status=status,
-                error=error,
+                status="error" if failed else "ok",
+                error=_str(hook, "error") if failed else None,
                 attributes={"interrupted": True} if hook.get("is_interrupt") else None,
             )
         )
-    elif name == "SubagentStop" and (agent := _str(hook, "agent_id")):
+    elif name in ("SubagentStart", "SubagentStop") and (agent := _str(hook, "agent_id")):
         span_id = f"agent:{agent}"
-        spans.append(
-            _merge(
-                session,
-                session_id,
-                at,
-                external_id=span_id,
-                parent_external_id=_turn(hook) or ROOT,
-                kind="agent",
-                name=_str(hook, "agent_type") or "subagent",
-                output=hook.get("last_assistant_message"),
-                ended_at=at,
-                status="ok",
-            )
-        )
-        spans += _responses(event.get("usage"), span_id, at)
+        agent_fields: dict[str, Any] = {
+            "external_id": span_id,
+            "parent_external_id": turn or ROOT,
+            "kind": "agent",
+            "name": _str(hook, "agent_type") or "subagent",
+            "redactions": client,
+        }
+        if name == "SubagentStart":
+            spans.append(merge(**agent_fields, started_at=at))
+        else:
+            output = hook.get("last_assistant_message")
+            spans.append(merge(**agent_fields, output=output, ended_at=at, status="ok"))
+            spans += _responses(session, session_id, event.get("usage"), span_id, at)
     elif name in ("Stop", "StopFailure"):
-        turn = _turn(hook) or ROOT
         failed = name == "StopFailure"
-        if turn != ROOT:
+        if turn:
+            error = (_str(hook, "error") or "the turn ended with an API error") if failed else None
             spans.append(
-                _merge(
-                    session,
-                    session_id,
-                    at,
-                    external_id=turn,
-                    parent_external_id=ROOT,
-                    kind="step",
-                    name="turn",
+                merge(
+                    **turn_fields,
                     output=hook.get("last_assistant_message"),
                     ended_at=at,
                     status="error" if failed else "ok",
-                    error=(_str(hook, "error") or "the turn ended with an API error")
-                    if failed
-                    else None,
+                    error=error,
                 )
             )
-        spans += _responses(event.get("usage"), turn, at)
+        spans += _responses(session, session_id, event.get("usage"), turn or ROOT, at)
     elif name == "SessionEnd":
-        spans[0] = _merge(
-            session,
-            session_id,
-            at,
-            external_id=ROOT,
-            kind="agent",
-            name="Claude Code session",
-            ended_at=at,
-            status="ok",
-        )
-        spans += _responses(event.get("usage"), ROOT, at)
+        root |= {"ended_at": at, "status": "ok", "redactions": client}
+        spans += _responses(session, session_id, event.get("usage"), ROOT, at)
         run |= {"ended_at": at, "status": "ok"}
+    else:  # SessionStart, and events this version doesn't map
+        root["redactions"] = client
 
-    record_run(
-        session,
-        RunIn(source=SOURCE, external_id=session_id, agent=AGENT, **run),
-        spans,
-        redactor=redactor,
-    )
+    spans.insert(0, merge(**root))
+    run_in = RunIn(source=SOURCE, external_id=session_id, agent=AGENT, **run)
+    record_run(session, run_in, spans, redactor=redactor)
