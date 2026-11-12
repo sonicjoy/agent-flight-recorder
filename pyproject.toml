@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.20.1",
     "fastapi>=0.162.0,!=0.162.1,!=0.162.2",
+    "fastembed>=0.9.1",
     "langchain>=1.4.9",
     "langchain-anthropic>=1.7.10",
     "langchain-google-genai>=4.4.3",
@@ -31,6 +32,10 @@ afr = "flight_recorder.cli:app"
 [build-system]
 requires = ["uv_build>=0.13.7,<0.14.0"]
 build-backend = "uv_build"
+
+[tool.uv]
+# Dependencies must be at least two weeks old; hf-xet 1.8.0 (30 Oct) wasn't yet.
+exclude-newer-package = { hf-xet = "2026-10-29T00:00:00Z" }
 
 [tool.uv.build-backend]
 module-name = "flight_recorder"
