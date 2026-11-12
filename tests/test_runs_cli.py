@@ -763,3 +763,64 @@ def test_last_with_no_finished_run_and_an_old_schema(
     engine.dispose()
     none = runner.invoke(app, ["runs", "show", "last"])
     assert none.exit_code == 1 and "no finished runs yet" in none.output
+
+
+# --- review round 2: tests written before the fixes ----------------------------------
+
+
+def test_content_never_makes_strings_look_like_structure() -> None:
+    from flight_recorder.cli.render import _pretty  # pyright: ignore[reportPrivateUsage]
+
+    assert _pretty(
+        {"a": "5", "b": 5, "c": "null", "d": None, "e": "", "f": "- x", "g": " pad"}
+    ) == [
+        'a: "5"',
+        "b: 5",
+        'c: "null"',
+        "d: null",
+        'e: ""',
+        'f: "- x"',
+        'g: " pad"',
+    ]
+    assert _pretty({"prompt": "line one\nb: not a key"}) == [
+        "prompt: |",
+        "  line one",
+        "  b: not a key",
+    ]
+    assert _pretty(["x\ny"]) == ["- |", "  x", "  y"]
+    assert _pretty({"k\nfake: 1": 2}) == ['"k\\nfake: 1": 2']  # a key can't fake a sibling
+    assert _pretty({"plain": "words, even with: colons"}) == ['plain: "words, even with: colons"']
+    assert _pretty({"plain": "just words"}) == ["plain: just words"]
+
+
+def test_deep_chains_filter_and_replay_in_linear_time() -> None:
+    import time as clock
+
+    root = node("n0", 0, kind="step")
+    last = root
+    for i in range(1, 20_000):
+        last = node(f"n{i}", 0, last, kind="llm" if i % 2 else "step")
+    started = clock.perf_counter()
+    shown = render.keep([root], "llm", False)
+    for each in root.walk():
+        render.breadcrumb(each)
+    assert clock.perf_counter() - started < 2
+    assert shown is not None and len(shown) == 20_000  # n19999 is an llm: it and every ancestor
+
+
+@pytest.mark.parametrize(
+    ("raw", "shown"),
+    [
+        ("a\ufe0f", "a\ufe0f"),  # one selector after a character: ordinary emoji
+        ("a\ufe0f\ufe0e", "a\ufe0f\\ufe0e"),  # a run of selectors: hidden data
+        ("a\U000e0100", "a\\U000e0100"),  # supplementary selectors carry hidden bytes
+        ("\u3164x\u115f", "\\u3164x\\u115f"),  # Hangul fillers: blank-looking letters
+    ],
+)
+def test_clean_shows_variation_selector_runs_and_fillers(raw: str, shown: str) -> None:
+    assert render.clean(raw) == shown
+
+
+def test_costs_that_round_up_to_a_dollar() -> None:
+    assert render.money(Decimal("0.99995")) == "$1.00"
+    assert render.money(Decimal("0.99994")) == "$0.9999"

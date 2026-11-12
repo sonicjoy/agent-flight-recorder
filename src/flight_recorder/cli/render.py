@@ -30,6 +30,27 @@ KEPT = frozenset("\n\t")
 HIDDEN = frozenset(("Cc", "Cf", "Zl", "Zp", "Co", "Cn"))
 """Control and format characters (bidi overrides, zero-width, tags), line and paragraph
 separators, private-use and unassigned code points: shown as escapes."""
+FILLERS = frozenset(chr(c) for c in (0x115F, 0x1160, 0x3164, 0xFFA0))
+"""Hangul fillers: letters that render blank."""
+
+
+def _selector(char: str) -> bool:
+    code = ord(char)
+    return 0xFE00 <= code <= 0xFE0F or 0xE0100 <= code <= 0xE01EF
+
+
+def _hidden(value: str, i: int) -> bool:
+    """Whether the character at `i` would hide something. A variation selector is fine
+    once after an ordinary character (that's how emoji pick their style); a run of them,
+    or a supplementary one, can carry hidden bytes."""
+    char = value[i]
+    if char in KEPT:
+        return False
+    if _selector(char):
+        return ord(char) > 0xFFFF or i == 0 or _selector(value[i - 1])
+    return char in FILLERS or unicodedata.category(char) in HIDDEN
+
+
 STATE_STYLE = {
     "ok": "green",
     "error": "bold red",
@@ -62,9 +83,7 @@ def clean(value: str) -> str:
     """Recorded text made safe to print: control and invisible characters (but newlines
     and tabs) become visible escapes such as `\\x1b`, `\\u202e` and `\\U000e0041`."""
     value = value.replace("\r\n", "\n")
-    return "".join(
-        _escape(c) if c not in KEPT and unicodedata.category(c) in HIDDEN else c for c in value
-    )
+    return "".join(_escape(c) if _hidden(value, i) else c for i, c in enumerate(value))
 
 
 def text(value: object, style: str = "") -> Text:
@@ -94,7 +113,8 @@ def money(cost: Decimal | None) -> str:
         return ""
     if 0 < cost < Decimal("0.0001"):
         return "<$0.0001"
-    return f"${cost:.2f}" if cost >= 1 else f"${cost:.4f}"
+    shown = cost.quantize(Decimal("0.0001"))
+    return f"${shown:.2f}" if shown >= 1 else f"${shown:.4f}"
 
 
 def cost(known: Decimal | None, unpriced: bool) -> str:
@@ -257,7 +277,10 @@ def keep(roots: Sequence[SpanNode], kind: str | None, problems_only: bool) -> se
     for root in roots:
         for node in root.walk():
             if (kind is None or node.kind == kind) and (not problems_only or node.problem):
-                shown.update(node.path())
+                ancestor: SpanNode | None = node
+                while ancestor is not None and ancestor not in shown:  # each span once
+                    shown.add(ancestor)
+                    ancestor = ancestor.parent
     return shown
 
 
@@ -334,28 +357,54 @@ def span_tree(
     return tree
 
 
+PLAIN_LOOKALIKES = ("null", "true", "false")
+
+
+def _plain(value: str) -> bool:
+    """Whether a one-line string can be shown bare without passing for something else: a
+    number, null, a key, a list item, a block, or a string with spaces at its ends."""
+    if not value or value != value.strip() or "\n" in value or ": " in value:
+        return False
+    if value in PLAIN_LOOKALIKES or value[0] in "-\"'|{[#":
+        return False
+    try:
+        float(value)
+    except ValueError:
+        return True
+    return False
+
+
+def _scalar(value: Any) -> str:
+    if isinstance(value, str) and _plain(value):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
 def _pretty(value: Any, indent: int = 0) -> list[str]:
-    """JSON as indented `key: value` lines, with multi-line strings as real lines, so a
-    prompt reads as text rather than one long line of `\\n` escapes."""
+    """JSON as indented `key: value` lines, so a prompt reads as text rather than one long
+    line of `\\n` escapes. A multi-line string is a block under `|`; any string that could
+    pass for a number, null, a key or a list item is quoted, as is any such key."""
     pad = "  " * indent
     if isinstance(value, dict | list) and value:
         items: list[tuple[str, Any]] = (
-            [(f"{k}:", v) for k, v in cast("dict[str, Any]", value).items()]
+            [(f"{_scalar(str(k))}:", v) for k, v in cast("dict[str, Any]", value).items()]
             if isinstance(value, dict)
             else [("-", v) for v in cast("list[Any]", value)]
         )
         lines: list[str] = []
         for label, item in items:
-            nested = _pretty(item, indent + 1)
-            if len(nested) == 1 and (not isinstance(item, dict | list) or not item):
-                lines.append(f"{pad}{label} {nested[0].strip()}")  # a one-line value
-            else:
+            if isinstance(item, str) and "\n" in item:
+                lines.append(f"{pad}{label} |")
+                lines += [f"{pad}  {line}" for line in item.split("\n")]
+            elif isinstance(item, dict | list) and item:
                 lines.append(f"{pad}{label}")
-                lines += nested
+                lines += _pretty(item, indent + 1)
+            else:
+                lines.append(f"{pad}{label} {_scalar(item)}")
         return lines
-    if isinstance(value, str):
-        return [pad + line for line in value.split("\n")]
-    return [pad + json.dumps(value, ensure_ascii=False)]
+    if isinstance(value, str) and "\n" in value:
+        return [pad + line for line in value.split("\n")]  # the whole content is text
+    return [pad + (value if isinstance(value, str) else _scalar(value))]
 
 
 def _content(value: Any, full: bool, max_lines: int, max_chars: int) -> Text:
@@ -378,10 +427,15 @@ def _content(value: Any, full: bool, max_lines: int, max_chars: int) -> Text:
 
 def breadcrumb(node: SpanNode) -> Text:
     """Where a span is: its ancestors' names, the nearest few only."""
-    path = node.path()
+    path: list[SpanNode] = []
+    part: SpanNode | None = node
+    while part is not None and len(path) <= BREADCRUMB_PARTS:  # never the whole chain
+        path.append(part)
+        part = part.parent
+    path.reverse()
     line = Text()
     if len(path) > BREADCRUMB_PARTS:
-        line.append(f"… {len(path) - BREADCRUMB_PARTS} levels", style="dim")
+        line.append("…", style="dim")
         path = path[-BREADCRUMB_PARTS:]
     for i, part in enumerate(path):
         if i or line:

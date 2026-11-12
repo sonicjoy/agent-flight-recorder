@@ -199,7 +199,7 @@ class SpanNode:
     usage: dict[str, Any]
     """Cache tokens and fast mode, from attributes.usage."""
     depth: int = 0
-    children: list[SpanNode] = field(default_factory=lambda: [])
+    children: list[SpanNode] = field(default_factory=lambda: [], repr=False)
     parent: SpanNode | None = field(default=None, repr=False)
 
     @property
