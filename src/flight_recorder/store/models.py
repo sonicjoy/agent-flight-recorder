@@ -21,6 +21,7 @@ from typing import Any
 from pgvector.sqlalchemy import Vector  # pyright: ignore[reportMissingTypeStubs]
 from sqlalchemy import (
     CheckConstraint,
+    Computed,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -32,10 +33,11 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 EMBEDDING_DIMENSIONS = 384  # bge-small (#11)
+KEYWORD_INDEX_TEXT = "to_tsvector('english'::regconfig, content)"
 
 SOURCES = ("otel", "claude_code")
 STATUSES = ("unset", "ok", "error")  # OTel span status codes
@@ -231,6 +233,11 @@ class Embedding(Base):
         Text, comment="The text that was embedded, built from redacted columns only"
     )
     embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIMENSIONS))
+    content_tsv: Mapped[str] = mapped_column(
+        TSVECTOR,
+        Computed(KEYWORD_INDEX_TEXT, persisted=True),
+        comment="content's words, for keyword search; computed by Postgres",
+    )
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 
@@ -247,6 +254,7 @@ class Embedding(Base):
             postgresql_using="hnsw",
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
+        Index("ix_embeddings_content_tsv", "content_tsv", postgresql_using="gin"),
     )
 
 

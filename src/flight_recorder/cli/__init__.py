@@ -10,6 +10,7 @@ from flight_recorder.cli.db import db_app
 from flight_recorder.cli.hook import hook_app
 from flight_recorder.cli.pricing import pricing_app
 from flight_recorder.cli.runs import replay, runs_app
+from flight_recorder.cli.search import embed, search
 
 app = typer.Typer(
     name="afr",
@@ -21,6 +22,8 @@ app.add_typer(hook_app, name="hook")
 app.add_typer(pricing_app, name="pricing")
 app.add_typer(runs_app, name="runs")
 app.command()(replay)
+app.command()(embed)
+app.command()(search)
 
 
 @app.callback()

@@ -89,6 +89,22 @@ def _unpriced() -> ColumnElement[bool]:
     )
 
 
+def run_conditions(where: RunFilter, now: datetime) -> list[ColumnElement[bool]]:
+    """The filter as conditions on `Run`, for any query that joins runs (search uses it)."""
+    conditions: list[ColumnElement[bool]] = []
+    if where.source:
+        conditions.append(Run.source == where.source)
+    if where.agent:
+        conditions.append(Run.agent == where.agent)
+    if where.status:
+        conditions.append(_state_clause(where.status, now))
+    if where.since:
+        conditions.append(Run.started_at >= where.since)
+    if where.until:
+        conditions.append(Run.started_at < where.until)
+    return conditions
+
+
 def find_runs(
     session: Session, where: RunFilter, now: datetime, ids: Sequence[uuid.UUID] | None = None
 ) -> list[RunSummary]:
@@ -100,17 +116,7 @@ def find_runs(
     )
     if ids is not None:
         query = query.where(Run.id.in_(ids))
-    if where.source:
-        query = query.where(Run.source == where.source)
-    if where.agent:
-        query = query.where(Run.agent == where.agent)
-    if where.status:
-        query = query.where(_state_clause(where.status, now))
-    if where.since:
-        query = query.where(Run.started_at >= where.since)
-    if where.until:
-        query = query.where(Run.started_at < where.until)
-    rows = session.execute(query).all()
+    rows = session.execute(query.where(*run_conditions(where, now))).all()
     runs = [row.Run for row in rows]
     if not runs:
         return []
