@@ -12,7 +12,7 @@
 | `real-gemini` | 35 real issues | gemini-3.5-flash-lite (free tier) | 35 | 22 | 13 |
 | **Total** | | | **200** | **70** | **130** |
 
-No run ended in an error or failed validation. The batch cost **$0.51** (Gemini's free tier counts as $0) and ran in about an hour.
+No run ended in an error or failed validation. The batch cost **$0.51** (Gemini's free tier counts as $0) and ran in about 1 h 15 min.
 
 The paid groups were planned on Claude Sonnet 5.5 and Haiku 5.5. They ran on OpenAI instead because no Anthropic credit was available. Gemini ran first, unchanged.
 
@@ -27,7 +27,17 @@ A run is `wrong` if any field differs from the truth, so the counts below overla
 | `injected-mini` | 18 | 6 | 4 | 0 |
 | `real-gemini` | 12 | 1 | 0 | 0 |
 
-Labels dominate everywhere. A first look, before the proper error analysis in #14:
+### Injected tool failures
+
+In `injected-mini`, 23 of the 30 runs had at least one tool call broken: 36 failures, nearly all on `search_issues`. By kind: bad-data 12, timeout 11, noise 10, empty 3. 17 of those 23 runs were wrong, against 5 of the 7 untouched ones. Both rates are high, so the injected failures add little beyond mini's own mistakes; #14 should read whether the agent noticed bad data.
+
+### Gemini's rate limits
+
+At one run every 30 seconds, Gemini's free tier returned no 429s. It did return five 503s ("high demand"), which the batch now retries. That pace is safe for the CI eval suite (#19).
+
+### A first look at the failures
+
+Labels dominate everywhere. Before the proper error analysis in #14:
 - **Over-labelling.** gpt-5.4-mini adds labels the truth doesn't have, e.g. `documentation` on #1 "Set up Python tooling and CI", and `evals` and `infra` on #2 "Provider-switchable LLM config".
 - **Missed priority labels.** Gemini misses `stretch` on #21, a stretch goal the issue body doesn't call optional.
 - **False duplicates of related issues.** For example, #12 (CLI list/show/replay) is called a duplicate of #29 (replay UI), and #20 (compare with promptfoo) a duplicate of #15 (eval harness). Related work isn't the same work.
@@ -41,13 +51,14 @@ The agent never sees it. Each run is graded after it ends, against the triager's
 
 ## Finding runs
 
-Each run's root span carries its grade: `triager.grade` (`correct`, `wrong` or `failed`) and one `ok` or `wrong` per field (`triager.grade.labels`, `.milestone`, `.duplicate_of`, `.regression_of`). It also has `triager.batch.group`, `.repeat`, `.attempt`, `triager.case`, `triager.inject` and `triager.triage_model`. Since this PR, OTel ingest copies root span attributes onto the run, so they're on `runs.attributes` too.
+Each run's root span carries its grade: `triager.grade` (`correct`, `wrong` or `failed`) and one `ok` or `wrong` per field (`triager.grade.labels`, `.milestone`, `.duplicate_of`, `.regression_of`). It also has `triager.batch.group`, `.repeat`, `.attempt`, `triager.case`, `triager.inject` and `triager.triage_model`. OTel ingest copies root span attributes onto the run (since #13), so they're on `runs.attributes` too.
 
 ```sql
--- wrong runs, newest first
+-- wrong runs, newest first (the four corpus groups; trial runs use other group names)
 SELECT id, name, attributes->>'triager.batch.group' AS grp, attributes->>'triager.case' AS issue
 FROM runs
 WHERE attributes->>'triager.grade' = 'wrong'
+  AND attributes->>'triager.batch.group' IN ('real-mini', 'synthetic-nano', 'injected-mini', 'real-gemini')
 ORDER BY started_at DESC;
 
 -- wrong per field, by group
@@ -57,13 +68,13 @@ FROM runs, LATERAL (VALUES
   ('milestone', attributes->>'triager.grade.milestone'),
   ('duplicate_of', attributes->>'triager.grade.duplicate_of'),
   ('regression_of', attributes->>'triager.grade.regression_of')) AS f(field, grade)
-WHERE grade = 'wrong'
+WHERE grade = 'wrong' AND attributes->>'triager.batch.group' IN ('real-mini', 'synthetic-nano', 'injected-mini', 'real-gemini')
 GROUP BY 1, 2 ORDER BY 1, 3 DESC;
 ```
 
 Then use `uv run afr runs show <id>` or `uv run afr replay <id>` for one run, or `uv run afr search "duplicate of a related issue"` across them.
 
-**Older runs:** the 35 Gemini runs came in before the copying existed. Their attributes were copied onto the run once, by hand:
+**Older runs:** the 35 Gemini runs came in before the copying existed. Their `triager.*` attributes (only those) were copied onto the run once, by hand:
 
 ```sql
 UPDATE runs r SET attributes = r.attributes || (
@@ -73,7 +84,7 @@ WHERE s.run_id = r.id AND s.parent_id IS NULL AND s.attributes ? 'triager.grade'
   AND NOT r.attributes ? 'triager.grade';
 ```
 
-**Extra traces that aren't corpus runs:** a retried attempt leaves its own error trace (`triager.batch.attempt` > 1, or an earlier attempt that hit a 503). The manifest is the list of record: count the latest line per key, or only runs with `triager.grade`. The batch's first pass had 5 Gemini runs end on 503s; they were retried and completed once the 503 retry fix landed (issue-triage-agent#7).
+**Extra traces that aren't corpus runs:** a retried attempt leaves its own error trace (`triager.batch.attempt` > 1, or an earlier attempt that hit a 503). The manifest is the list of record: count the latest line per key, or runs with `triager.grade` in the four corpus groups (a few trial runs from testing the batch have other group names, such as `smoke-nano`). The batch's first pass had 5 Gemini runs end on 503s; they were retried and completed once the 503 retry fix landed (issue-triage-agent#7).
 
 ## Regenerating it
 

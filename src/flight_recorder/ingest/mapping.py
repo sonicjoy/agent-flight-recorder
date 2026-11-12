@@ -339,7 +339,7 @@ def map_trace(trace: Trace) -> tuple[RunIn, list[SpanIn]]:
         status=cast("Status", root.status) if root else "unset",  # OTel spans: never rejected
         started_at=min(s.started_at for s in spans),
         ended_at=root.ended_at if root else None,  # only the root says when the run ended
-        attributes=resource | _run_attributes(root),
+        attributes=_run_attributes(root) | resource,  # the resource names the run
         fills_gaps=root is None,
     )
     return run, spans
@@ -350,8 +350,9 @@ SPAN_ONLY = ("events", "links")
 
 def _run_attributes(root: SpanIn | None) -> dict[str, Any]:
     """The root span's attributes, for the run: what the application says about the whole
-    run, such as an evaluation grade. Prompt and output content was already moved to the
-    span's input and output; events and links stay on the span."""
+    run, such as an evaluation grade. Events and links stay on the span. The content keys the
+    mapping moves to the span's input and output aren't here; any others it doesn't know
+    (older or vendor prompt keys) come along, redacted like every attribute."""
     if root is None:
         return {}
     return {k: v for k, v in root.attributes.items() if k not in SPAN_ONLY}

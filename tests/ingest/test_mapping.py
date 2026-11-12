@@ -330,3 +330,18 @@ def test_a_batch_without_the_root_has_only_resource_attributes() -> None:
 
     run, _ = map_trace(trace)
     assert "triager.grade" not in run.attributes and run.fills_gaps
+
+
+def root_with_events_and_a_clashing_key(tracer: Tracer) -> None:
+    with tracer.start_as_current_span(
+        "root", attributes={"service.name": "a span's own idea", "triager.grade": "ok"}
+    ) as span:
+        span.add_event("checkpoint", {"step": 1})
+
+
+def test_a_runs_attributes_leave_events_to_the_span_and_keep_the_resources_names() -> None:
+    run, spans = mapped(root_with_events_and_a_clashing_key)
+
+    assert "events" not in run.attributes and spans["root"].attributes["events"]
+    assert run.attributes["service.name"] == "issue-triager"  # the resource wins, like run.agent
+    assert run.attributes["triager.grade"] == "ok"
