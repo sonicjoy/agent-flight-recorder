@@ -37,7 +37,8 @@ from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 EMBEDDING_DIMENSIONS = 384  # bge-small (#11)
-KEYWORD_INDEX_TEXT = "to_tsvector('english'::regconfig, content)"
+KEYWORD_CONFIG = "english"  # Postgres text search: the index and the queries must agree
+KEYWORD_INDEX_TEXT = f"to_tsvector('{KEYWORD_CONFIG}'::regconfig, content)"
 
 SOURCES = ("otel", "claude_code")
 STATUSES = ("unset", "ok", "error")  # OTel span status codes

@@ -1,9 +1,9 @@
-"""The texts that get embedded: a short summary of each finished run, and one text for each
-root-cause failure in it.
+"""The texts that get embedded: a short summary of each run, and one text for each root-cause
+failure in it.
 
 Everything comes from columns that were redacted at ingest. bge-small reads 512 tokens, about
 2,000 characters of English, so each text is kept within MAX_CHARS, most telling parts
-first.
+first. Each part is cut on its own; the final cap is only a backstop.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, Literal, cast
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
@@ -19,10 +20,12 @@ from flight_recorder.store.models import Run
 from flight_recorder.store.read import SpanNode, span_content, span_tree
 
 MAX_CHARS = 2_000
+NAME_CHARS = 200
 INPUT_CHARS = 500
 OUTPUT_CHARS = 400
 ERROR_CHARS = 300
-MAX_FAILURES_IN_SUMMARY = 3
+MAX_IN_SUMMARY = 3  # failures, and refused calls, listed in a run's summary
+MAX_FAILURES = 20  # failure vectors per run: a runaway run can't flood the index
 MAX_TOOLS = 10
 
 Kind = Literal["run_summary", "failed_span"]
@@ -31,21 +34,24 @@ Kind = Literal["run_summary", "failed_span"]
 @dataclass(frozen=True)
 class Document:
     kind: Kind
-    span: SpanNode | None
+    span_id: UUID | None
     content: str
+
+
+def _all(roots: list[SpanNode]) -> list[SpanNode]:
+    nodes = [node for root in roots for node in root.walk()]
+    return sorted(nodes, key=lambda n: (n.started_at, n.external_id))
 
 
 def root_failures(roots: list[SpanNode]) -> list[SpanNode]:
     """Error spans with no failed child, in time order. One API error usually marks the
     llm, its step and its agent; only the deepest says what happened. Rejected calls
     (refused permission) aren't failures."""
-    failures = [
+    return [
         node
-        for root in roots
-        for node in root.walk()
+        for node in _all(roots)
         if node.status == "error" and not any(c.status == "error" for c in node.children)
     ]
-    return sorted(failures, key=lambda n: (n.started_at, n.external_id))
 
 
 def _strings(value: Any) -> Iterator[str]:
@@ -70,47 +76,62 @@ def _cap(lines: list[str]) -> str:
     return "\n".join(line for line in lines if line)[:MAX_CHARS]
 
 
+def _conversation(session: Session, roots: list[SpanNode]) -> tuple[Any, Any]:
+    """What the run was asked and what it answered. The entry span has them for OTel runs;
+    a Claude Code session keeps them on its turns: the first prompt, the last reply."""
+    if not roots:
+        return None, None
+    entry = roots[0]
+    found = span_content(session, entry.id)
+    asked, answered = found.input, found.output
+    turns = sorted(entry.children, key=lambda n: (n.started_at, n.external_id))
+    if not asked:
+        asked = next((i for t in turns if (i := span_content(session, t.id).input)), None)
+    if not answered:
+        answered = next(
+            (o for t in reversed(turns) if (o := span_content(session, t.id).output)), None
+        )
+    return asked, answered
+
+
 def _failure_line(node: SpanNode) -> str:
     return f"{node.kind} {node.name} failed: {_text(node.error, ERROR_CHARS)}"
 
 
+def _refused_line(node: SpanNode) -> str:
+    why = f" ({_text(node.error, ERROR_CHARS)})" if node.error else ""
+    return f"refused: {node.kind} {node.name}{why}"
+
+
 def documents(session: Session, run: Run, state: str) -> list[Document]:
-    """The run's summary first, then one document per root-cause failure."""
+    """The run's summary first, then one document per root-cause failure (at most
+    MAX_FAILURES, the earliest)."""
     roots = span_tree(session, run.id)
-    entry = roots[0] if roots else None
-    asked, answered = (None, None)
-    if entry is not None:
-        found = span_content(session, entry.id)
-        asked, answered = found.input, found.output
+    nodes = _all(roots)
+    asked, answered = _conversation(session, roots)
     failures = root_failures(roots)
-    tools = Counter(n.name for root in roots for n in root.walk() if n.kind == "tool")
+    refused = [n for n in nodes if n.status == "rejected"]
+    tools = Counter(n.name for n in nodes if n.kind == "tool")
     agent = run.agent or run.source
+    name = _text(run.name, NAME_CHARS)
     summary = _cap(
         [
-            f"{agent} run: {_text(run.name, 200)}",
+            f"{agent} run: {name}",
             f"status: {state}",
             f"asked: {_text(asked, INPUT_CHARS)}" if asked else "",
             f"answered: {_text(answered, OUTPUT_CHARS)}" if answered else "",
-            *(_failure_line(n) for n in failures[:MAX_FAILURES_IN_SUMMARY]),
-            f"tools: {', '.join(name for name, _ in tools.most_common(MAX_TOOLS))}"
-            if tools
-            else "",
+            *(_failure_line(n) for n in failures[:MAX_IN_SUMMARY]),
+            *(_refused_line(n) for n in refused[:MAX_IN_SUMMARY]),
+            f"tools: {', '.join(t for t, _ in tools.most_common(MAX_TOOLS))}" if tools else "",
         ]
     )
     docs = [Document("run_summary", None, summary)]
-    for node in failures:
+    for node in failures[:MAX_FAILURES]:
         given = span_content(session, node.id).input
-        docs.append(
-            Document(
-                "failed_span",
-                node,
-                _cap(
-                    [
-                        _failure_line(node),
-                        f"in {agent} run: {_text(run.name, 200)}",
-                        f"input: {_text(given, INPUT_CHARS)}" if given else "",
-                    ]
-                ),
-            )
-        )
+        lines = [
+            _failure_line(node),
+            f"in {agent} run: {name}",
+            f"input: {_text(given, INPUT_CHARS)}" if given else "",
+        ]
+        docs.append(Document("failed_span", node.id, _cap(lines)))
     return docs

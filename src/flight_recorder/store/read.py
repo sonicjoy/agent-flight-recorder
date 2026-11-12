@@ -45,6 +45,17 @@ def _last_change() -> ColumnElement[datetime]:
     return func.greatest(Run.updated_at, newest_span)  # greatest() skips NULL
 
 
+def last_change() -> ColumnElement[datetime]:
+    """When the run or any of its spans last changed (see `_last_change`)."""
+    return _last_change()
+
+
+def settled(now: datetime) -> ColumnElement[bool]:
+    """Runs whose story won't change soon: finished, or unfinished (no end, and quiet for
+    RUNNING_WINDOW). Only running runs are left out."""
+    return or_(Run.ended_at.is_not(None), _last_change() < now - RUNNING_WINDOW)
+
+
 def run_state(run: Run, last_change: datetime, now: datetime) -> RunState:
     """The run's status, or, while it has no end, whether it's still going."""
     if run.ended_at is not None:

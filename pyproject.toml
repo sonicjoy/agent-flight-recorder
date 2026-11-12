@@ -34,8 +34,9 @@ requires = ["uv_build>=0.13.7,<0.14.0"]
 build-backend = "uv_build"
 
 [tool.uv]
-# Dependencies must be at least two weeks old; hf-xet 1.8.0 (30 Oct) wasn't yet.
-exclude-newer-package = { hf-xet = "2026-10-29T00:00:00Z" }
+# Dependencies must be at least two weeks old. Temporary holds, set 12 Nov 2026: hf-xet 1.8.0
+# (30 Oct) and filelock 4.2.9 (4 Nov) were newer. Remove each once its release is two weeks old.
+exclude-newer-package = { hf-xet = "2026-10-29T00:00:00Z", filelock = "2026-10-29T00:00:00Z" }
 
 [tool.uv.build-backend]
 module-name = "flight_recorder"
