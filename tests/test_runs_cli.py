@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+import typer
 from rich.console import Console
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session
@@ -407,12 +408,36 @@ def test_token_counts_are_short(count: int | None, shown: str) -> None:
     assert render.tokens(count) == shown
 
 
-def test_relative_and_absolute_times() -> None:
-    now = datetime(2026, 11, 12, 12, 0, tzinfo=UTC)
-    assert parse_when("30m", now) == now - timedelta(minutes=30)
-    assert parse_when("2w", now) == now - timedelta(weeks=2)
-    assert parse_when("2026-11-10", now) == datetime(2026, 11, 10).astimezone()
-    assert parse_when("2026-11-10T14:30", now) == datetime(2026, 11, 10, 14, 30).astimezone()
+TIME_NOW = datetime(2026, 11, 12, 12, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("typed", "means"),
+    [
+        ("30m", TIME_NOW - timedelta(minutes=30)),
+        ("2h", TIME_NOW - timedelta(hours=2)),
+        ("3d", TIME_NOW - timedelta(days=3)),
+        ("2w", TIME_NOW - timedelta(weeks=2)),
+        ("2026-11-10", datetime(2026, 11, 10).astimezone()),  # local midnight
+        ("2026-11-10T14:30", datetime(2026, 11, 10, 14, 30).astimezone()),  # local time
+        ("2026-11-10T14:30+00:00", datetime(2026, 11, 10, 14, 30, tzinfo=UTC)),
+    ],
+)
+def test_relative_and_absolute_times(typed: str, means: datetime) -> None:
+    assert parse_when(typed, TIME_NOW) == means
+
+
+@pytest.mark.parametrize("typed", ["2mo", "1y", "yesterday", "10", ""])
+def test_other_time_forms_are_refused(typed: str) -> None:
+    with pytest.raises(typer.BadParameter):  # no months: `m` is minutes
+        parse_when(typed, TIME_NOW)
+
+
+def test_times_are_shown_in_local_time() -> None:
+    now = datetime(2026, 11, 12, 12, 0).astimezone()
+    this_year = datetime(2026, 3, 4, 5, 6, tzinfo=UTC)
+    assert render.short_time(this_year, now) == this_year.astimezone().strftime("%m-%d %H:%M")
+    assert render.short_time(datetime(2025, 3, 4, 12, tzinfo=UTC), now) == "2025-03-04"
 
 
 # --- replay keys ----------------------------------------------------------------------
@@ -448,6 +473,25 @@ def test_replay_quits_on_q_and_when_keys_run_out() -> None:
 
     assert replay_steps(out, nodes, lambda n: (None, None), iter(["q"]), clear=False) == 1
     assert replay_steps(out, nodes, lambda n: (None, None), iter([]), clear=False) == 1
+    assert replay_steps(out, nodes, lambda n: (None, None), iter(["\x1b"]), clear=False) == 1
+
+
+@pytest.mark.parametrize(
+    ("forward", "back"),
+    [("\x1b[C", "\x1b[D"), ("\xe0M", "\xe0K"), ("j", "k")],  # POSIX arrows, Windows arrows
+)
+def test_replay_arrow_keys_move_on_and_back(forward: str, back: str) -> None:
+    nodes = [node("a", 0), node("b", 1)]
+    loads: list[str] = []
+
+    def load(n: SpanNode) -> tuple[Any, Any]:
+        loads.append(n.external_id)
+        return None, None
+
+    out = Console(file=io.StringIO(), width=100)
+    replay_steps(out, nodes, load, iter([forward, back, "q"]), clear=False)
+
+    assert loads == ["a", "b", "a"]
 
 
 # --- commands -------------------------------------------------------------------------
@@ -462,6 +506,23 @@ def test_list_command(cli: Callable[..., Any]) -> None:
     assert (
         "\x1b" not in result.output and "\\x1b" not in cli("runs", "list").output.split("fix it")[0]
     )
+
+
+def test_list_filters_by_start_time_and_open_runs(cli: Callable[..., Any]) -> None:
+    window = cli(
+        "runs",
+        "list",
+        "--since",
+        "2026-11-01T09:00:01+00:00",
+        "--until",
+        "2026-11-01T10:30:00+00:00",
+    )
+    assert window.exit_code == 0, window.output
+    assert "failed run" in window.output and "triage issue 7" not in window.output
+    running = cli("runs", "list", "--status", "running")
+    assert "fix it" in running.output and "failed run" not in running.output
+    bad = cli("runs", "list", "--since", "yesterday")
+    assert bad.exit_code == 2 and "30m, 2h, 3d or 1w" in bad.output
 
 
 def test_list_rejects_an_unknown_status(cli: Callable[..., Any]) -> None:
