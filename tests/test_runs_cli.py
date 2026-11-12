@@ -39,7 +39,7 @@ pytestmark = pytest.mark.db
 runner = CliRunner()
 REDACTOR = Redactor(b"test-key-0123456789abcdef0123456789abcdef")
 T0 = datetime(2026, 11, 1, 9, 0, tzinfo=UTC)
-NASTY = "\x1b[2J\x1b]0;owned\x07[red]fake[/red] ‮evil"
+NASTY = "\x1b[2J\x1b]0;owned\x07[red]fake[/red] \u202eevil"
 HAIKU = "anthropic:claude-haiku-5-5"
 
 
@@ -337,7 +337,7 @@ def rendered(*things: Any, width: int = 160) -> str:
     [
         ("\x1b[2J", "\\x1b[2J"),
         ("title\x1b]0;owned\x07", "title\\x1b]0;owned\\x07"),
-        ("a‮b", "a\\u202eb"),
+        ("a\u202eb", "a\\u202eb"),
         ("over\rwrite", "over\\x0dwrite"),
         ("crlf\r\nkept\ttab", "crlf\nkept\ttab"),
         ("c1\x9b", "c1\\x9b"),
@@ -354,7 +354,7 @@ def test_recorded_text_never_reaches_the_terminal_raw(
     roots = span_tree(db, ids["session"])
     output = rendered(render.span_tree(roots), render.step(roots[0], 1, 1, T0, (NASTY, None)))
 
-    assert "\x1b[2J" not in output and "\x1b]0" not in output and "‮" not in output
+    assert "\x1b[2J" not in output and "\x1b]0" not in output and "\u202e" not in output
     assert "[red]fake[/red]" in output  # markup shown as typed, not obeyed
     assert "\\x1b[2J" in output
 
@@ -572,3 +572,194 @@ def test_the_commands_can_only_read(cli: Callable[..., Any]) -> None:
 
     with _store() as session:
         assert session.execute(text("SHOW transaction_read_only")).scalar() == "on"
+
+
+# --- review round 1: tests written before the fixes ----------------------------------
+
+
+def test_a_run_is_running_while_its_spans_change(db: Session, ids: dict[str, uuid.UUID]) -> None:
+    """Adding spans doesn't touch the run row, so the run's own updated_at goes stale."""
+    db.execute(text("SET LOCAL session_replication_role = replica"))  # no trigger: age the run
+    db.execute(
+        text("UPDATE runs SET updated_at = updated_at - interval '2 hours' WHERE id = :id"),
+        {"id": ids["session"]},
+    )
+    db.execute(text("SET LOCAL session_replication_role = origin"))
+    db.execute(
+        text("UPDATE spans SET name = 'Bash!' WHERE run_id = :id AND external_id = 'tool-29'"),
+        {"id": ids["session"]},
+    )
+    (summary,) = find_runs(db, RunFilter(status="running"), datetime.now(UTC), ids=[ids["session"]])
+    assert summary.state == "running"
+    db.rollback()
+
+
+@pytest.mark.parametrize("width", ["60", "80"])
+def test_list_keeps_ids_and_costs_whole_on_narrow_terminals(
+    cli: Callable[..., Any], ids: dict[str, uuid.UUID], width: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("COLUMNS", width)
+    result = cli("runs", "list", "--source", "otel")
+    lines = result.output.splitlines()
+    assert all(len(line) <= int(width) for line in lines)
+    assert str(ids["triage"])[:8] in result.output
+    assert "cost" in lines[0] and "+ unpriced" in result.output
+
+
+def test_list_and_show_escape_recorded_text(cli: Callable[..., Any]) -> None:
+    for result in (cli("runs", "list"), cli("runs", "show", "session-big")):
+        assert result.exit_code == 0, result.output
+        assert "\x1b" not in result.output and "\u202e" not in result.output
+        assert "\\x1b[2J" in result.output and "\\u202e" in result.output
+
+
+@pytest.mark.parametrize(
+    ("raw", "shown"),
+    [
+        ("tag\U000e0041", "tag\\U000e0041"),  # invisible to people, readable by models
+        ("zero\u200bwidth", "zero\\u200bwidth"),
+        ("bom\ufeff", "bom\\ufeff"),
+        ("soft\u00adhyphen", "soft\\xadhyphen"),
+        ("line\u2028sep", "line\\u2028sep"),
+        ("private\ue000", "private\\ue000"),
+    ],
+)
+def test_clean_shows_invisible_characters(raw: str, shown: str) -> None:
+    assert render.clean(raw) == shown
+
+
+def test_a_very_deep_tree_renders_and_replays() -> None:
+    root = node("n0", 0)
+    last = root
+    for i in range(1, 3000):
+        last = node(f"n{i}", 0, last)
+    assert len(root.walk()) == 3000 and len(last.path()) == 3000
+    assert len(steps([root])) == 3000
+    rendered(render.span_tree([root]), render.step(last, 3000, 3000, T0, None))
+
+
+def test_many_parent_loops_are_cut_quickly() -> None:
+    import time as clock
+
+    from flight_recorder.store.read import build_tree
+
+    nodes: list[SpanNode] = []
+    for i in range(3000):  # 3,000 two-span loops: a points at b, b at a
+        a, b = node(f"a{i}", i), node(f"b{i}", i)
+        a.parent_id, b.parent_id = b.id, a.id
+        nodes += [a, b]
+    started = clock.perf_counter()
+    roots = build_tree(nodes)
+    assert clock.perf_counter() - started < 2
+    assert len(roots) == 3000 and sum(len(r.walk()) for r in roots) == 6000
+
+
+@pytest.mark.parametrize("typed", ["99999999w", "1900-01-01", "0001-01-01T00:00"])
+def test_out_of_range_times_are_usage_errors(typed: str) -> None:
+    with pytest.raises(typer.BadParameter):
+        parse_when(typed, TIME_NOW)
+
+
+def test_the_limit_hint_only_shows_when_there_are_more(cli: Callable[..., Any]) -> None:
+    exact = cli("runs", "list", "--agent", "triager", "--limit", "1")
+    assert "triage issue 7" in exact.output and "--limit shows more" not in exact.output
+    more = cli("runs", "list", "--source", "otel", "--limit", "1")
+    assert "--limit shows more" in more.output
+    assert cli("runs", "list", "--limit", "1001").exit_code == 2
+
+
+def test_replay_times_are_from_the_run_start_even_when_filtered(
+    cli: Callable[..., Any], ids: dict[str, uuid.UUID]
+) -> None:
+    result = cli("replay", str(ids["triage"]), "--kind", "llm")
+    assert "step 1/2  +0:01" in result.output and "step 2/2  +0:03" in result.output
+
+
+def test_a_long_prefix_works_without_hyphens(db: Session, ids: dict[str, uuid.UUID]) -> None:
+    assert resolve_run(db, str(ids["triage"]).replace("-", "")[:12]).id == ids["triage"]
+
+
+def test_tiny_costs_and_round_token_counts() -> None:
+    assert render.cost(Decimal("0.00001"), False) == "<$0.0001"
+    assert render.tokens(999_950) == "1.0M"
+    assert render.tokens(999_499) == "999k"
+
+
+@pytest.mark.parametrize(("forward", "back"), [("\x1bOC", "\x1bOD"), ("\x00M", "\x00K")])
+def test_more_arrow_key_forms(forward: str, back: str) -> None:
+    test_replay_arrow_keys_move_on_and_back(forward, back)
+
+
+def test_replay_ties_go_by_id() -> None:
+    b, a = node("b", 1), node("a", 1)
+    assert steps([b, a]) == [a, b]
+
+
+def test_an_interrupt_quits_the_replay(monkeypatch: pytest.MonkeyPatch) -> None:
+    import click
+
+    from flight_recorder.cli.runs import _keys  # pyright: ignore[reportPrivateUsage]
+
+    def interrupted() -> str:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(click, "getchar", interrupted)
+    assert next(_keys()) == "q"
+
+
+def test_show_options_through_the_command(cli: Callable[..., Any]) -> None:
+    every = cli("runs", "show", "session-big", "--all")
+    assert every.output.count("tool Bash") == 30
+    shallow = cli("runs", "show", "session-big", "--depth", "1")
+    assert "tool Bash" not in shallow.output and "… 30 more (30 tool)" in shallow.output
+    problems = cli("runs", "show", "session-big", "--errors")
+    assert problems.output.count("tool Bash") == 1 and "rejected" in problems.output
+    reads = cli("runs", "show", "session-big", "--kind", "tool")
+    assert "tool Read" in reads.output
+    assert cli("runs", "show", "session-big", "--kind", "nope").exit_code == 2
+
+
+def test_a_folded_line_keeps_tokens_and_cost(
+    cli: Callable[..., Any], ids: dict[str, uuid.UUID]
+) -> None:
+    result = cli("runs", "show", str(ids["triage"]), "--depth", "1")
+    folded = next(line for line in result.output.splitlines() if "… 3 more" in line)
+    assert "1.0k/100 tok" in folded and "+ unpriced" in folded
+
+
+def test_replay_full_shows_all_content(cli: Callable[..., Any], ids: dict[str, uuid.UUID]) -> None:
+    run = str(ids["triage"])
+    cut = cli("replay", run, "--kind", "llm", "--content")
+    assert "more lines; --full shows everything" in cut.output
+    whole = cli("replay", run, "--kind", "llm", "--content", "--full")
+    assert "more lines" not in whole.output and whole.output.count("line") >= 100
+
+
+def test_show_never_loads_span_content(
+    cli: Callable[..., Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import flight_recorder.store.read as read
+
+    def refuse(*args: Any) -> Any:
+        raise AssertionError("show loaded span content")
+
+    monkeypatch.setattr(read, "span_content", refuse)
+    assert cli("runs", "show", "session-big").exit_code == 0
+
+
+def test_last_with_no_finished_run_and_an_old_schema(
+    make_database: Callable[[], str], clean_env: pytest.MonkeyPatch
+) -> None:
+    old = make_database()
+    upgrade(old, "0001")
+    clean_env.setenv("AFR_DATABASE_URL", old)
+    behind = runner.invoke(app, ["runs", "show", "last"])
+    assert behind.exit_code == 2 and "afr db upgrade" in behind.output
+
+    upgrade(old)
+    engine = create_engine(old)
+    with Session(engine) as session, session.begin():
+        session.add(Run(source="otel", external_id="t", started_at=T0))  # still open
+    engine.dispose()
+    none = runner.invoke(app, ["runs", "show", "last"])
+    assert none.exit_code == 1 and "no finished runs yet" in none.output

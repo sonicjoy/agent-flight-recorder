@@ -2,17 +2,20 @@
 
 Everything recorded is untrusted text: a tool's output or a fetched page can hold terminal
 escape codes (clear the screen, set the window title), right-to-left overrides that
-disguise text, or Rich markup. `clean` shows those as visible escapes, and recorded text
-only ever reaches the terminal as `rich.text.Text`, never as markup.
+disguise text, invisible characters that hide words from a reader (but not from a model),
+or Rich markup. `clean` shows those as visible escapes, and recorded text only ever
+reaches the terminal as `rich.text.Text`, never as markup.
 """
 
 from __future__ import annotations
 
 import json
+import unicodedata
+from collections import Counter
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
@@ -20,10 +23,13 @@ from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
 
-from flight_recorder.store.read import RunSummary, SpanNode
+if TYPE_CHECKING:
+    from flight_recorder.store.read import RunSummary, SpanNode
 
-BIDI = frozenset("؜‎‏‪‫‬‭‮⁦⁧⁨⁩")
 KEPT = frozenset("\n\t")
+HIDDEN = frozenset(("Cc", "Cf", "Zl", "Zp", "Co", "Cn"))
+"""Control and format characters (bidi overrides, zero-width, tags), line and paragraph
+separators, private-use and unassigned code points: shown as escapes."""
 STATE_STYLE = {
     "ok": "green",
     "error": "bold red",
@@ -34,6 +40,8 @@ STATE_STYLE = {
 }
 FOLD_OVER = 20  # children; a node with more shows the first and last few, and every problem
 FOLD_KEEP = 5
+TREE_DEPTH = 40  # levels `show` draws at most; deeper spans are summarised
+BREADCRUMB_PARTS = 6
 CONTENT_LINES = 40
 CONTENT_CHARS = 4_000
 
@@ -45,18 +53,17 @@ def console() -> Console:
 
 def _escape(char: str) -> str:
     code = ord(char)
-    return f"\\x{code:02x}" if code < 0x100 else f"\\u{code:04x}"
+    if code < 0x100:
+        return f"\\x{code:02x}"
+    return f"\\u{code:04x}" if code < 0x10000 else f"\\U{code:08x}"
 
 
 def clean(value: str) -> str:
-    """Recorded text made safe to print: control characters (but newlines and tabs) and
-    bidirectional overrides become visible escapes such as `\\x1b` and `\\u202e`."""
+    """Recorded text made safe to print: control and invisible characters (but newlines
+    and tabs) become visible escapes such as `\\x1b`, `\\u202e` and `\\U000e0041`."""
     value = value.replace("\r\n", "\n")
     return "".join(
-        _escape(c)
-        if c in BIDI or (c not in KEPT and (ord(c) < 0x20 or 0x7F <= ord(c) <= 0x9F))
-        else c
-        for c in value
+        _escape(c) if c not in KEPT and unicodedata.category(c) in HIDDEN else c for c in value
     )
 
 
@@ -76,15 +83,17 @@ def tokens(count: int | None) -> str:
     if count is None:
         return ""
     for size, unit in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "k")):
-        if count >= size:
+        if count >= size - size // 2_000:  # 999,950 rounds to 1.0M, not 1000k
             shown = count / size
-            return f"{shown:.0f}{unit}" if shown >= 100 else f"{shown:.1f}{unit}"
+            return f"{shown:.0f}{unit}" if shown >= 99.95 else f"{shown:.1f}{unit}"
     return str(count)
 
 
 def money(cost: Decimal | None) -> str:
     if cost is None:
         return ""
+    if 0 < cost < Decimal("0.0001"):
+        return "<$0.0001"
     return f"${cost:.2f}" if cost >= 1 else f"${cost:.4f}"
 
 
@@ -121,34 +130,65 @@ def short_time(at: datetime, now: datetime) -> str:
     return shown.strftime("%m-%d %H:%M" if shown.year == now.year else "%Y-%m-%d")
 
 
-def runs_table(summaries: Sequence[RunSummary]) -> Table:
-    """One line per run. The agent says the source (claude-code, or the OTel service);
-    the name gets whatever width is left."""
+COLUMNS = ("id", "started", "agent", "name", "status", "took", "tokens", "cost")
+OPTIONAL_COLUMNS = ("agent", "tokens", "took", "started")
+"""Dropped in this order when the terminal is too narrow; id, name, status and cost stay."""
+
+
+def runs_table(summaries: Sequence[RunSummary], width: int) -> Table:
+    """One line per run, fitted to `width`. The agent says the source (claude-code, or the
+    OTel service); the name gets whatever width is left."""
     now = datetime.now().astimezone()
+    rows = [
+        {
+            "id": str(s.run.id)[:8],
+            "started": short_time(s.run.started_at, now),
+            "agent": text(s.run.agent or s.run.source),
+            "name": Text(one_line(s.run.name, 80), no_wrap=True, overflow="ellipsis"),
+            "status": Text(s.state, style=STATE_STYLE.get(s.state, "")),
+            "took": duration(s.run.started_at, s.run.ended_at),
+            "tokens": (
+                f"{tokens(s.run.input_tokens)}/{tokens(s.run.output_tokens)}"
+                if s.run.input_tokens
+                else ""
+            ),
+            "cost": cost(s.known_cost, s.unpriced),
+        }
+        for s in summaries
+    ]
+    widths = {c: max([len(c), *(_cells(row[c]) for row in rows)]) for c in COLUMNS}
+    widths["agent"] = min(widths["agent"], 16)
+    widths["name"] = 8  # it shrinks to fit
+    dropped: list[str] = []
+    while True:
+        kept = [c for c in COLUMNS if c not in dropped]
+        needed = sum(widths[c] for c in kept) + len(kept) - 1  # one space between columns
+        if needed <= width or len(dropped) == len(OPTIONAL_COLUMNS):
+            return _table(rows, kept)
+        dropped.append(OPTIONAL_COLUMNS[len(dropped)])
+
+
+def _cells(value: str | Text) -> int:
+    return (Text(value) if isinstance(value, str) else value).cell_len
+
+
+def _table(rows: list[dict[str, Any]], columns: list[str]) -> Table:
     table = Table(box=None, pad_edge=False, header_style="bold", collapse_padding=True)
-    table.add_column("id", no_wrap=True)
-    table.add_column("started", no_wrap=True)
-    table.add_column("agent", max_width=16, no_wrap=True, overflow="ellipsis")
-    table.add_column("name", min_width=8)  # the only column that shrinks
-    for column in ("status", "took", "tokens", "cost"):
-        table.add_column(column, no_wrap=True, justify="left" if column == "status" else "right")
-    for s in summaries:
-        run = s.run
-        table.add_row(
-            str(run.id)[:8],
-            short_time(run.started_at, now),
-            text(run.agent or run.source),
-            Text(one_line(run.name, 80), no_wrap=True, overflow="ellipsis"),
-            Text(s.state, style=STATE_STYLE.get(s.state, "")),
-            duration(run.started_at, run.ended_at),
-            f"{tokens(run.input_tokens)}/{tokens(run.output_tokens)}" if run.input_tokens else "",
-            cost(s.known_cost, s.unpriced),
-        )
+    for column in columns:
+        if column == "name":
+            table.add_column(column, min_width=8)  # the only column that shrinks
+        elif column == "agent":
+            table.add_column(column, max_width=16, no_wrap=True, overflow="ellipsis")
+        else:
+            right = column in ("took", "tokens", "cost")
+            table.add_column(column, no_wrap=True, justify="right" if right else "left")
+    for row in rows:
+        table.add_row(*(row[c] for c in columns))
     return table
 
 
 def _usage_total(nodes: Sequence[SpanNode], key: str) -> int:
-    return sum(n.usage.get(key) or 0 for n in nodes if isinstance(n.usage.get(key), int))
+    return sum(v for n in nodes if isinstance(v := n.usage.get(key), int))
 
 
 def run_header(summary: RunSummary, roots: Sequence[SpanNode]) -> Panel:
@@ -224,9 +264,7 @@ def keep(roots: Sequence[SpanNode], kind: str | None, problems_only: bool) -> se
 def _folded(hidden: Sequence[SpanNode]) -> Text:
     """A summary of the spans folded away: how many of each kind, their tokens and cost."""
     every = [n for h in hidden for n in h.walk()]
-    kinds: dict[str, int] = {}
-    for h in hidden:
-        kinds[h.kind] = kinds.get(h.kind, 0) + 1
+    kinds = Counter(h.kind for h in hidden)
     parts = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
     line = Text(f"… {len(hidden)} more ({parts})", style="dim italic")
     used_in = sum(n.input_tokens or 0 for n in every)
@@ -272,33 +310,57 @@ def span_tree(
     shown: set[SpanNode] | None = None,
     fold: bool = True,
 ) -> Tree:
+    """The span tree, at most `depth` levels (and never more than TREE_DEPTH)."""
+    levels = min(depth or TREE_DEPTH, TREE_DEPTH)
     tree = Tree(Text("spans", style="dim"), guide_style="dim")
+
+    def add_all(branch: Tree, nodes: Sequence[SpanNode]) -> None:
+        for item in _visible([n for n in nodes if shown is None or n in shown], fold):
+            if isinstance(item, list):
+                branch.add(_folded(item))
+            else:
+                add(branch, item)
 
     def add(branch: Tree, node: SpanNode) -> None:
         child_branch = branch.add(span_line(node))
-        children = [c for c in node.children if shown is None or c in shown]
-        if depth is not None and node.depth + 1 >= depth:
-            if children:
-                child_branch.add(_folded(children))
+        if node.depth + 1 < levels:
+            add_all(child_branch, node.children)  # recursion bounded by TREE_DEPTH
             return
-        for item in _visible(children, fold):
-            if isinstance(item, list):
-                child_branch.add(_folded(item))
-            else:
-                add(child_branch, item)
+        children = [c for c in node.children if shown is None or c in shown]
+        if children:
+            child_branch.add(_folded(children))
 
-    for item in _visible([r for r in roots if shown is None or r in shown], fold):
-        if isinstance(item, list):
-            tree.add(_folded(item))
-        else:
-            add(tree, item)
+    add_all(tree, roots)
     return tree
 
 
+def _pretty(value: Any, indent: int = 0) -> list[str]:
+    """JSON as indented `key: value` lines, with multi-line strings as real lines, so a
+    prompt reads as text rather than one long line of `\\n` escapes."""
+    pad = "  " * indent
+    if isinstance(value, dict | list) and value:
+        items: list[tuple[str, Any]] = (
+            [(f"{k}:", v) for k, v in cast("dict[str, Any]", value).items()]
+            if isinstance(value, dict)
+            else [("-", v) for v in cast("list[Any]", value)]
+        )
+        lines: list[str] = []
+        for label, item in items:
+            nested = _pretty(item, indent + 1)
+            if len(nested) == 1 and (not isinstance(item, dict | list) or not item):
+                lines.append(f"{pad}{label} {nested[0].strip()}")  # a one-line value
+            else:
+                lines.append(f"{pad}{label}")
+                lines += nested
+        return lines
+    if isinstance(value, str):
+        return [pad + line for line in value.split("\n")]
+    return [pad + json.dumps(value, ensure_ascii=False)]
+
+
 def _content(value: Any, full: bool, max_lines: int, max_chars: int) -> Text:
-    """A span's input or output, pretty-printed, cleaned and cut unless `full`."""
-    shown = value if isinstance(value, str) else json.dumps(value, indent=2, ensure_ascii=False)
-    shown = clean(shown)
+    """A span's input or output, readable, cleaned and cut unless `full`."""
+    shown = clean("\n".join(_pretty(value)))
     note = ""
     if not full:
         lines = shown.split("\n")
@@ -315,9 +377,14 @@ def _content(value: Any, full: bool, max_lines: int, max_chars: int) -> Text:
 
 
 def breadcrumb(node: SpanNode) -> Text:
+    """Where a span is: its ancestors' names, the nearest few only."""
+    path = node.path()
     line = Text()
-    for i, part in enumerate(node.path()):
-        if i:
+    if len(path) > BREADCRUMB_PARTS:
+        line.append(f"… {len(path) - BREADCRUMB_PARTS} levels", style="dim")
+        path = path[-BREADCRUMB_PARTS:]
+    for i, part in enumerate(path):
+        if i or line:
             line.append(" › ", style="dim")  # noqa: RUF001 (a deliberate separator)
         line.append(one_line(part.name, 40), style="bold" if part is node else "")
     return line
@@ -334,7 +401,8 @@ def step(
     max_lines: int = CONTENT_LINES,
     max_chars: int = CONTENT_CHARS,
 ) -> RenderableType:
-    """One replay step: where it is in the run and the tree, the span, and its content."""
+    """One replay step: where it is in the run and the tree, the span, and its content.
+    `started` is the run's start, so times stay the same whichever spans are replayed."""
     offset = node.started_at - started
     head = Text(f"step {number}/{total}  +{_clock(offset)}  ", style="dim")
     head.append_text(breadcrumb(node))
@@ -344,11 +412,8 @@ def step(
     if content is not None:
         for title, value in zip(("input", "output"), content, strict=True):
             if value not in (None, "", [], {}):
-                parts.append(
-                    Panel(
-                        _content(value, full, max_lines, max_chars), title=title, title_align="left"
-                    )
-                )
+                body = _content(value, full, max_lines, max_chars)
+                parts.append(Panel(body, title=title, title_align="left"))
     return Group(*parts)
 
 

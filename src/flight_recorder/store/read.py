@@ -38,11 +38,18 @@ class AmbiguousRunError(LookupError):
         self.matches = list(matches)
 
 
-def run_state(run: Run, now: datetime) -> RunState:
+def _last_change() -> ColumnElement[datetime]:
+    """When the run or any of its spans last changed. Writing a span doesn't always touch
+    the run row (its totals move only with tokens), so the run's own updated_at goes stale."""
+    newest_span = select(func.max(Span.updated_at)).where(Span.run_id == Run.id).scalar_subquery()
+    return func.greatest(Run.updated_at, newest_span)  # greatest() skips NULL
+
+
+def run_state(run: Run, last_change: datetime, now: datetime) -> RunState:
     """The run's status, or, while it has no end, whether it's still going."""
     if run.ended_at is not None:
         return run.status  # type: ignore[return-value]  # constrained by ck_runs_status
-    return "running" if now - run.updated_at <= RUNNING_WINDOW else "unfinished"
+    return "running" if now - last_change <= RUNNING_WINDOW else "unfinished"
 
 
 @dataclass(frozen=True)
@@ -59,7 +66,6 @@ class RunFilter:
 class RunSummary:
     run: Run
     state: RunState
-    spans: int
     known_cost: Decimal | None
     """The sum of the priced spans' costs; with `unpriced`, the part of the cost we know."""
     unpriced: bool
@@ -67,7 +73,7 @@ class RunSummary:
 
 
 def _state_clause(state: RunState, now: datetime) -> ColumnElement[bool]:
-    recent = Run.updated_at >= now - RUNNING_WINDOW
+    recent = _last_change() >= now - RUNNING_WINDOW
     if state == "running":
         return and_(Run.ended_at.is_(None), recent)
     if state == "unfinished":
@@ -87,7 +93,11 @@ def find_runs(
     session: Session, where: RunFilter, now: datetime, ids: Sequence[uuid.UUID] | None = None
 ) -> list[RunSummary]:
     """Runs matching the filter (and among `ids`, if given), newest first."""
-    query = select(Run).order_by(Run.started_at.desc(), Run.id).limit(where.limit)
+    query = (
+        select(Run, _last_change().label("last_change"))
+        .order_by(Run.started_at.desc(), Run.id)
+        .limit(where.limit)
+    )
     if ids is not None:
         query = query.where(Run.id.in_(ids))
     if where.source:
@@ -100,7 +110,8 @@ def find_runs(
         query = query.where(Run.started_at >= where.since)
     if where.until:
         query = query.where(Run.started_at < where.until)
-    runs = session.scalars(query).all()
+    rows = session.execute(query).all()
+    runs = [row.Run for row in rows]
     if not runs:
         return []
     totals = {
@@ -108,7 +119,6 @@ def find_runs(
         for row in session.execute(
             select(
                 Span.run_id,
-                func.count().label("spans"),
                 func.sum(Span.cost_usd).label("known_cost"),
                 func.bool_or(_unpriced()).label("unpriced"),
             )
@@ -117,13 +127,13 @@ def find_runs(
         )
     }
     summaries: list[RunSummary] = []
-    for run in runs:
+    for row in rows:
+        run = row.Run
         total = totals.get(run.id)
         summaries.append(
             RunSummary(
                 run=run,
-                state=run_state(run, now),
-                spans=total.spans if total else 0,
+                state=run_state(run, row.last_change, now),
                 known_cost=total.known_cost if total else None,
                 unpriced=bool(total and total.unpriced),
             )
@@ -131,7 +141,9 @@ def find_runs(
     return summaries
 
 
-HEX_PREFIX = re.compile(r"[0-9a-f-]{4,36}")
+HEX_PREFIX = re.compile(r"[0-9a-f]{4,32}")  # hyphens removed first
+TOO_SHORT = re.compile(r"[0-9a-f]{1,3}")
+MAX_MATCHES = 20
 
 
 def resolve_run(session: Session, ref: str) -> Run:
@@ -140,7 +152,10 @@ def resolve_run(session: Session, ref: str) -> Run:
     ref = ref.strip()
     if ref == "last":
         run = session.scalars(
-            select(Run).where(Run.ended_at.is_not(None)).order_by(Run.started_at.desc()).limit(1)
+            select(Run)
+            .where(Run.ended_at.is_not(None))
+            .order_by(Run.started_at.desc(), Run.id)
+            .limit(1)
         ).first()
         if run is None:
             raise RunNotFoundError("no finished runs yet")
@@ -148,18 +163,18 @@ def resolve_run(session: Session, ref: str) -> Run:
     matches: list[Run] = list(
         session.scalars(select(Run).where(Run.external_id == ref).order_by(Run.started_at)).all()
     )
-    prefix = ref.lower()
+    prefix = ref.lower().replace("-", "")
     if HEX_PREFIX.fullmatch(prefix):
+        bare_id = func.replace(cast(Run.id, String), "-", "")
         matches += session.scalars(
             select(Run)
-            .where(cast(Run.id, String).startswith(prefix, autoescape=True))
+            .where(bare_id.startswith(prefix, autoescape=True))
             .order_by(Run.started_at)
-            .limit(20)
+            .limit(MAX_MATCHES)
         ).all()
     unique = list({run.id: run for run in matches}.values())
     if not unique:
-        short = len(prefix) < 4 and HEX_PREFIX.fullmatch(prefix.ljust(4, "0"))
-        hint = "; give at least 4 characters of the id" if short else ""
+        hint = "; give at least 4 characters of the id" if TOO_SHORT.fullmatch(prefix) else ""
         raise RunNotFoundError(f"no run matches {ref!r}{hint}")
     if len(unique) > 1:
         raise AmbiguousRunError(ref, unique)
@@ -208,9 +223,12 @@ class SpanNode:
 
     def walk(self) -> list[SpanNode]:
         """This span and every descendant, in tree order."""
-        nodes: list[SpanNode] = [self]
-        for child in self.children:
-            nodes += child.walk()
+        nodes: list[SpanNode] = []
+        pending: list[SpanNode] = [self]
+        while pending:  # not recursive: a trace can be thousands of levels deep
+            node = pending.pop()
+            nodes.append(node)
+            pending.extend(reversed(node.children))
         return nodes
 
 
@@ -240,44 +258,66 @@ def span_tree(session: Session, run_id: uuid.UUID) -> list[SpanNode]:
             case((func.jsonb_typeof(usage) == "object", usage), else_=None).label("usage"),
         ).where(Span.run_id == run_id)
     ).all()
-    nodes: dict[uuid.UUID, SpanNode] = {}
-    for row in rows:
-        nodes[row.id] = SpanNode(
-            id=row.id,
-            external_id=row.external_id,
-            parent_id=row.parent_id,
-            kind=row.kind,
-            name=row.name,
-            model=row.model,
-            status=row.status,
-            error=row.error,
-            started_at=row.started_at,
-            ended_at=row.ended_at,
-            input_tokens=row.input_tokens,
-            output_tokens=row.output_tokens,
-            cost_usd=row.cost_usd,
-            usage=row.usage or {},
-        )
-    for node in nodes.values():
-        parent = nodes.get(node.parent_id) if node.parent_id else None
+    return build_tree(
+        [
+            SpanNode(
+                id=row.id,
+                external_id=row.external_id,
+                parent_id=row.parent_id,
+                kind=row.kind,
+                name=row.name,
+                model=row.model,
+                status=row.status,
+                error=row.error,
+                started_at=row.started_at,
+                ended_at=row.ended_at,
+                input_tokens=row.input_tokens,
+                output_tokens=row.output_tokens,
+                cost_usd=row.cost_usd,
+                usage=row.usage or {},
+            )
+            for row in rows
+        ]
+    )
+
+
+def build_tree(nodes: Sequence[SpanNode]) -> list[SpanNode]:
+    """Link spans to their parents and return the roots, in start order.
+
+    A span whose parent isn't among them is a root. Ingest doesn't prevent parent loops,
+    so each loop is cut at the span where a walk up from it comes back round: one pass,
+    so even thousands of loops take moments.
+    """
+    by_id = {node.id: node for node in nodes}
+    for node in nodes:
+        parent = by_id.get(node.parent_id) if node.parent_id else None
         if parent is not None:
             node.parent = parent
             parent.children.append(node)
-    roots = sorted((n for n in nodes.values() if n.parent is None), key=_order)
+    roots = [n for n in nodes if n.parent is None]
     reached = _place(roots)
-    while len(reached) < len(nodes):  # a parent loop: no root reaches it, so cut it
-        loose = min((n for n in nodes.values() if n.id not in reached), key=_order)
-        assert loose.parent is not None
-        loose.parent.children.remove(loose)
-        loose.parent = None
-        roots = sorted([*roots, loose], key=_order)
-        reached |= _place([loose])
-    return roots
+    for node in sorted((n for n in nodes if n.id not in reached), key=_order):
+        if node.id in reached:  # placed by cutting an earlier loop
+            continue
+        seen: set[uuid.UUID] = set()
+        looped = node
+        while looped.id not in seen:  # every unreached span's ancestors lead into a loop
+            seen.add(looped.id)
+            assert looped.parent is not None
+            looped = looped.parent
+        assert looped.parent is not None
+        looped.parent.children.remove(looped)
+        looped.parent = None
+        roots.append(looped)
+        reached |= _place([looped])
+    return sorted(roots, key=_order)
 
 
 def _place(roots: Sequence[SpanNode]) -> set[uuid.UUID]:
     """Sort children by start and set depths below these roots; returns the ids reached."""
     reached: set[uuid.UUID] = set()
+    for root in roots:
+        root.depth = 0
     pending = list(roots)
     while pending:
         node = pending.pop()
@@ -300,12 +340,9 @@ def steps(roots: Sequence[SpanNode]) -> list[SpanNode]:
 class SpanContent:
     input: Any
     output: Any
-    attributes: dict[str, Any]
 
 
 def span_content(session: Session, span_id: uuid.UUID) -> SpanContent:
-    """One span's input, output and attributes (all redacted at ingest)."""
-    row = session.execute(
-        select(Span.input, Span.output, Span.attributes).where(Span.id == span_id)
-    ).one()
-    return SpanContent(row.input, row.output, row.attributes or {})
+    """One span's input and output (redacted at ingest)."""
+    row = session.execute(select(Span.input, Span.output).where(Span.id == span_id)).one()
+    return SpanContent(row.input, row.output)
