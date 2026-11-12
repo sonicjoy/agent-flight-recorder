@@ -18,12 +18,13 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from flight_recorder.search.embedder import Embedder
+from flight_recorder.search.summary import MAX_FAILURES
 from flight_recorder.store.models import KEYWORD_CONFIG, Embedding, Run, Span
 from flight_recorder.store.read import RunFilter, RunSummary, find_runs, run_conditions
 
 K = 60  # the usual RRF constant: damps the gap between first and tenth place
 MIN_CANDIDATES = 50  # texts taken from each side before fusing...
-CANDIDATES_PER_RESULT = 5  # ...or this many per run asked for, if more: runs have several texts
+CANDIDATES_PER_RESULT = MAX_FAILURES + 1  # ...or a run's most texts per run asked for
 
 Matched = Literal["meaning", "words", "both"]
 

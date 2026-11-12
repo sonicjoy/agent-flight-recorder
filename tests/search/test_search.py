@@ -675,3 +675,85 @@ def test_a_cached_model_loads_without_the_network(
     monkeypatch.setattr("huggingface_hub.snapshot_download", missing)
     embedder.model_dir(tmp_path)
     assert calls == [True, False]  # then downloaded, pinned
+
+
+# --- review round 2: tests written before the fixes ----------------------------------
+
+
+def test_runs_with_many_failures_dont_crowd_out_the_limit(db: Session, fake: FakeEmbedder) -> None:
+    from flight_recorder.search.index import embed_runs
+    from flight_recorder.search.query import search
+
+    for r in range(3):  # 3 runs, each with 20 failures that match strongly
+        spans = [span("root", None, 0, kind="agent", name="session")]
+        spans += [span(f"t{i:02d}", "root", i, kind="tool", name=f"fetch_{i}", status="error",
+                       error="timeout timeout timeout") for i in range(1, 21)]  # fmt: skip
+        record(db, f"noisy-{r}", spans, started_at=at(r))
+    for r in range(10):  # 10 runs that match weakly
+        record(db, f"quiet-{r}", [span("root", None, 0, output=f"a timeout once {r}")],
+               started_at=at(10 + r))  # fmt: skip
+    embed_runs(db, fake)
+
+    hits = search(db, fake, "timeout", RunFilter(limit=10), datetime.now(UTC))
+    assert len(hits) == 10
+
+
+def test_only_turns_give_a_claude_code_session_its_prompt_and_reply(
+    db: Session, fake: FakeEmbedder
+) -> None:
+    from flight_recorder.search.index import embed_runs
+
+    record(db, "crashed", [
+        span("root", None, 0, kind="agent", name="Claude Code session", ended_at=None),
+        span("turn-1", "root", 1, name="turn", input="Refactor the hook", ended_at=None),
+        span("compaction", "root", 9, name="compaction (auto)", input="instructions",
+             output="SUMMARY OF THE CONVERSATION"),
+    ], source="claude_code", agent="claude-code")  # fmt: skip
+    record(db, "otel", [
+        span("root", None, 0, name="triage"),  # no input or output on the entry span
+        span("tool", "root", 1, kind="tool", name="search_issues", output="TOOL RESULT"),
+    ])  # fmt: skip
+    embed_runs(db, fake)
+
+    texts = " ".join(e.content for e in embeddings(db))
+    assert "asked: Refactor the hook" in texts
+    assert "SUMMARY OF THE CONVERSATION" not in texts and "TOOL RESULT" not in texts
+
+
+def test_a_refused_call_is_listed_once_not_again_for_its_wait(
+    db: Session, fake: FakeEmbedder
+) -> None:
+    from flight_recorder.search.index import embed_runs
+
+    record(db, "run", [
+        span("root", None, 0, kind="agent", name="session"),
+        span("tool", "root", 1, kind="tool", name="Bash", status="rejected",
+             error="rejected by you"),
+        span("wait", "tool", 1, name="permission: Bash", status="rejected",
+             error="rejected by you"),
+    ])  # fmt: skip
+    embed_runs(db, fake)
+
+    (summary,) = embeddings(db)
+    assert summary.content.count("refused:") == 1
+
+
+def test_embed_commits_in_batches(db: Session, fake: FakeEmbedder) -> None:
+    from flight_recorder.search.index import embed_runs
+
+    for i in range(5):
+        record(db, f"run-{i}", [span("root", None, 0)], started_at=at(i))
+    commits: list[int] = []
+    embed_runs(db, fake, commit_every=2, commit=lambda: commits.append(len(embeddings(db))))
+
+    assert commits == [2, 4]  # after the 2nd and 4th runs; the caller commits the rest
+
+
+def test_search_keeps_scanning_the_vector_index_under_filters(
+    db: Session, fake: FakeEmbedder, corpus: dict[str, uuid.UUID]
+) -> None:
+    from flight_recorder.search.query import search
+
+    search(db, fake, "timeout", RunFilter(limit=30), datetime.now(UTC))
+    assert db.scalar(text("SHOW hnsw.iterative_scan")) == "strict_order"
+    assert db.scalar(text("SHOW hnsw.ef_search")) == "630"  # 21 texts per run x 30 runs

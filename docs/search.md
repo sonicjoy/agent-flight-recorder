@@ -13,7 +13,7 @@ Embeds every settled run that's new or has changed since last time, using a loca
 
 - **Model:** bge-small-en-v1.5 through fastembed (ONNX, on the CPU), giving 384-dimension vectors. The files are Qdrant's quantised ONNX conversion, `Qdrant/bge-small-en-v1.5-onnx-Q` on Hugging Face, pinned to revision `aa8f8b06` so a changed upstream repo can't swap the model. The first run downloads it (about 67 MB) into `AFR_HOME/models` (default `~/.afr/models`).
 - **What gets a vector:**
-  - a short **summary** of each run: agent and name, status, what it was asked and what it answered, up to 3 root-cause failures, up to 3 refused tool calls (with who refused them) and the tools it used. For a Claude Code session, the prompt and reply come from its first and last turns;
+  - a short **summary** of each run: agent and name, status, what it was asked and what it answered, up to 3 root-cause failures, up to 3 refused tool calls (with who refused them; a refused call's permission wait isn't counted again) and the tools it used. If the run's entry span has no prompt or reply (a crashed Claude Code session), they come from its first and last turns, never from another child such as a compaction;
   - each **root-cause failure** on its own, at most 20 per run (the earliest): an `error` span with no failed child. One API error usually marks the llm call, its step and its agent; only the deepest says what happened. Refused tool calls (`rejected`) aren't failures, so they're only in the summary.
 - **Short texts:** bge-small reads about 2,000 characters of English, so each text stays within that, most telling parts first.
 - **Redacted:** every text is built from columns that were redacted at ingest ([redaction.md](redaction.md)), and it's stored in `embeddings.content`.
@@ -32,14 +32,14 @@ The same filters as `afr runs list` (`--source`, `--agent`, `--status`, `--since
 - **Meaning:** cosine similarity between the query's vector and each text's (pgvector, HNSW index). "tool timed out while fetching" finds `ReadTimeout: read timed out` without sharing many words with it.
 - **Words:** Postgres full-text search (`websearch_to_tsquery('english', ...)`, GIN index on a generated `content_tsv` column), ranked by `ts_rank_cd`. Exact terms such as `429`, a tool name or an error code always match, even where embeddings find "error 429" and "error 503" alike. Quotes, `or` and `-word` work as on a web search engine; a query of only negations (`-timeout`) matches nothing on this side.
 
-Each side ranks up to 50 texts, or 5 per run asked for if that's more, since a run can have several texts. They're combined by reciprocal rank fusion: every text scores `1/(60 + rank)` from each side that found it. A text both sides rank well beats one that only one side found, without putting a cosine similarity and a text rank on one scale. A run takes the score of its best text.
+Each side ranks up to 50 texts, or 21 per run asked for if that's more (a summary and up to 20 failures), so runs with many failures can't crowd others out of `--limit`. They're combined by reciprocal rank fusion: every text scores `1/(60 + rank)` from each side that found it. A text both sides rank well beats one that only one side found, without putting a cosine similarity and a text rank on one scale. A run takes the score of its best text.
 
 | Column | Meaning |
 |---|---|
 | `match` | `both`, `meaning` or `words`: which side found the run's best text. The meaning side ranks every candidate, so while a store has fewer texts than the pool, a word match shows as `both` |
 | `score` | Cosine similarity of that text to the query (-1 to 1). Results are ordered by the fused rank, so a lower similarity can sit above a higher one when the words matched too |
 
-Vector search always returns the nearest texts, so the bottom of the list can be loosely related. Filters are applied after the HNSW scan, with pgvector's iterative scan on, so filtered searches still find enough rows. Read `match` and `score` together.
+Vector search always returns the nearest texts, so the bottom of the list can be loosely related. Filters are applied after the HNSW scan, with pgvector's iterative scan on (pgvector 0.8 or later, as in compose.yaml), so filtered searches still find enough rows. Read `match` and `score` together.
 
 ## In tests
 

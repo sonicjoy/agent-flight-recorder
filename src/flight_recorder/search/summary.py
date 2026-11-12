@@ -76,15 +76,24 @@ def _cap(lines: list[str]) -> str:
     return "\n".join(line for line in lines if line)[:MAX_CHARS]
 
 
-def _conversation(session: Session, roots: list[SpanNode]) -> tuple[Any, Any]:
-    """What the run was asked and what it answered. The entry span has them for OTel runs;
-    a Claude Code session keeps them on its turns: the first prompt, the last reply."""
+TURN = "turn"  # a Claude Code turn span (ingest/claude_code.py)
+
+
+def _conversation(session: Session, run: Run, roots: list[SpanNode]) -> tuple[Any, Any]:
+    """What the run was asked and what it answered. The entry span has them; a Claude Code
+    session whose entry span lacks them (it crashed, or events were lost) has them on its
+    turns: the first prompt, the last reply. Never another child: a compaction's summary or a
+    tool's result isn't the run's answer."""
     if not roots:
         return None, None
     entry = roots[0]
     found = span_content(session, entry.id)
     asked, answered = found.input, found.output
-    turns = sorted(entry.children, key=lambda n: (n.started_at, n.external_id))
+    if run.source != "claude_code":
+        return asked, answered
+    turns = sorted(
+        (c for c in entry.children if c.name == TURN), key=lambda n: (n.started_at, n.external_id)
+    )
     if not asked:
         asked = next((i for t in turns if (i := span_content(session, t.id).input)), None)
     if not answered:
@@ -108,9 +117,14 @@ def documents(session: Session, run: Run, state: str) -> list[Document]:
     MAX_FAILURES, the earliest)."""
     roots = span_tree(session, run.id)
     nodes = _all(roots)
-    asked, answered = _conversation(session, roots)
+    asked, answered = _conversation(session, run, roots)
     failures = root_failures(roots)
-    refused = [n for n in nodes if n.status == "rejected"]
+    # A refused call's permission wait is rejected too: list the call once, not its wait
+    refused = [
+        n
+        for n in nodes
+        if n.status == "rejected" and not (n.parent is not None and n.parent.status == "rejected")
+    ]
     tools = Counter(n.name for n in nodes if n.kind == "tool")
     agent = run.agent or run.source
     name = _text(run.name, NAME_CHARS)
