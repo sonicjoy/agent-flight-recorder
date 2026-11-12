@@ -28,6 +28,8 @@ uv run afr serve                 # record OTLP traces on http://127.0.0.1:4318/v
 
 Any OpenTelemetry-instrumented agent can send traces to `afr serve`: set `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318`. See [docs/ingest.md](docs/ingest.md).
 
+To look at what was recorded: `uv run afr runs list`, `uv run afr runs show last` and `uv run afr replay last`. See [docs/cli.md](docs/cli.md).
+
 To record Claude Code sessions in a project, run `uv run afr hook install --project <path>` (project-level only). See [docs/claude-code.md](docs/claude-code.md).
 
 Costs come from `src/flight_recorder/pricing.yaml`. A weekly workflow checks its Claude rates against Anthropic's pricing page and opens a PR when they change; run the same check with `uv run afr pricing check`. See [docs/llm-providers.md](docs/llm-providers.md#keeping-claude-prices-current).
