@@ -73,8 +73,9 @@ def _quiet_when_piped_reader_leaves() -> Generator[None]:
 
 
 @contextmanager
-def _store() -> Generator[Session]:
-    """A read-only session on AFR_DATABASE_URL, with friendly errors for the usual problems."""
+def _store(*, readonly: bool = True) -> Generator[Session]:
+    """A session on AFR_DATABASE_URL (read-only unless asked), with friendly errors for the
+    usual problems. A writable session is the caller's to commit."""
     from sqlalchemy import create_engine
     from sqlalchemy.exc import OperationalError
     from sqlalchemy.orm import Session
@@ -96,7 +97,7 @@ def _store() -> Generator[Session]:
             typer.echo("error: the database isn't up to date; run `afr db upgrade` first", err=True)
             raise typer.Exit(code=2)
         with _quiet_when_piped_reader_leaves(), Session(engine) as session:
-            session.connection(execution_options={"postgresql_readonly": True})
+            session.connection(execution_options={"postgresql_readonly": readonly})
             yield session
     finally:
         engine.dispose()

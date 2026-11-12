@@ -91,7 +91,7 @@ One step in a run.
 Times are `timestamptz`, with microsecond precision; OTel's nanoseconds are truncated. Latency is `ended_at - started_at`.
 
 ### `embeddings`
-384-dimension vectors (bge-small), with an HNSW index using cosine distance. `kind` is `run_summary` (`span_id` is `NULL`) or `failed_span`. There is one row per run, span and model: the unique constraint uses `NULLS NOT DISTINCT`, so a run can't get two summaries from the same model.
+384-dimension vectors (bge-small), with an HNSW index using cosine distance. `kind` is `run_summary` (`span_id` is `NULL`) or `failed_span`. There is one row per run, span and model: the unique constraint uses `NULLS NOT DISTINCT`, so a run can't get two summaries from the same model. `content_tsv` (migration 0006) is a generated `tsvector` of `content`, with a GIN index, for keyword search. How they're made and searched: [search.md](search.md).
 
 ### `labels`
 A failure mode on a run, or on one of its spans. `source` is `human`, `judge` or `analyst`, and `confidence` is from 0 to 1.
