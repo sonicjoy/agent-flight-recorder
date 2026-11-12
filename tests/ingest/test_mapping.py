@@ -296,3 +296,52 @@ def test_snapshot_dates_are_dropped(provider: str, model: str, expected: str) ->
     span = span_with({"llm.provider": provider, "llm.model_name": model})
 
     assert span.model == expected
+
+
+def graded_root(tracer: Tracer) -> None:
+    """A triager run: its root span carries the grade, and here a prompt too."""
+    with tracer.start_as_current_span(
+        "triage sonicjoy/agent-flight-recorder#19",
+        attributes={
+            "openinference.span.kind": "AGENT",
+            "triager.grade": "wrong",
+            "triager.grade.labels": "wrong",
+            "input.value": "the whole issue text, which belongs in the span's input",
+        },
+    ), tracer.start_as_current_span("tool", attributes={"openinference.span.kind": "TOOL",
+                                                          "triager.grade": "child"}):  # fmt: skip
+        pass
+
+
+def test_a_runs_attributes_include_its_root_spans_but_not_its_content() -> None:
+    """docs/schema.md: a run's attributes are its resource and root attributes."""
+    run, spans = mapped(graded_root)
+
+    assert run.attributes["service.name"] == "issue-triager"  # resource
+    assert run.attributes["triager.grade"] == "wrong"  # root, not the child's
+    assert run.attributes["triager.grade.labels"] == "wrong"
+    assert "input.value" not in run.attributes  # content stays on the span
+    assert spans["triage sonicjoy/agent-flight-recorder#19"].input is not None
+
+
+def test_a_batch_without_the_root_has_only_resource_attributes() -> None:
+    spans = record(graded_root)
+    [trace] = traces(export([s for s in spans if s.parent is not None]))
+
+    run, _ = map_trace(trace)
+    assert "triager.grade" not in run.attributes and run.fills_gaps
+
+
+def root_with_events_and_a_clashing_key(tracer: Tracer) -> None:
+    with tracer.start_as_current_span(
+        "root", attributes={"service.name": "a span's own idea", "triager.grade": "ok"}
+    ) as span:
+        span.add_event("checkpoint", {"step": 1})
+
+
+def test_a_runs_attributes_leave_events_to_the_span_and_keep_the_resources_names() -> None:
+    run, spans = mapped(root_with_events_and_a_clashing_key)
+
+    assert "events" not in run.attributes and spans["root"].attributes["events"]
+    assert run.attributes["service.name"] == "issue-triager"  # the resource wins, like run.agent
+    assert run.attributes["triager.grade"] == "ok"
