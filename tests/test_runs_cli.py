@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import sys
 import uuid
 from collections.abc import Callable, Generator
 from datetime import UTC, datetime, timedelta
@@ -654,10 +655,16 @@ def test_many_parent_loops_are_cut_quickly() -> None:
     assert len(roots) == 3000 and sum(len(r.walk()) for r in roots) == 6000
 
 
-@pytest.mark.parametrize("typed", ["99999999w", "1900-01-01", "0001-01-01T00:00"])
+@pytest.mark.parametrize("typed", ["99999999w", "0001-01-01T00:00"])
 def test_out_of_range_times_are_usage_errors(typed: str) -> None:
     with pytest.raises(typer.BadParameter):
         parse_when(typed, TIME_NOW)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="only Windows can't convert pre-1970 times")
+def test_pre_1970_dates_are_usage_errors_on_windows() -> None:
+    with pytest.raises(typer.BadParameter):
+        parse_when("1900-01-01", TIME_NOW)
 
 
 def test_the_limit_hint_only_shows_when_there_are_more(cli: Callable[..., Any]) -> None:
