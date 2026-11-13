@@ -1,9 +1,9 @@
 """The retrieval check (#14): how often search puts a query's right runs in its top k.
 
-Queries are hand-written from labelled runs, each naming its right runs by trace id (the
-run's `external_id`, the same in every database). The stored model is ranked by the real
-`afr search`. Another model is ranked in memory: the same stored texts, embedded with it,
-fused with the same keyword ranking, so a comparison needs no migration and writes nothing.
+Each query names its right runs by trace id (the run's `external_id`, the same in every
+database). The stored model is ranked by the real `afr search`. Another model is ranked in
+memory: the same stored texts, embedded with it, fused with the same keyword ranking, so a
+comparison needs no migration and writes nothing.
 """
 
 from __future__ import annotations
