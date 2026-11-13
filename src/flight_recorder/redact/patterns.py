@@ -72,7 +72,10 @@ NOT_A_VALUE = frozenset(
 )
 
 
-_FIRST_NAME = re.compile(r"\w++(?![.-])")  # `str` in `str):`, `None` in `None)`, not `None.x`
+# Punctuation that may close such a word in code: `str):`, `None)`, `null,`, `bytes]`.
+# Anything else makes it part of a value: `Str@ng123x`, `None!Shall9`, `None.x`.
+_CLOSING = r"[),:|\];]*+"
+_FIRST_NAME = re.compile(rf"(\w++){_CLOSING}")
 
 
 def is_a_value(text: str) -> bool:
@@ -80,8 +83,8 @@ def is_a_value(text: str) -> bool:
     words = text.split()
     if not words:
         return False
-    first = _FIRST_NAME.match(words[0])
-    return not (first and first.group(0).lower() in NOT_A_VALUE)
+    first = _FIRST_NAME.fullmatch(words[0])
+    return not (first and first.group(1).lower() in NOT_A_VALUE)
 
 
 def _assigned_value(match: re.Match[str]) -> bool:
@@ -112,7 +115,7 @@ _WORD = r"[^\s\"'\\,;{}=][^\s\"'\\,;{}]*+"  # not starting with = (`token == x` 
 # 1a2b3c4d] holds `token:1a2b3c4d]`), or a word that says there is no value (as is_a_value
 # reads it). Checked in the regex, so the search goes on from the next position instead.
 _NOT_A_VALUE_WORD = "|".join(sorted(NOT_A_VALUE))
-_SKIPPED = rf"\[REDACTED:|[0-9a-f]{{8}}\]|(?i:{_NOT_A_VALUE_WORD})(?![\w.-])"
+_SKIPPED = rf"\[REDACTED:|[0-9a-f]{{8}}\]|(?i:{_NOT_A_VALUE_WORD}){_CLOSING}(?!\S)"
 SECRET_VALUES = (
     # password: "two words" / api_key='...' / \"token\": \"...\" (a JSON string): to the
     # closing quote or the end of the line; the quotes stay. Inside plain quotes an escape

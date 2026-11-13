@@ -216,6 +216,9 @@ SHORT_OR_SPACED = {
     "phrase in single quotes": ("api_key = 'my key here'", "my key here"),
     "phrase after = in quotes": ('DB_PASSWORD="two words"', "two words"),
     "on the next line, indented (YAML)": ("password:\n  Hunter22xyz", "Hunter22xyz"),
+    "starting like a type name": ("password: Str@ng123x", "Str@ng123x"),
+    "starting like none": ("PASSWORD=None!Shall9", "None!Shall9"),
+    "starting like true, in quotes": ('password: "True$Love99"', "True$Love99"),
     "short in a JSON string": ('\\"token\\": \\"ab12\\"', "ab12"),
 }  # fmt: skip
 
@@ -257,6 +260,14 @@ def test_a_short_value_under_a_secret_key_is_redacted(redactor: Redactor) -> Non
         "password": redactor.placeholder("secret_assignment", "hunter2"),
         "token": redactor.placeholder("secret_assignment", "two words"),
     }
+
+
+def test_a_value_under_a_secret_key_that_starts_like_a_type_name_is_redacted(
+    redactor: Redactor,
+) -> None:
+    result = redactor.redact({"password": "Str@ng123x"})
+
+    assert result.value == {"password": redactor.placeholder("secret_assignment", "Str@ng123x")}
 
 
 GITHUB_TOKEN = "ghp_" + "a1B2c3D4" * 5
