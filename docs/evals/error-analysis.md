@@ -140,6 +140,31 @@ After re-grading, the corpus went from 70 correct and 130 wrong to **81 correct 
 
 **Decided against:** one #33 run answered `infra` alone, and the labeller's note says infra "makes more sense". #33 still accepts only `documentation, infra`, so that run stays wrong: dropping `documentation` from a launch checklist isn't an acceptable answer.
 
+## Can search find these runs?
+
+The failures here only help if they can be found again (#22's analyst and #24's MCP server search for them). So `afr search` was checked on 20 queries in [retrieval.yaml](retrieval.yaml), recall@5 over the 200 triager runs ([search.md](../search.md#afr-search-check-queries-is-the-model-good-enough)):
+
+- **Topic (11 queries):** the issue a run triaged, e.g. "containerise the API and MCP server". The right runs are every run of that issue.
+- **Behaviour (9 queries):** what the agent decided, e.g. "marked the issue as a duplicate of another issue". The right runs are every run whose decided attributes show it, right or wrong.
+
+The behaviour queries started out as failure patterns ("called a related issue a duplicate"), with the labelled runs as the right ones. They scored about 0, for two reasons that are about the check, not the model:
+
+- **A summary can't tell right from wrong.** It has what the agent decided, never the truth, so a wrong duplicate reads like a correct one.
+- **Only 50 of 119 wrong runs are labelled.** Search returned unlabelled runs with the same failure, and they counted as misses.
+
+So finding *wrong* runs is a job for the grade attributes (`triager.grade.*`), not for search. A search filter on them is a follow-up.
+
+| | bge-small-en-v1.5 (stored, 384-d) | bge-base-en-v1.5 (768-d) |
+|---|---|---|
+| Mean recall@5, 20 queries | **0.82** | 0.78 |
+| Topic, 11 queries | 1.00 on all | 1.00 on all but one (0.80) |
+| Behaviour, 9 queries | 0.00 to 1.00 | 0.00 to 1.00 |
+
+- **bge-base wins 2 queries and loses 4:** "added the stretch label" (1.00 against 0.80) and "MCP work" (0.80 against 0.60); it loses most on "marked as a duplicate" (0.20 against 0.80).
+- **Both miss label combinations:** "labelled infrastructure work as documentation too" scores 0 on both, and "an eval issue as recorder work too" 0.20. A summary lists labels, but a query for two of them matches runs with either.
+
+**Decision: keep bge-small.** The larger model isn't better here, and it would need a migration to 768 dimensions and three times the download. Twenty queries is a small set, so this says bge-base isn't worth it *now*; `afr search-check` can rerun the comparison when the corpus or the summaries change.
+
 ## What it means for the evals (#15 onwards)
 
 - **Golden cases** should cover the two big failure modes: multi-area issues where only one label belongs (against over-labelling), and near-duplicate pairs that aren't duplicates (against over-eager linking).
@@ -152,3 +177,4 @@ After re-grading, the corpus went from 70 correct and 130 wrong to **81 correct 
 - **50 runs.** Counts under 5 are anecdotes.
 - **Model and source are confounded** (nano with synthetic, mini with real), as noted in finding 1.
 - **The corpus ran on OpenAI and Gemini models,** not Claude (see [corpus.md](corpus.md)).
+- **The retrieval queries were written by Claude, which also built search,** and the right runs come from attributes. The topic queries reuse words from the issue titles, so they're easy.

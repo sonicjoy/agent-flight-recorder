@@ -64,7 +64,7 @@ uv run afr search-check queries.yaml --agent issue-triager --compare BAAI/bge-ba
 
 Ties between runs with the same fused score go by run id, so a ranking is the same every time.
 
-The #14 queries, result and decision come with the hand-labelled runs.
+The #14 queries are in [evals/retrieval.yaml](evals/retrieval.yaml); the result and the decision to keep bge-small are in [error-analysis.md](evals/error-analysis.md#can-search-find-these-runs).
 
 ## In tests
 
