@@ -10,7 +10,7 @@ from rich.table import Table
 from rich.text import Text
 
 from flight_recorder.cli import render
-from flight_recorder.cli.runs import _choice, _store, parse_when  # pyright: ignore[reportPrivateUsage]
+from flight_recorder.cli.runs import _choice, open_store, parse_when  # pyright: ignore[reportPrivateUsage]
 
 if TYPE_CHECKING:
     from flight_recorder.search.query import Hit
@@ -32,7 +32,7 @@ def embed() -> None:
     from flight_recorder.search import embedder as embedders
     from flight_recorder.search.index import embed_runs
 
-    with _store(readonly=False) as session:
+    with open_store(readonly=False) as session:
         stats = embed_runs(
             session, embedders.default_embedder(), commit_every=COMMIT_EVERY, commit=session.commit
         )
@@ -78,7 +78,7 @@ def search(
         limit=limit,
     )
     model = embedders.default_embedder()
-    with _store() as session:
+    with open_store() as session:
         hits = run_search(session, model, query.strip(), where, now)
         missing = pending_runs(session, model.model)
         out = render.console()

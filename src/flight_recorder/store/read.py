@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -71,6 +71,8 @@ class RunFilter:
     since: datetime | None = None
     until: datetime | None = None
     limit: int = 20
+    attrs: Mapping[str, tuple[str, ...]] = field(default_factory=dict[str, tuple[str, ...]])
+    """Run attributes: each key must equal one of its values (as text)."""
 
 
 @dataclass(frozen=True)
@@ -113,6 +115,8 @@ def run_conditions(where: RunFilter, now: datetime) -> list[ColumnElement[bool]]
         conditions.append(Run.started_at >= where.since)
     if where.until:
         conditions.append(Run.started_at < where.until)
+    for key, values in where.attrs.items():
+        conditions.append(Run.attributes[key].astext.in_(values))
     return conditions
 
 

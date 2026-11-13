@@ -569,9 +569,9 @@ def test_commands_explain_an_unreachable_store(clean_env: pytest.MonkeyPatch) ->
 
 
 def test_the_commands_can_only_read(cli: Callable[..., Any]) -> None:
-    from flight_recorder.cli.runs import _store  # pyright: ignore[reportPrivateUsage]
+    from flight_recorder.cli.runs import open_store
 
-    with _store() as session:
+    with open_store() as session:
         assert session.execute(text("SHOW transaction_read_only")).scalar() == "on"
 
 

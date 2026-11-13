@@ -60,6 +60,20 @@ def _choice(value: str | None, allowed: Sequence[str], option: str) -> str | Non
     return value
 
 
+ATTR_HELP = "KEY=VALUE: a run attribute equals VALUE. Repeat a key for any of several values."
+
+
+def parse_attrs(values: Sequence[str]) -> dict[str, tuple[str, ...]]:
+    """`--attr KEY=VALUE` options: each key with the values it may have."""
+    attrs: dict[str, tuple[str, ...]] = {}
+    for value in values:
+        key, equals, wanted = value.partition("=")
+        if not equals or not key:
+            raise typer.BadParameter(f"{value!r}: use KEY=VALUE", param_hint="--attr")
+        attrs[key] = (*attrs.get(key, ()), wanted)
+    return attrs
+
+
 @contextmanager
 def _quiet_when_piped_reader_leaves() -> Generator[None]:
     """`afr ... | head` closes the pipe early: stop quietly instead of a traceback."""
@@ -73,7 +87,7 @@ def _quiet_when_piped_reader_leaves() -> Generator[None]:
 
 
 @contextmanager
-def _store(*, readonly: bool = True) -> Generator[Session]:
+def open_store(*, readonly: bool = True) -> Generator[Session]:
     """A session on AFR_DATABASE_URL (read-only unless asked), with friendly errors for the
     usual problems. A writable session is the caller's to commit."""
     from sqlalchemy import create_engine
@@ -110,7 +124,7 @@ def _summaries(session: Session, runs: Sequence[Run]) -> list[RunSummary]:
     return find_runs(session, where, datetime.now(UTC), ids=[r.id for r in runs])
 
 
-def _resolve(session: Session, ref: str) -> RunSummary:
+def resolve_ref(session: Session, ref: str) -> RunSummary:
     from flight_recorder.store.read import AmbiguousRunError, RunNotFoundError, resolve_run
 
     try:
@@ -144,6 +158,7 @@ def runs_list(
     ] = None,
     until: Annotated[str | None, typer.Option(help="Started before: the same forms.")] = None,
     limit: Annotated[int, typer.Option(min=1, max=1000, help="How many runs.")] = 20,
+    attr: Annotated[list[str] | None, typer.Option(help=ATTR_HELP)] = None,
 ) -> None:
     """Recorded runs, newest first."""
     from flight_recorder.store.read import RUN_STATES, RunFilter, find_runs
@@ -156,8 +171,9 @@ def runs_list(
         since=parse_when(since, now) if since else None,
         until=parse_when(until, now) if until else None,
         limit=limit + 1,  # one more says whether there are more
+        attrs=parse_attrs(attr or []),
     )
-    with _store() as session:
+    with open_store() as session:
         summaries = find_runs(session, where, now)
         out = render.console()
         if not summaries:
@@ -188,8 +204,8 @@ def runs_show(
     from flight_recorder.store.read import span_tree
 
     kind = _choice(kind, KINDS, "--kind")
-    with _store() as session:
-        summary = _resolve(session, run)
+    with open_store() as session:
+        summary = resolve_ref(session, run)
         roots = span_tree(session, summary.run.id)
         out = render.console()
         out.print(render.run_header(summary, roots))
@@ -281,8 +297,8 @@ def replay(
     from flight_recorder.store.read import span_content, span_tree, steps
 
     kind = _choice(kind, KINDS, "--kind")
-    with _store() as session:
-        summary = _resolve(session, run)
+    with open_store() as session:
+        summary = resolve_ref(session, run)
         roots = span_tree(session, summary.run.id)
         nodes = steps(roots)
         if kind:

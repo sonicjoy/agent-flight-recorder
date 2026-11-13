@@ -10,6 +10,7 @@ reaches the terminal as `rich.text.Text`, never as markup.
 from __future__ import annotations
 
 import json
+import re
 import unicodedata
 from collections import Counter
 from collections.abc import Sequence
@@ -476,3 +477,43 @@ def _clock(offset: timedelta) -> str:
     hours, rest = divmod(seconds, 3600)
     minutes, secs = divmod(rest, 60)
     return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
+
+
+# --- labelling (#14) ------------------------------------------------------------------
+
+PAIRED = re.compile(r"(?P<prefix>.+)\.decided\.(?P<field>.+)")
+NOISE_PREFIXES = ("telemetry.", "service.instance.", "openinference.")
+
+
+def _attribute(value: object) -> str:
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value) or "(none)"  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
+    return str(value)
+
+
+def run_attributes(attributes: dict[str, Any]) -> Text:
+    """A run's attributes for a reader. Any `<p>.decided.<f>` with a `<p>.expected.<f>` is
+    one row, the decision next to the truth (`≠` when they differ); SDK noise is left out."""
+    lines = Text()
+    paired: set[str] = set()
+    for key in sorted(attributes):
+        match = PAIRED.fullmatch(key)
+        expected_key = f"{match['prefix']}.expected.{match['field']}" if match else ""
+        if not match or expected_key not in attributes:
+            continue
+        decided, expected = _attribute(attributes[key]), _attribute(attributes[expected_key])
+        same = decided == expected
+        lines.append(f"{match['prefix']} {match['field']}: ", style="dim")
+        lines.append_text(text(decided, "" if same else "bold red"))
+        lines.append("  =  " if same else "  ≠  ", style="dim" if same else "red")
+        lines.append_text(text(expected))
+        lines.append(" (decided · expected)\n" if not paired else "\n", style="dim")
+        paired |= {key, expected_key}
+    for key in sorted(attributes):
+        if key in paired or key.startswith(NOISE_PREFIXES):
+            continue
+        lines.append(f"{one_line(key, 60)}: ", style="dim")
+        lines.append_text(text(one_line(_attribute(attributes[key]), 160)))
+        lines.append("\n")
+    lines.rstrip()
+    return lines
