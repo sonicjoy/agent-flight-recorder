@@ -2,7 +2,8 @@
 
 It must never get in Claude Code's way:
 - Installed as an async hook for every event but SessionEnd, so Claude Code doesn't wait
-  for it. SessionEnd runs once, at exit, sends only its own event, with a short timeout.
+  for it. SessionEnd runs once, at exit, sends only its own event, with a short timeout,
+  and reads no transcript.
 - Fails open: every error is caught and logged (without content) to <AFR_HOME>/hook.log,
   and it always exits 0, which never blocks anything. It prints nothing, to stdout or
   stderr: an async hook's output reaches the model on its next turn.
@@ -10,7 +11,7 @@ It must never get in Claude Code's way:
   decisions written since the last one ("items"). It is sent as one or more parts, each a
   whole event with at most EVENT_ITEMS items and EVENT_BYTES, which the recorder merges, so
   no single event can outgrow a request or the timeout. One hook reads at most READ_ITEMS
-  items; the rest waits for the next turn end.
+  items; later async hooks read the rest, a page each, as more parts of the same turn end.
 - If the recorder is down, the event is kept in <AFR_HOME>/spool.jsonl. Later async events
   send the backlog first, oldest first, in chunks that are estimated to finish well within
   the timeout (EVENT_SECONDS per event, ITEM_SECONDS per item) and are under the server's
@@ -32,6 +33,7 @@ every event.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -39,6 +41,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -54,7 +57,7 @@ MAX_SPOOL_BYTES = 20 * 1024 * 1024
 # event of at most this size. tests/ingest/test_limits.py checks that the limits agree.
 EVENT_ITEMS = 100
 EVENT_BYTES = 2 * 1024 * 1024
-READ_ITEMS = 1_000  # read from a transcript by one hook; the rest waits for the next turn end
+READ_ITEMS = 1_000  # read from a transcript by one hook; later hooks read the rest
 # The recorder's time to apply an event, and each item in it: measured on Windows with a
 # local Postgres (an ordinary event 20 to 28 ms, a response 4 to 6 ms), rounded up.
 EVENT_SECONDS = 0.03
@@ -116,36 +119,122 @@ def build_events(
     event, or for a turn end its parts (see _split).
 
     Also returns the transcript read, to commit once the events are safely sent or spooled.
+    A turn end whose transcript holds more than one read leaves the rest to later hooks
+    (_leave_rest); SessionEnd, which must be quick, reads nothing and leaves it all.
     """
     name = str(payload.get("hook_event_name"))
-    event: dict[str, Any] = {"received_at": time.time(), "hook": payload}
+    hook = {k: v for k, v in payload.items() if k not in PATH_KEYS}
+    head = redactor.redact({"received_at": time.time(), "hook": hook})
+    event: dict[str, Any] = cap(head.value)
+    key = TURN_END.get(name)
+    path = str(payload[key]) if key and payload.get(key) else None
+    if key is None or path is None:
+        return [event | {"client_redactions": dict(head.counts)}], None
+    sidechain = key == "agent_transcript_path"
+    if name in SYNC_EVENTS:  # its own event alone: it must be quick
+        _leave_rest(config.home, path, sidechain, event)
+        return [event | _empty() | {"client_redactions": dict(head.counts)}], None
     read = None
-    if (key := TURN_END.get(name)) and payload.get(key):
-        try:
-            read = read_new(
-                Path(str(payload[key])),
-                config.home / "hook-state",
-                include_sidechain=key == "agent_transcript_path",
-                max_items=READ_ITEMS,
-            )
-        except Exception as error:  # the turn still ends; only its token usage is missing
-            _log(config.home, f"could not read the transcript ({type(error).__name__}): {name}")
-        event["usage"] = read.usage if read else []
-        event["permissions"] = read.permissions if read else []
-        if read is not None and read.more:
-            _log(config.home, f"read {_items(event)} transcript items ({name}); rest next time")
-    event["hook"] = {k: v for k, v in payload.items() if k not in PATH_KEYS}
-    redacted = redactor.redact(event)
-    event = cap(redacted.value)
-    event["client_redactions"] = dict(redacted.counts)
-    if "usage" not in event:
-        return [event], read
-    parts, cut = _split(event)
-    if cut:
-        _log(config.home, f"dropped the output of {cut} model responses too big to send")
-    if name in SYNC_EVENTS and _items(event):  # its own event first, alone: it must be quick
-        parts.insert(0, event | {"usage": [], "permissions": []})
+    try:
+        read = _read(config.home, path, sidechain)
+    except Exception as error:  # the turn still ends; only its token usage is missing
+        _log(config.home, f"could not read the transcript ({type(error).__name__}): {name}")
+    parts = _parts(config.home, event, head.counts, read, redactor)
+    if read is not None and read.more:
+        _leave_rest(config.home, path, sidechain, event)
+        read_items = sum(_items(p) for p in parts)
+        _log(config.home, f"read {read_items} transcript items ({name}); later hooks read on")
     return parts, read
+
+
+def _read(home: Path, path: str, sidechain: bool) -> TranscriptRead:
+    state = home / "hook-state"
+    return read_new(Path(path), state, include_sidechain=sidechain, max_items=READ_ITEMS)
+
+
+def _parts(
+    home: Path,
+    event: dict[str, Any],
+    counts: Counter[str],
+    read: TranscriptRead | None,
+    redactor: Redactor,
+) -> list[dict[str, Any]]:
+    """A turn end (event, already redacted) with the items read, in parts."""
+    items = {"usage": read.usage, "permissions": read.permissions} if read else _empty()
+    body = redactor.redact(items)
+    parts, cut = _split(event | cap(body.value) | {"client_redactions": dict(counts + body.counts)})
+    if cut:
+        _log(home, f"dropped the output of {cut} model responses too big to send")
+    return parts
+
+
+# ---- The rest of a transcript, read by later hooks ------------------------------------
+#
+# One hook reads at most READ_ITEMS. What a turn end leaves is noted in hook-state/pending/,
+# one file per transcript holding the turn end's event (redacted). Every later async hook
+# that reads no transcript of its own takes one such note, reads the next page and sends it
+# as more parts of that same turn end, which the recorder merges. A subagent gets a single
+# SubagentStop, and a session's last turn only Stop and SessionEnd, so without this their
+# rest would wait for a turn end that never comes.
+
+
+def _pending_dir(home: Path) -> Path:
+    return home / "hook-state" / "pending"
+
+
+def _leave_rest(home: Path, path: str, sidechain: bool, event: dict[str, Any]) -> None:
+    folder = _pending_dir(home)
+    _private_dir(folder)
+    note = folder / f"{hashlib.sha256(path.encode()).hexdigest()[:16]}.json"
+    partial = note.with_suffix(f".{os.getpid()}.tmp")
+    record = {"transcript": path, "sidechain": sidechain, "event": event}
+    partial.write_text(json.dumps(record), encoding="utf-8")
+    os.replace(partial, note)  # the newest turn end of a transcript wins
+
+
+@dataclass
+class _Rest:
+    claimed: Path
+    record: dict[str, Any]
+    read: TranscriptRead
+
+
+def _take_rest(home: Path) -> _Rest | None:
+    """Claim one note (or one a killed hook claimed and never finished) and read its page."""
+    folder = _pending_dir(home)
+    if not folder.is_dir():
+        return None
+    for note in sorted(folder.iterdir()):
+        claimed = folder / f"{note.name.split('.')[0]}.{os.getpid()}.{time.time_ns()}.claimed"
+        try:
+            stale = note.suffix == ".claimed" and (
+                time.time() - note.stat().st_mtime > STALE_CLAIM_SECONDS
+            )
+            if note.suffix != ".json" and not stale:
+                continue
+            os.replace(note, claimed)  # only one hook gets it
+            os.utime(claimed)
+            record = json.loads(claimed.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            claimed.unlink(missing_ok=True)
+            continue
+        record = cast("dict[str, Any]", record)
+        read = _read(home, str(record.get("transcript")), record.get("sidechain") is True)
+        return _Rest(claimed, record, read)
+    return None
+
+
+def _finish_rest(home: Path, rest: _Rest) -> None:
+    """After the page is sent or spooled: note what is still left, unless a newer turn end
+    of the same transcript already did."""
+    if rest.read.more:
+        note = _pending_dir(home) / f"{rest.claimed.name.split('.')[0]}.json"
+        if not note.exists():
+            record = rest.record
+            _leave_rest(home, str(record["transcript"]), record["sidechain"], record["event"])
+    rest.claimed.unlink(missing_ok=True)
 
 
 def _items(event: dict[str, Any]) -> int:
@@ -403,9 +492,22 @@ def run(stdin_text: str, config: HookConfig | None = None) -> None:
     except Exception as error:  # never let a bad event or key reach Claude Code
         _log(config.home, f"skipped event: {type(error).__name__}")
         return
+    rest = None
+    if name not in SYNC_EVENTS and name not in TURN_END:  # no read of its own: carry one on
+        try:
+            if (rest := _take_rest(config.home)) is not None:
+                event = cast("dict[str, Any]", rest.record.get("event"))
+                more = _parts(config.home, event, Counter[str](), rest.read, redactor)
+                events += [p for p in more if _items(p)]  # nothing new: nothing to resend
+        except Exception as error:
+            _log(config.home, f"could not read on in a transcript: {type(error).__name__}")
+            rest = None
     try:
         _deliver(config, events, name)
-        if read is not None:
-            read.commit()  # sent or spooled: the transcript lines are safe to skip next time
+        for done in (read, rest.read if rest else None):
+            if done is not None:
+                done.commit()  # sent or spooled: the lines are safe to skip next time
+        if rest is not None:
+            _finish_rest(config.home, rest)
     except Exception as error:
         _log(config.home, f"could not deliver or spool {name}: {type(error).__name__}")

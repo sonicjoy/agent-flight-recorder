@@ -33,9 +33,10 @@ next turn end or SessionEnd. Reading a line twice is harmless: the recorder keys
 by id.
 
 One read takes at most max_items responses and decisions, and stops after the line that
-reaches it; the position is saved there, and the next turn end carries on. Without a saved
-position (a session that predates the hooks) the first read starts at the beginning, so
-such a session's history arrives a page per turn end instead of all at once.
+reaches it; the position is saved there, and the next read carries on (the hook has later
+hooks read the rest: client._leave_rest). Without a saved position (a session that predates
+the hooks) the first read starts at the beginning, so such a session's history arrives a
+page at a time instead of all at once.
 """
 
 from __future__ import annotations

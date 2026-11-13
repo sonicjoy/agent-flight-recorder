@@ -203,21 +203,79 @@ def test_parts_of_a_turn_end_are_spooled_with_the_position_saved(
     assert all(items(e) <= EVENT_ITEMS for e in recorder.events())
 
 
-def test_session_end_sends_its_own_event_first_and_spools_the_usage(
+def other_hook(n: int) -> str:
+    """An ordinary event, from any session: the hook runs on every one."""
+    payload = {"session_id": "other", "hook_event_name": "PreToolUse", "tool_use_id": f"o{n}"}
+    return json.dumps(payload)
+
+
+def pending(home: Path) -> list[Path]:
+    folder = home / "hook-state" / "pending"
+    return list(folder.iterdir()) if folder.exists() else []
+
+
+def test_a_subagent_longer_than_one_read_is_finished_by_later_hooks(
     tmp_path: Path, recorder: Recorder
 ) -> None:
-    """SessionEnd has 0.5 s: it closes the run at once, and leaves the responses it read
-    to the next async hook rather than time out on them."""
+    """A subagent gets one SubagentStop: the rest of its transcript can't wait for a turn
+    end that never comes. Later hooks read it, a page each, as parts of that SubagentStop."""
+    path = tmp_path / "agent.jsonl"
+    total = 2 * READ_ITEMS + 500
+    transcript(path, total)
+
+    run(turn_end(path, "SubagentStop"), config(tmp_path, recorder.url))
+    for n in range(3):
+        run(other_hook(n), config(tmp_path, recorder.url))
+
+    parts = [e for e in recorder.events() if items(e)]
+    assert sorted(sent_ids(parts)) == [f"msg_{n:06d}" for n in range(total)]
+    assert {(e["hook"]["hook_event_name"], e["hook"]["agent_id"]) for e in parts} == {
+        ("SubagentStop", "a1")
+    }
+    assert len({e["received_at"] for e in parts}) == 1  # one turn end: its time doesn't move
+    assert all(items(e) <= EVENT_ITEMS for e in parts)
+    assert pending(tmp_path) == []  # finished
+    assert "rest next time" not in log(tmp_path)
+
+
+def test_session_end_sends_only_its_own_event_and_later_hooks_read_the_last_turn(
+    tmp_path: Path, recorder: Recorder
+) -> None:
+    """SessionEnd has Claude Code's 5 s and its own 0.5 s send: it reads nothing and closes
+    the run at once. The next hooks read the last turn's responses, a page each."""
     path = tmp_path / "t.jsonl"
-    transcript(path, 150)
+    total = READ_ITEMS + 150
+    transcript(path, total)
 
     run(turn_end(path, "SessionEnd"), config(tmp_path, recorder.url))
 
     [[first]] = recorder.batches
     assert (first["hook"]["hook_event_name"], items(first)) == ("SessionEnd", 0)
-    spooled = [json.loads(line) for line in (tmp_path / "spool.jsonl").read_text().splitlines()]
-    assert sorted(sent_ids(spooled)) == [f"msg_{n:06d}" for n in range(150)]
-    assert "left for the next hook" in log(tmp_path)
+    assert not (tmp_path / "spool.jsonl").exists()
+    assert list((tmp_path / "hook-state").glob("*.json")) == []  # no read, no position
+
+    for n in range(2):
+        run(other_hook(n), config(tmp_path, recorder.url))
+
+    parts = [e for e in recorder.events() if items(e)]
+    assert sorted(sent_ids(parts)) == [f"msg_{n:06d}" for n in range(total)]
+    assert {e["hook"]["hook_event_name"] for e in parts} == {"SessionEnd"}
+    assert pending(tmp_path) == []
+
+
+def test_a_later_read_with_the_recorder_down_is_spooled_and_not_read_again(
+    tmp_path: Path, recorder: Recorder
+) -> None:
+    path = tmp_path / "agent.jsonl"
+    transcript(path, READ_ITEMS + 50)
+    run(turn_end(path, "SubagentStop"), config(tmp_path))  # down: a page spooled
+
+    run(other_hook(1), config(tmp_path))  # down: the rest spooled
+    run(other_hook(2), config(tmp_path, recorder.url))  # up: the spool goes
+
+    ids = sent_ids(recorder.events())
+    assert sorted(ids) == [f"msg_{n:06d}" for n in range(READ_ITEMS + 50)]  # each once
+    assert pending(tmp_path) == []
 
 
 def test_a_full_spool_drops_its_oldest_event_not_the_session_end(
