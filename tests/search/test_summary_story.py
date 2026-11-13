@@ -239,7 +239,7 @@ def test_a_tool_request_isnt_the_answer(db: Session, fake: FakeEmbedder) -> None
 
 
 def test_text_beside_a_tool_request_isnt_the_answer(db: Session, fake: FakeEmbedder) -> None:
-    """ "Let me look that up" with a tool call is a step; the answer is a call that only spoke."""
+    """Words beside a tool call ("Let me look that up") are a step, not an answer."""
     from flight_recorder.search.index import embed_runs
 
     record(db, "lg-9", [
