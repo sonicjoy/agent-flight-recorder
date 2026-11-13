@@ -268,6 +268,11 @@ class Label(Base):
     run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"))
     span_id: Mapped[uuid.UUID | None] = mapped_column(comment="A span of the same run")
     failure_mode: Mapped[str] = mapped_column(Text)
+    mode_key: Mapped[str | None] = mapped_column(
+        Text,
+        Computed("afr_mode_key(failure_mode)", persisted=True),
+        comment="failure_mode's words, sorted: one mode whatever its spelling",
+    )
     note: Mapped[str | None] = mapped_column(Text, comment="Redacted before storing")
     source: Mapped[str] = mapped_column(Text)
     author: Mapped[str | None] = mapped_column(Text, comment="Who labelled it, or which model")
@@ -284,12 +289,13 @@ class Label(Base):
         _same_run_span(),
         Index(None, "run_id", "span_id"),
         Index(None, "failure_mode"),
-        # a run (or span) has each human mode once, even with two labellers at once
+        # a run (or span) has each human mode once, whatever its spelling, even with two
+        # labellers at once (migration 0007)
         Index(
             "uq_labels_human_mode",
             "run_id",
             "span_id",
-            "failure_mode",
+            "mode_key",
             unique=True,
             postgresql_where=text("source = 'human'"),
             postgresql_nulls_not_distinct=True,

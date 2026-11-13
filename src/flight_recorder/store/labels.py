@@ -7,11 +7,13 @@ text a person or a model may have copied from a run (docs/schema.md).
 from __future__ import annotations
 
 import hashlib
+import re
 import uuid
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from datetime import UTC
+from typing import TYPE_CHECKING, Any, NamedTuple
 from typing import cast as typed
 
 from sqlalchemy import String, and_, cast, delete, func, select, text, update
@@ -26,27 +28,82 @@ if TYPE_CHECKING:
 
 HUMAN = "human"
 MAX_MODE = 80
-MERGED = "[before merge, was {}]"  # marks a note that came from a merged label
+WORD = re.compile(r"[^\W_]+")  # letters and digits; Postgres's afr_mode_key splits the same
+RESERVED = ("s", "q")  # the queue's skip and quit
+TAG = "[afr-note v1 at={at} by={by} mode={mode}]"  # a note that came from another label
+FRAGMENT = re.compile(r"(?:^|; )(?=\[afr-note v\d+ )")
+ENCODED = (("%", "%25"), (" ", "%20"), (";", "%3B"), ("[", "%5B"), ("]", "%5D"))
 
 
 class SpanNotInRunError(LookupError):
     pass
 
 
-RESERVED = ("s", "q")  # the queue's skip and quit
-
-
 def check_mode(mode: str) -> str:
-    """A failure mode is a short name: stripped, 1 to 80 printable characters, not a number
-    (numbers pick an existing mode) and not `s` or `q`."""
+    """A failure mode as stored: its words (letters and digits), lowercased and joined with
+    `-`, so "Tool Timeout" is `tool-timeout`. What's typed is 1 to 80 printable characters,
+    with a letter or digit, not a number (numbers pick an existing mode) and not `s` or `q`."""
     mode = mode.strip()
     if not mode or len(mode) > MAX_MODE or not mode.isprintable():
         raise ValueError(f"a failure mode is a name of 1 to {MAX_MODE} printable characters")
-    if mode.isdigit() or mode.lower() in RESERVED:
+    spelled = "-".join(WORD.findall(mode.lower()))
+    if not spelled:
+        raise ValueError(f"{mode!r} isn't a mode name: it needs a letter or digit")
+    if spelled.isdigit() or spelled in RESERVED:
         raise ValueError(
             f"{mode!r} isn't a mode name: a number picks a listed mode, s and q skip and quit"
         )
-    return mode
+    return spelled
+
+
+def mode_key(session: Session, mode: str) -> str:
+    """The mode's words, sorted: one mode whatever their order, case or separators. Postgres
+    computes it (afr_mode_key, migration 0007), for `labels.mode_key` too."""
+    return session.scalar(select(func.afr_mode_key(mode))) or ""
+
+
+def spelling(session: Session, mode: str) -> tuple[str, str]:
+    """How a typed mode is stored, and its key: the spelling human labels already use for
+    this key (the earliest), or else check_mode's."""
+    spelled = check_mode(mode)
+    key = mode_key(session, spelled)
+    existing = session.scalar(
+        select(Label.failure_mode)
+        .where(Label.mode_key == key, Label.source == HUMAN)
+        .order_by(Label.created_at, Label.id)
+        .limit(1)
+    )
+    return existing or spelled, key
+
+
+def encoded(value: str) -> str:
+    for char, code in ENCODED:
+        value = value.replace(char, code)
+    return value
+
+
+def tag(label: Label) -> str:
+    """The label as a tag on its note, built from the label alone (migration 0007 too)."""
+    at = label.created_at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return TAG.format(at=at, by=encoded(label.author or "-"), mode=encoded(label.failure_mode))
+
+
+def split_note(note: str | None) -> tuple[str, set[str]]:
+    """A note's own text, and the tagged fragments it took from merged labels."""
+    own, *fragments = FRAGMENT.split(note or "")
+    return own, set(fragments)
+
+
+def merged_note(kept: str | None, dropped: Label) -> str | None:
+    """`kept`'s own text, then every fragment of both and `dropped`'s own text tagged, sorted.
+    So merging labels gives the same note in any order, and a chain (a into b, b into c)
+    the same as merging each straight into c."""
+    own, fragments = split_note(kept)
+    dropped_own, dropped_fragments = split_note(dropped.note)
+    fragments |= dropped_fragments
+    if dropped_own:
+        fragments.add(f"{tag(dropped)} {dropped_own}")
+    return "; ".join(filter(None, [own, *sorted(fragments)])) or None
 
 
 def sample(population: Sequence[tuple[str, str]], size: int, seed: int) -> list[str]:
@@ -97,10 +154,10 @@ def add_label(
     redactor: Redactor,
     span_id: uuid.UUID | None = None,
 ) -> Label | None:
-    """A human label, or None when the run (or span) already has this mode from a human,
+    """A human label, or None when the run (or span) already has this mode, in any spelling,
     even one another labeller added a moment ago: the unique index decides (migration 0007)."""
-    mode = check_mode(mode)
-    if mode in modes_of(session, run_id, span_id):  # the usual case, without a write
+    mode, key = spelling(session, mode)
+    if key in modes_of(session, run_id, span_id):  # the usual case, without a write
         return None
     note = (note or "").strip() or None
     added = session.scalar(
@@ -114,7 +171,7 @@ def add_label(
             author=author,
         )
         .on_conflict_do_nothing(
-            index_elements=[Label.run_id, Label.span_id, Label.failure_mode],
+            index_elements=[Label.run_id, Label.span_id, Label.mode_key],
             # literal, not a bound parameter: under a generic plan (psycopg prepares
             # after 5 runs) Postgres can't match `source = $1` to the partial index
             index_where=text("source = 'human'"),
@@ -133,17 +190,20 @@ class ModeCount:
 
 
 def mode_counts(session: Session, source: str = HUMAN) -> list[ModeCount]:
-    """Each failure mode with its labels and runs, most labelled runs first."""
-    earliest = func.array_agg(aggregate_order_by(Label.run_id, Label.created_at, Label.id))
+    """Each failure mode (by key, in its earliest spelling) with its labels and runs, most
+    labelled runs first."""
+    in_order = (Label.created_at, Label.id)
+    earliest = func.array_agg(aggregate_order_by(Label.run_id, *in_order))
+    spelled = func.array_agg(aggregate_order_by(Label.failure_mode, *in_order))
     rows = session.execute(
         select(
-            Label.failure_mode,
+            spelled[1],
             func.count(),
             func.count(Label.run_id.distinct()),
             earliest[1],
         )
         .where(Label.source == source)
-        .group_by(Label.failure_mode)
+        .group_by(Label.mode_key)
     ).all()
     counts = [ModeCount(mode, labels, runs, example) for mode, labels, runs, example in rows]
     return sorted(counts, key=lambda c: (-c.runs, -c.labels, c.mode))
@@ -158,16 +218,15 @@ def labels_of(session: Session, run_id: uuid.UUID) -> list[Label]:
 
 
 def modes_of(session: Session, run_id: uuid.UUID, span_id: uuid.UUID | None = None) -> set[str]:
-    """The human modes on the run (span_id None) or on one of its spans."""
-    return set(
-        session.scalars(
-            select(Label.failure_mode).where(
-                Label.run_id == run_id,
-                Label.span_id.is_not_distinct_from(span_id),
-                Label.source == HUMAN,
-            )
+    """The keys of the human modes on the run (span_id None) or on one of its spans."""
+    keys = session.scalars(
+        select(Label.mode_key).where(
+            Label.run_id == run_id,
+            Label.span_id.is_not_distinct_from(span_id),
+            Label.source == HUMAN,
         )
     )
+    return {key for key in keys if key is not None}  # never None: failure_mode is NOT NULL
 
 
 def labelled_runs(session: Session, run_ids: Sequence[uuid.UUID]) -> set[uuid.UUID]:
@@ -187,46 +246,57 @@ def labelled_count(session: Session, source: str = HUMAN) -> int:
     )
 
 
-def rename_mode(session: Session, old: str, new: str) -> tuple[int, int]:
-    """Renames (or merges) a mode on human labels. Where a run (or span) has both modes,
-    the old label is merged into the new one: its note is appended, marked as from before
-    the merge, and the old label deleted. Returns how many labels were renamed and merged.
-    Another labeller adding `new` meanwhile makes the rename fail (IntegrityError), whole."""
-    old, new = old.strip(), check_mode(new)
-    if old == new:  # every label would match itself as "has both" and be merged away
-        raise ValueError("the new name is the same as the old")
-    kept = aliased(Label)
+class Renamed(NamedTuple):
+    renamed: int  # given the new mode
+    merged: int  # into a label the run (or span) already had with the new mode
+    respelled: int  # same words, new spelling
+
+
+def rename_mode(session: Session, old: str, new: str) -> Renamed:
+    """Renames a mode (found whatever its spelling) on human labels, merges it into another,
+    or respells it when the words are the same. A merged label's note joins the kept one as
+    a tagged fragment (merged_note), and the label is deleted. Another labeller adding the
+    new mode meanwhile makes the rename fail whole (IntegrityError)."""
+    spelled = check_mode(new)
+    old_key, new_key = mode_key(session, old), mode_key(session, spelled)
+    mine = and_(Label.mode_key == old_key, Label.source == HUMAN)
+    if old_key == new_key:
+        if session.scalar(select(func.count()).where(mine)) == 0:
+            return Renamed(0, 0, 0)
+        respelled = session.execute(
+            update(Label).where(mine, Label.failure_mode != spelled).values(failure_mode=spelled)
+        )
+        if not (count := typed("CursorResult[Any]", respelled).rowcount):
+            raise ValueError(f"the mode is already spelled {spelled!r}")
+        return Renamed(0, 0, count)
+    target, _ = spelling(session, spelled)
+    dropped, kept = aliased(Label), aliased(Label)
     pairs = session.execute(
-        select(Label.id, Label.note, kept)
+        select(dropped, kept)
         .join(
             kept,
             and_(
-                kept.run_id == Label.run_id,
-                kept.span_id.is_not_distinct_from(Label.span_id),
-                kept.failure_mode == new,
+                kept.run_id == dropped.run_id,
+                kept.span_id.is_not_distinct_from(dropped.span_id),
+                kept.mode_key == new_key,
                 kept.source == HUMAN,
             ),
         )
-        .where(Label.failure_mode == old, Label.source == HUMAN)
-        .order_by(Label.id)  # the same lock order in every rename: fewer deadlocks
+        .where(dropped.mode_key == old_key, dropped.source == HUMAN)
+        .order_by(dropped.id)  # the same lock order in every rename: fewer deadlocks
         .with_for_update()
         .execution_options(populate_existing=True)  # the kept notes as they are now
     ).all()
-    for _, note, label in pairs:
-        if note:
-            label.note = "; ".join(filter(None, [label.note, f"{MERGED.format(old)} {note}"]))
-    session.execute(delete(Label).where(Label.id.in_([dropped for dropped, _, _ in pairs])))
-    renamed = session.execute(
-        update(Label)
-        .where(Label.failure_mode == old, Label.source == HUMAN)
-        .values(failure_mode=new)
-    )
-    return typed("CursorResult[Any]", renamed).rowcount, len(pairs)
+    for gone, label in pairs:
+        label.note = merged_note(label.note, gone)
+    session.execute(delete(Label).where(Label.id.in_([gone.id for gone, _ in pairs])))
+    renamed = session.execute(update(Label).where(mine).values(failure_mode=target))
+    return Renamed(typed("CursorResult[Any]", renamed).rowcount, len(pairs), 0)
 
 
 def remove_labels(session: Session, run_id: uuid.UUID, mode: str | None = None) -> int:
     """Deletes a run's human labels, or only those with `mode`; returns how many."""
     query = delete(Label).where(Label.run_id == run_id, Label.source == HUMAN)
-    if mode is not None:
-        query = query.where(Label.failure_mode == mode.strip())
+    if mode is not None:  # whatever its spelling
+        query = query.where(Label.mode_key == func.afr_mode_key(mode))
     return typed("CursorResult[Any]", session.execute(query)).rowcount

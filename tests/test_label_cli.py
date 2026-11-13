@@ -709,16 +709,16 @@ def test_rename_merges_only_on_the_same_span_and_says_how_many(
 # --- notes kept on merge, and one mode per run enforced by the database ----------------
 
 
-def test_a_merge_keeps_the_dropped_labels_note_marked_as_from_before_the_merge(
+def test_a_merge_keeps_the_dropped_labels_note_with_a_versioned_tag(
     cli: Callable[..., Any], db: Session, ids: dict[str, Any]
 ) -> None:
     a = ids["wrong"]["a"]
-    cli("label", str(a[0]), "--mode", "old", "--note", "dropped note")
-    cli("label", str(a[0]), "--mode", "new", "--note", "kept note")
-    cli("label", str(a[1]), "--mode", "old", "--note", "only note")
-    cli("label", str(a[1]), "--mode", "new")
-    cli("label", str(a[2]), "--mode", "old")
-    cli("label", str(a[2]), "--mode", "new", "--note", "untouched")
+    put(db, a[0], "old", "dropped note", at=AT(10), author="sonic")
+    put(db, a[0], "new", "kept note", at=AT(11))
+    put(db, a[1], "old", "only note", at=AT(12), author=None)
+    put(db, a[1], "new", None, at=AT(13))
+    put(db, a[2], "old", None, at=AT(14))
+    put(db, a[2], "new", "untouched", at=AT(15))
 
     result = cli("labels", "rename", "old", "new")
 
@@ -726,8 +726,10 @@ def test_a_merge_keeps_the_dropped_labels_note_marked_as_from_before_the_merge(
     assert "notes are kept" in result.output
     notes = {str(m.run_id): m.note for m in labels(db)}
     assert notes == {
-        str(a[0]): "kept note; [before merge, was old] dropped note",
-        str(a[1]): "[before merge, was old] only note",
+        str(
+            a[0]
+        ): "kept note; [afr-note v1 at=2026-11-13T10:10:00Z by=sonic mode=old] dropped note",
+        str(a[1]): "[afr-note v1 at=2026-11-13T10:12:00Z by=- mode=old] only note",
         str(a[2]): "untouched",
     }
 
@@ -891,3 +893,156 @@ def test_rename_racing_another_labeller_renames_nothing_and_says_try_again(
     assert result.exit_code == 1
     assert "try again" in result.output
     assert [m.failure_mode for m in labels(db)] == ["old"]
+
+
+# --- round 4: one mode whatever its spelling; versioned tags; merge order free ----------
+
+
+def AT(minute: int) -> datetime:
+    return datetime(2026, 11, 13, 10, minute, tzinfo=UTC)
+
+
+def put(db: Session, run: uuid.UUID, mode: str, note: str | None, *, at: datetime,
+        author: str | None = "t") -> None:  # fmt: skip
+    """A human label with a fixed time, as `afr label` would have written it."""
+    db.add(Label(run_id=run, failure_mode=mode, note=note, source="human", author=author,
+                 created_at=at))  # fmt: skip
+    db.commit()
+
+
+def test_a_mode_is_stored_in_one_canonical_spelling(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    result = cli("label", str(ids["wrong"]["a"][0]), "--mode", "  Tool   Timeout ")
+
+    assert result.exit_code == 0, result.output
+    assert [m.failure_mode for m in labels(db)] == ["tool-timeout"]
+
+
+def test_the_same_words_in_any_order_case_or_separators_are_one_mode(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    a = ids["wrong"]["a"]
+    cli("label", str(a[0]), "--mode", "tool-timeout")
+
+    again = cli("label", str(a[0]), "--mode", "Timeout_Tool")
+    other_run = cli("label", str(a[1]), "--mode", "TIMEOUT tool")
+    listed = cli("labels", "list")
+
+    assert "already has" in again.output and again.exit_code == 0
+    assert other_run.exit_code == 0, other_run.output
+    assert sorted((str(m.run_id), m.failure_mode) for m in labels(db)) == sorted(
+        [(str(a[0]), "tool-timeout"), (str(a[1]), "tool-timeout")]
+    )
+    assert "2 labels on 2 runs" in listed.output
+    assert "timeout-tool" not in listed.output  # one mode, shown in its first spelling
+
+
+def test_the_database_refuses_the_same_words_in_another_order(
+    db: Session, ids: dict[str, Any]
+) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    run = ids["wrong"]["a"][0]
+    put(db, run, "tool-timeout", None, at=AT(1))
+    db.add(Label(run_id=run, failure_mode="timeout-tool", source="human"))
+    with pytest.raises(IntegrityError):
+        db.commit()
+    db.rollback()
+
+
+def test_typing_a_mode_the_run_has_in_another_spelling_asks_again(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    run = str(ids["wrong"]["a"][0])
+    cli("label", run, "--mode", "tool-timeout")
+
+    result = cli("label", run, input="Timeout Tool\nother\n\n\n")
+
+    assert result.exit_code == 0, result.output
+    assert "already" in result.output
+    assert sorted(m.failure_mode for m in labels(db)) == ["other", "tool-timeout"]
+
+
+@pytest.mark.parametrize("mode", ["!!!", "- _ -"])
+def test_a_mode_needs_a_letter_or_digit(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any], mode: str
+) -> None:
+    result = cli("label", str(ids["wrong"]["a"][0]), "--mode", mode)
+
+    assert result.exit_code == 2
+    assert labels(db) == []
+
+
+def test_rename_to_the_same_words_respells_them(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    a = ids["wrong"]["a"]
+    cli("label", str(a[0]), "--mode", "timeout-tool")
+    cli("label", str(a[1]), "--mode", "timeout-tool")
+
+    respelled = cli("labels", "rename", "timeout-tool", "Tool Timeout")
+    same = cli("labels", "rename", "tool-timeout", "Tool_Timeout")
+
+    assert respelled.exit_code == 0, respelled.output
+    assert "respelled 2 labels" in respelled.output
+    assert {m.failure_mode for m in labels(db)} == {"tool-timeout"}
+    assert same.exit_code == 2
+
+
+def test_rename_and_remove_find_a_mode_whatever_its_spelling(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    a = ids["wrong"]["a"]
+    cli("label", str(a[0]), "--mode", "tool-timeout")
+    cli("label", str(a[1]), "--mode", "tool-timeout")
+
+    renamed = cli("labels", "rename", "TIMEOUT tool", "slow-tool")
+    removed = cli("labels", "remove", str(a[0]), "--mode", "Slow Tool")
+
+    assert renamed.exit_code == 0 and "renamed 2 labels" in renamed.output, renamed.output
+    assert removed.exit_code == 0 and "removed 1 label" in removed.output, removed.output
+    assert [(str(m.run_id), m.failure_mode) for m in labels(db)] == [(str(a[1]), "slow-tool")]
+
+
+def test_tag_values_are_percent_encoded(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    run = ids["wrong"]["a"][0]
+    put(db, run, "old", "n", at=AT(5), author="a b;[x]%")
+    put(db, run, "new", None, at=AT(6))
+
+    cli("labels", "rename", "old", "new")
+
+    assert (
+        labels(db)[0].note
+        == "[afr-note v1 at=2026-11-13T10:05:00Z by=a%20b%3B%5Bx%5D%25 mode=old] n"
+    )
+
+
+def _seed_abc(db: Session, run: uuid.UUID) -> None:
+    db.execute(delete(Label))
+    db.commit()
+    put(db, run, "a", "note a", at=AT(1), author="ann")
+    put(db, run, "b", "note b", at=AT(2), author="bob")
+    put(db, run, "c", "note c", at=AT(3), author="cy")
+
+
+def test_the_merged_note_is_the_same_whatever_order_the_merges_ran_in(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    run = ids["wrong"]["a"][0]
+    notes = []
+    for renames in ([("a", "c"), ("b", "c")], [("b", "c"), ("a", "c")], [("a", "b"), ("b", "c")]):
+        _seed_abc(db, run)
+        for old, new in renames:
+            assert cli("labels", "rename", old, new).exit_code == 0
+        [label] = labels(db)
+        notes.append((label.failure_mode, label.note))
+
+    expected = (
+        "c",
+        "note c; [afr-note v1 at=2026-11-13T10:01:00Z by=ann mode=a] note a; "
+        "[afr-note v1 at=2026-11-13T10:02:00Z by=bob mode=b] note b",
+    )
+    assert notes == [expected, expected, expected]
