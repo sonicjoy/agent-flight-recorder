@@ -20,7 +20,7 @@ from flight_recorder.payloads import (
     call_line,
     flat_text,
     human,
-    langchain_answer,
+    langchain_text,
     tool_calls,
 )
 from flight_recorder.store.models import Run
@@ -99,7 +99,7 @@ def _from_model_calls(session: Session, roots: list[SpanNode]) -> tuple[Any, Any
     """What a LangChain run was asked and answered, from its model calls, for when its entry
     span recorded neither (a LangGraph root records nothing): the first call's human message,
     and its structured output (a tool call no tool span ran, like a ToolStrategy decision),
-    else the last call's answer."""
+    else what the last call that only spoke said. A tool request is a step, not an answer."""
     nodes = _all(roots)
     models = [n for n in nodes if n.kind == "llm"]
     if not models:
@@ -111,11 +111,13 @@ def _from_model_calls(session: Session, roots: list[SpanNode]) -> tuple[Any, Any
         if node.status == "error":  # a failed call answered nothing
             continue
         output = span_content(session, node.id).output
-        for call in reversed(tool_calls(output)):
+        calls = tool_calls(output)
+        for call in reversed(calls):
             found = as_dict(call)
             if found is not None and found.get("name") not in tools:
                 return asked, call_line(found)
-        answered = answered or langchain_answer(output)
+        if not calls:
+            answered = answered or langchain_text(output)
     return asked, answered
 
 

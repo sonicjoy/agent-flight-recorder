@@ -214,3 +214,44 @@ def test_an_entry_with_input_but_no_output_gets_its_answer_from_the_model(
     text = summary(db)
     assert "asked: entry question" in text and "model q" not in text
     assert "answered: TriageDecision(" in text
+
+
+# --- a tool request isn't an answer ----------------------------------------------------
+
+
+def test_a_tool_request_isnt_the_answer(db: Session, fake: FakeEmbedder) -> None:
+    """A run that crashed after its tool ran: the call before asked for the tool, which is
+    a step, not what the run answered."""
+    from flight_recorder.search.index import embed_runs
+
+    record(db, "lg-8", [
+        span("root", None, 0, kind="agent", name="agent"),
+        span("llm1", "root", 1, kind="llm", name="m", input=prompt(message("human", "Triage")),
+             output=answer(calls=[call("get_issue", issue_id=27)])),
+        span("tool1", "root", 2, kind="tool", name="get_issue", input="27", output="{}"),
+        span("llm2", "root", 3, kind="llm", name="m", status="error", error="503 UNAVAILABLE",
+             input=prompt(message("human", "Triage")), output={"generations": []}),
+    ])  # fmt: skip
+    embed_runs(db, fake)
+
+    text = summary(db)
+    assert "answered:" not in text and "get_issue(" not in text
+
+
+def test_text_beside_a_tool_request_isnt_the_answer(db: Session, fake: FakeEmbedder) -> None:
+    """ "Let me look that up" with a tool call is a step; the answer is a call that only spoke."""
+    from flight_recorder.search.index import embed_runs
+
+    record(db, "lg-9", [
+        span("root", None, 0, kind="agent", name="agent"),
+        span("llm1", "root", 1, kind="llm", name="m", input=prompt(message("human", "Fix it")),
+             output=answer("Done: it was a typo")),
+        span("llm2", "root", 2, kind="llm", name="m", input=prompt(message("human", "And this?")),
+             output=answer("Let me look that up", calls=[call("search_issues", query="x")])),
+        span("tool1", "root", 3, kind="tool", name="search_issues", input="x", output="none"),
+    ])  # fmt: skip
+    embed_runs(db, fake)
+
+    text = summary(db)
+    assert 'answered: "Done: it was a typo"' in text
+    assert "Let me look that up" not in text and "search_issues(" not in text

@@ -118,23 +118,22 @@ def tool_calls(output: Any) -> list[Any]:
     return (as_list(kwargs.get("tool_calls")) or []) if kwargs is not None else []
 
 
-def langchain_answer(output: Any) -> str | None:
-    """A LangChain model call's answer: its tool calls, else its text quoted; None if the
-    output isn't LangChain's or says nothing (a failed call)."""
+def langchain_text(output: Any) -> str | None:
+    """What a LangChain model call said, quoted; None if the output isn't LangChain's or
+    says nothing (a failed call)."""
     kwargs = ai(output)
-    if kwargs is None:
-        return None
-    calls = tool_calls(output)
-    if calls:
-        return ", ".join(call_line(c) for c in calls)
-    said = flat(message_text(kwargs.get("content")))
+    said = flat(message_text(kwargs.get("content"))) if kwargs is not None else ""
     return f'"{cut(said, ANSWER_CHARS)}"' if said else None
 
 
 def model_answer(output: Any) -> str:
-    """Any model call's answer, for a reader: LangChain's, or else the output as text."""
+    """Any model call's answer, for a reader: its tool calls, else what it said, else the
+    output as text."""
+    calls = tool_calls(output)
+    if calls:
+        return ", ".join(call_line(c) for c in calls)
     return (
-        langchain_answer(output)
+        langchain_text(output)
         or flat_text(output, ANSWER_CHARS)
         or cut(plain(output), ANSWER_CHARS)
     )
