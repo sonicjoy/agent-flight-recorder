@@ -14,9 +14,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from typing import cast as typed
 
-from sqlalchemy import String, cast, delete, func, select, update
+from sqlalchemy import String, cast, delete, exists, func, select, update
 from sqlalchemy.dialects.postgresql import aggregate_order_by
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from flight_recorder.redact import Redactor
 from flight_recorder.store.models import Label, Span
@@ -95,12 +95,16 @@ def add_label(
     author: str | None,
     redactor: Redactor,
     span_id: uuid.UUID | None = None,
-) -> Label:
+) -> Label | None:
+    """A human label, or None when the run (or span) already has this mode from a human."""
+    mode = check_mode(mode)
+    if mode in modes_of(session, run_id, span_id):
+        return None
     note = (note or "").strip() or None
     label = Label(
         run_id=run_id,
         span_id=span_id,
-        failure_mode=check_mode(mode),
+        failure_mode=mode,
         note=redactor.redact(note).value if note else None,
         source=HUMAN,
         author=author,
@@ -143,6 +147,19 @@ def labels_of(session: Session, run_id: uuid.UUID) -> list[Label]:
     )
 
 
+def modes_of(session: Session, run_id: uuid.UUID, span_id: uuid.UUID | None = None) -> set[str]:
+    """The human modes on the run (span_id None) or on one of its spans."""
+    return set(
+        session.scalars(
+            select(Label.failure_mode).where(
+                Label.run_id == run_id,
+                Label.span_id.is_not_distinct_from(span_id),
+                Label.source == HUMAN,
+            )
+        )
+    )
+
+
 def labelled_runs(session: Session, run_ids: Sequence[uuid.UUID]) -> set[uuid.UUID]:
     """Those of `run_ids` with at least one human label."""
     return set(
@@ -161,13 +178,28 @@ def labelled_count(session: Session, source: str = HUMAN) -> int:
 
 
 def rename_mode(session: Session, old: str, new: str) -> int:
-    """Renames (or merges) a mode on human labels; returns how many labels changed."""
+    """Renames (or merges) a mode on human labels; returns how many labels changed. Where a
+    run (or span) has both modes, the old label is dropped rather than doubling the new."""
+    old, new = old.strip(), check_mode(new)
+    if old == new:  # every label would match itself as "has both" and be dropped
+        raise ValueError("the new name is the same as the old")
+    other = aliased(Label)
+    both = exists().where(
+        other.run_id == Label.run_id,
+        other.span_id.is_not_distinct_from(Label.span_id),
+        other.failure_mode == new,
+        other.source == HUMAN,
+    )
+    dropped = session.execute(
+        delete(Label).where(Label.failure_mode == old, Label.source == HUMAN, both)
+    )
     result = session.execute(
         update(Label)
-        .where(Label.failure_mode == old.strip(), Label.source == HUMAN)
-        .values(failure_mode=check_mode(new))
+        .where(Label.failure_mode == old, Label.source == HUMAN)
+        .values(failure_mode=new)
     )
-    return typed("CursorResult[Any]", result).rowcount
+    rowcount = typed("CursorResult[Any]", dropped).rowcount
+    return rowcount + typed("CursorResult[Any]", result).rowcount
 
 
 def remove_labels(session: Session, run_id: uuid.UUID, mode: str | None = None) -> int:

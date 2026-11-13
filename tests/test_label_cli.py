@@ -288,8 +288,8 @@ def test_label_asks_for_the_mode_offering_existing_ones(
     cli("label", second, "--mode", "over-labelling")
     cli("label", second, "--mode", "false-duplicate")
 
-    picked = cli("label", third, input="1\nsame as the others\n")
-    typed = cli("label", third, input="missed-priority\n\n")
+    picked = cli("label", third, input="1\nsame as the others\n\n")
+    typed = cli("label", third, input="missed-priority\n\n\n")
 
     assert picked.exit_code == 0 and typed.exit_code == 0, picked.output + typed.output
     assert "1) over-labelling (2)" in picked.output  # most used first, with counts
@@ -363,7 +363,7 @@ def test_next_can_skip_a_run_and_says_when_the_sample_is_done(
     queue = ["label", "--next", "--attr", "triager.batch.group=c"]  # one run, no --sample: all
 
     skipped = cli(*queue, input="s\n")
-    done = cli(*queue, input="mode\n\n")
+    done = cli(*queue, input="mode\n\n\n")
     again = cli(*queue)
 
     assert skipped.exit_code == 0 and labels(db)[0].run_id == ids["wrong"]["c"][0]
@@ -487,7 +487,7 @@ def test_modes_refuse_control_characters_and_reserved_answers(mode: str) -> None
 def test_a_note_given_without_a_mode_is_kept(
     cli: Callable[..., Any], db: Session, ids: dict[str, Any]
 ) -> None:
-    result = cli("label", str(ids["wrong"]["a"][0]), "--note", "from the flag", input="m\n")
+    result = cli("label", str(ids["wrong"]["a"][0]), "--note", "from the flag", input="m\n\n")
 
     assert result.exit_code == 0, result.output
     assert labels(db)[0].note == "from the flag"
@@ -500,7 +500,7 @@ def test_a_number_not_on_the_list_asks_again(
     run = str(ids["wrong"]["a"][0])
     cli("label", run, "--mode", "existing")
 
-    result = cli("label", run, input=f"{wrong}\nreal-mode\n\n")
+    result = cli("label", run, input=f"{wrong}\nreal-mode\n\n\n")
 
     assert result.exit_code == 0, result.output
     assert sorted(label.failure_mode for label in labels(db)) == ["existing", "real-mode"]
@@ -523,3 +523,111 @@ def test_a_new_run_in_one_stratum_leaves_the_others_picks_alone() -> None:
     after = [r for r in sample([*population, ("a99", "a")], 6, seed=14) if r.startswith("b")]
 
     assert before == after
+
+
+# --- several modes on one run (tests written before the change) ------------------------
+
+
+def test_label_asks_for_another_mode_until_an_empty_answer(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    run = str(ids["wrong"]["a"][0])
+
+    result = cli("label", run, input="over-labelling\nnote a\nfalse-duplicate\nnote b\n\n")
+
+    assert result.exit_code == 0, result.output
+    assert "another mode" in result.output
+    assert [(m.failure_mode, m.note) for m in labels(db)] == [
+        ("over-labelling", "note a"),
+        ("false-duplicate", "note b"),
+    ]
+
+
+def test_next_takes_several_modes_for_a_run_before_moving_on(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    queue = ["label", "--next", "--attr", "triager.grade=wrong"]
+
+    result = cli(*queue, input="mode-one\n\nmode-two\n\n\nq\n")
+
+    assert result.exit_code == 0, result.output
+    assert len({label.run_id for label in labels(db)}) == 1
+    assert sorted(label.failure_mode for label in labels(db)) == ["mode-one", "mode-two"]
+    assert "1 of " in result.output  # moved on to the next run
+
+
+def test_q_after_a_mode_keeps_it_and_stops_the_queue(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    result = cli("label", "--next", "--attr", "triager.grade=wrong", input="mode-one\n\nq\n")
+
+    assert result.exit_code == 0, result.output
+    assert [label.failure_mode for label in labels(db)] == ["mode-one"]
+    assert "1 of " not in result.output
+
+
+def test_a_mode_the_run_already_has_is_asked_again(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    run = str(ids["wrong"]["a"][0])
+    cli("label", run, "--mode", "existing")
+
+    result = cli("label", run, input="1\nexisting\nnew-one\n\n\n")
+
+    assert result.exit_code == 0, result.output
+    assert "already" in result.output
+    assert sorted(label.failure_mode for label in labels(db)) == ["existing", "new-one"]
+
+
+def test_label_with_a_mode_the_run_already_has_adds_nothing(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    run = str(ids["wrong"]["a"][0])
+    cli("label", run, "--mode", "existing")
+
+    result = cli("label", run, "--mode", "existing", "--note", "again")
+
+    assert result.exit_code == 0, result.output
+    assert "already" in result.output
+    assert [(m.failure_mode, m.note) for m in labels(db)] == [("existing", None)]
+
+
+def test_the_same_mode_on_another_span_of_the_run_is_a_new_label(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    run = ids["wrong"]["a"][0]
+    tool = db.scalar(select(Span.id).where(Span.run_id == run, Span.kind == "tool"))
+
+    cli("label", str(run), "--mode", "tool-timeout")
+    cli("label", str(run), "--span", str(tool)[:8], "--mode", "tool-timeout")
+
+    assert sorted(str(label.span_id) for label in labels(db)) == sorted(["None", str(tool)])
+
+
+def test_merging_two_modes_a_run_has_leaves_it_one_label(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    a = ids["wrong"]["a"]
+    cli("label", str(a[0]), "--mode", "extra-label")
+    cli("label", str(a[0]), "--mode", "over-labelling")
+    cli("label", str(a[1]), "--mode", "extra-label")
+
+    result = cli("labels", "rename", "extra-label", "over-labelling")
+
+    assert result.exit_code == 0, result.output
+    assert sorted((str(m.run_id), m.failure_mode) for m in labels(db)) == sorted(
+        [(str(a[0]), "over-labelling"), (str(a[1]), "over-labelling")]
+    )
+    listed = cli("labels", "list").output
+    assert "2 labels on 2 runs" in listed
+
+
+def test_renaming_a_mode_to_itself_is_refused_and_keeps_its_labels(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    cli("label", str(ids["wrong"]["a"][0]), "--mode", "extra-label")
+
+    result = cli("labels", "rename", "extra-label", " extra-label ")
+
+    assert result.exit_code == 2, result.output
+    assert [label.failure_mode for label in labels(db)] == ["extra-label"]
