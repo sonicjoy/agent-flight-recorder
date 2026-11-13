@@ -6,12 +6,12 @@ Hand error analysis of the [run corpus](corpus.md) ([#14](https://github.com/son
 - **Over-labelling is the main failure:** 29 of the 49 labels on agent failures are an extra or wrong label.
 - **Duplicate links are too eager:** 10 runs link a duplicate, 9 of them where there is none.
 - **The eval set caused some of the "failures":** 9 of the 50 runs (18%) were wrong only because of a bad truth. Fixing the truth flipped them to correct.
-- **Search can find these runs by topic and by decision,** with recall@5 of 0.81. **bge-small stays:** bge-base scored 0.77.
+- **Search finds runs by topic** (recall@5 0.98) **better than by decision** (0.60), and can't tell a wrong decision from a right one. **bge-small stays:** 0.81 overall, against 0.77 for bge-base.
 
 ## Method
 
 **Terms.**
-- **Issue numbers.** The triager triages this repo's own GitHub issues, so `#16` in an example is this repo's issue #16. Cases `s01` to `s65` are synthetic: written by hand for the project in the triager's `synthetic.yaml`, some as paraphrases of real issues.
+- **Issue numbers.** The triager triages this repo's own GitHub issues, so `#16` in an example is this repo's issue #16. Cases `s01` to `s65` are synthetic: drafted with Claude for the project and kept in the triager's `synthetic.yaml`, some as paraphrases of real issues.
 - **Truth:** the answer a run is graded against: the issue's labels, milestone and links on GitHub, or the synthetic case's.
 - **Labels and milestones:** `stretch` marks optional work. Milestones are the plan's weeks, e.g. "Week 1: Demo agent and foundations".
 
@@ -51,7 +51,7 @@ Agent failures, grouped by cause. Counts are labels; each label is on a differen
 | **Under-labelling** | `missed-label` | 4 | A right label left out: `stretch` 2, `infra` 1, `analyst` 1 |
 | **Milestone** | `wrong-milestone` | 5 | The wrong week; every one of these runs also has a wrong label or link |
 
-Eval-set problems: the run was graded wrong because of the truth.
+Eval-set problems: the truth was wrong or debatable. After the fixes, 9 of these 12 runs are correct; the other 3 also have agent errors (finding 5).
 
 | Mode | Runs | What happened |
 |---|---|---|
@@ -153,7 +153,7 @@ After re-grading, the corpus went from 70 correct and 130 wrong to **81 correct 
 
 ## Can search find these runs?
 
-Recall@5 of `afr search` on 20 queries ([retrieval.yaml](retrieval.yaml), checked with [`afr search-check`](../search.md#afr-search-check-queries-is-the-model-good-enough)): the share of a query's right runs in the top 5. It matters because the analyst (#22) and the MCP server (#24) find failures through search.
+Recall@5 of `afr search` on 20 queries ([retrieval.yaml](retrieval.yaml), checked with [`afr search-check`](../search.md#afr-search-check-queries-is-the-model-good-enough)): the share of a query's right runs in the top 5, out of as many as 5 can hold. So for a query with more than 5 right runs, it's the share of the top 5 that are right: 0.80 on "marked as a duplicate" means 4 of the top 5 linked one. It matters because the analyst (#22) and the MCP server (#24) find failures through search.
 
 | | bge-small-en-v1.5 (stored, 384-d) | bge-base-en-v1.5 (768-d) |
 |---|---|---|

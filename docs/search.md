@@ -50,7 +50,7 @@ Recall@k of `afr search` on a file of queries (#14). Each query names its **righ
 ```yaml
 # a queries file
 - query: marked the issue as a duplicate of another issue
-  runs: [f9cd00b89a2b035a4f6ec819e51da547, 3c1e...]
+  runs: [087fa48f476263623e23470f8ad5dc43, ...]
 ```
 
 ```bash
