@@ -685,7 +685,7 @@ def test_a_mode_the_span_already_has_names_the_span(
     assert f"span {tool} already has tool-timeout" in result.output
 
 
-def test_rename_merges_only_on_the_same_span_and_says_notes_were_dropped(
+def test_rename_merges_only_on_the_same_span_and_says_how_many(
     cli: Callable[..., Any], db: Session, ids: dict[str, Any]
 ) -> None:
     a = ids["wrong"]["a"]
@@ -704,3 +704,100 @@ def test_rename_merges_only_on_the_same_span_and_says_notes_were_dropped(
         [(str(a[0]), True), (str(a[0]), False), (str(a[1]), False)]
     )
     assert {m.failure_mode for m in labels(db)} == {"new"}
+
+
+# --- notes kept on merge, and one mode per run enforced by the database ----------------
+
+
+def test_a_merge_keeps_the_dropped_labels_note_marked_as_from_before_the_merge(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    a = ids["wrong"]["a"]
+    cli("label", str(a[0]), "--mode", "old", "--note", "dropped note")
+    cli("label", str(a[0]), "--mode", "new", "--note", "kept note")
+    cli("label", str(a[1]), "--mode", "old", "--note", "only note")
+    cli("label", str(a[1]), "--mode", "new")
+    cli("label", str(a[2]), "--mode", "old")
+    cli("label", str(a[2]), "--mode", "new", "--note", "untouched")
+
+    result = cli("labels", "rename", "old", "new")
+
+    assert result.exit_code == 0, result.output
+    assert "notes are kept" in result.output
+    notes = {str(m.run_id): m.note for m in labels(db)}
+    assert notes == {
+        str(a[0]): "kept note; [before merge, was old] dropped note",
+        str(a[1]): "[before merge, was old] only note",
+        str(a[2]): "untouched",
+    }
+
+
+def test_the_database_refuses_a_second_human_label_with_the_same_mode(
+    db: Session, ids: dict[str, Any]
+) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    run = ids["wrong"]["a"][0]
+    tool = db.scalar(select(Span.id).where(Span.run_id == run, Span.kind == "tool"))
+    for span in (None, tool):
+        db.add(Label(run_id=run, span_id=span, failure_mode="m", source="human"))
+        db.commit()
+        db.add(Label(run_id=run, span_id=span, failure_mode="m", source="human"))
+        with pytest.raises(IntegrityError):
+            db.commit()
+        db.rollback()
+    db.add_all([Label(run_id=run, failure_mode="m", source="judge") for _ in range(2)])
+    db.commit()  # model labels may repeat: each judge run is its own opinion
+
+
+def test_add_label_racing_another_writer_adds_nothing(
+    db: Session, ids: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two labellers at once: both pass the "already has it?" check, one insert wins."""
+    import flight_recorder.store.labels as store
+
+    monkeypatch.setattr(store, "modes_of", lambda *args, **kwargs: set())
+    run = ids["wrong"]["a"][0]
+
+    first = store.add_label(db, run, "m", "one", author="a", redactor=REDACTOR)
+    db.commit()
+    second = store.add_label(db, run, "m", "two", author="b", redactor=REDACTOR)
+    db.commit()
+
+    assert first is not None and second is None
+    assert [(m.failure_mode, m.note) for m in labels(db)] == [("m", "one")]
+
+
+def test_two_labellers_at_once_add_the_mode_once(
+    store: tuple[str, dict[str, Any]], db: Session, ids: dict[str, Any]
+) -> None:
+    """Two connections, as two `afr label` processes: the first adds the mode but hasn't
+    committed; the second checks (sees nothing yet), inserts, waits on the first, and adds
+    nothing once it commits. In either order, one label."""
+    import threading
+    import time
+
+    from flight_recorder.store.labels import add_label
+
+    run = ids["wrong"]["a"][0]
+    engine = create_engine(store[0])
+    results: list[Label | None] = []
+    try:
+        with Session(engine) as first, Session(engine) as second:
+            assert add_label(first, run, "m", "first", author="a", redactor=REDACTOR)
+
+            def label_too() -> None:
+                results.append(add_label(second, run, "m", "second", author="b",
+                                         redactor=REDACTOR))  # fmt: skip
+                second.commit()
+
+            racer = threading.Thread(target=label_too)
+            racer.start()
+            time.sleep(0.5)  # let it reach the insert and wait on the first's row
+            first.commit()
+            racer.join(timeout=10)
+    finally:
+        engine.dispose()
+
+    assert results == [None]
+    assert [(m.failure_mode, m.note) for m in labels(db)] == [("m", "first")]

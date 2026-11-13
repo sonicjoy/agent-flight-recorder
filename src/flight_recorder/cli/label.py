@@ -362,22 +362,30 @@ def labels_rename(
     new: Annotated[str, typer.Argument(help="Its new name; an existing mode merges them.")],
 ) -> None:
     """Rename a failure mode on human labels, or merge it into another."""
+    from sqlalchemy.exc import IntegrityError
+
     from flight_recorder.store.labels import rename_mode
 
     new = _mode(new)
     with open_store(readonly=False) as session:
         try:
             renamed, merged = rename_mode(session, old, new)
+            session.flush()
         except ValueError as error:
             raise typer.BadParameter(str(error), param_hint="NEW") from None
+        except IntegrityError:  # another labeller added the new mode meanwhile
+            session.rollback()
+            typer.echo("error: the labels changed while renaming; nothing renamed, try again",
+                       err=True)  # fmt: skip
+            raise typer.Exit(code=1) from None
         if not renamed + merged:
             typer.echo(f"error: no human labels have the mode {old!r}", err=True)
             raise typer.Exit(code=1)
         session.commit()
     message = f"renamed {renamed} label{'s' if renamed != 1 else ''}"
     if merged:
-        message += (f"; {merged} merged into labels their runs already had "
-                    "(the merged labels' notes are dropped)")  # fmt: skip
+        message += (f"; {merged} merged into labels their runs already had (their notes "
+                    "are kept there, marked 'before merge')")  # fmt: skip
     typer.echo(message)
 
 

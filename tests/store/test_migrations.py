@@ -214,3 +214,42 @@ def test_downgrade_needs_yes(
             assert connection.scalar(text("SELECT count(*) FROM runs")) == 0  # table still there
     finally:
         engine.dispose()
+
+
+def test_0007_merges_duplicate_human_labels_keeping_their_notes(
+    make_database: Callable[[], str],
+) -> None:
+    url = make_database()
+    upgrade(url, "0006")
+    engine = create_engine(url)
+    run = "'00000000-0000-0000-0000-000000000001'"
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(SEED_AT_0001))  # one human 'none' label, no note
+            connection.execute(text(f"""
+                INSERT INTO labels (run_id, failure_mode, source, note, created_at) VALUES
+                ({run}, 'none', 'human', 'second', '2026-11-06 18:00+00'),
+                ({run}, 'none', 'human', NULL, '2026-11-06 19:00+00'),
+                ({run}, 'none', 'human', 'fourth', '2026-11-06 20:00+00'),
+                ({run}, 'other', 'human', NULL, '2026-11-06 18:00+00'),
+                ({run}, 'none', 'judge', 'j1', '2026-11-06 18:00+00'),
+                ({run}, 'none', 'judge', 'j2', '2026-11-06 18:00+00')
+            """))  # fmt: skip
+        upgrade(url, "0007")
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT failure_mode, source, note FROM labels "
+                    "ORDER BY source, failure_mode, note"
+                )
+            ).all()
+    finally:
+        engine.dispose()
+
+    # the earliest 'none' (18:00, "second") is kept; the seed row's created_at is now()
+    assert [tuple(r) for r in rows] == [
+        ("none", "human", "second; [duplicate] fourth"),
+        ("other", "human", None),
+        ("none", "judge", "j1"),  # model labels may repeat
+        ("none", "judge", "j2"),
+    ]

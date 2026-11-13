@@ -284,6 +284,16 @@ class Label(Base):
         _same_run_span(),
         Index(None, "run_id", "span_id"),
         Index(None, "failure_mode"),
+        # a run (or span) has each human mode once, even with two labellers at once
+        Index(
+            "uq_labels_human_mode",
+            "run_id",
+            "span_id",
+            "failure_mode",
+            unique=True,
+            postgresql_where=text("source = 'human'"),
+            postgresql_nulls_not_distinct=True,
+        ),
     )
 
 

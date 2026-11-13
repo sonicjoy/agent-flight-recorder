@@ -14,8 +14,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from typing import cast as typed
 
-from sqlalchemy import String, cast, delete, exists, func, select, update
-from sqlalchemy.dialects.postgresql import aggregate_order_by
+from sqlalchemy import String, and_, cast, delete, func, select, update
+from sqlalchemy.dialects.postgresql import aggregate_order_by, insert
 from sqlalchemy.orm import Session, aliased
 
 from flight_recorder.redact import Redactor
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 HUMAN = "human"
 MAX_MODE = 80
+MERGED = "[before merge, was {}]"  # marks a note that came from a merged label
 
 
 class SpanNotInRunError(LookupError):
@@ -96,22 +97,29 @@ def add_label(
     redactor: Redactor,
     span_id: uuid.UUID | None = None,
 ) -> Label | None:
-    """A human label, or None when the run (or span) already has this mode from a human."""
+    """A human label, or None when the run (or span) already has this mode from a human,
+    even one another labeller added a moment ago: the unique index decides (migration 0007)."""
     mode = check_mode(mode)
-    if mode in modes_of(session, run_id, span_id):
+    if mode in modes_of(session, run_id, span_id):  # the usual case, without a write
         return None
     note = (note or "").strip() or None
-    label = Label(
-        run_id=run_id,
-        span_id=span_id,
-        failure_mode=mode,
-        note=redactor.redact(note).value if note else None,
-        source=HUMAN,
-        author=author,
+    added = session.scalar(
+        insert(Label)
+        .values(
+            run_id=run_id,
+            span_id=span_id,
+            failure_mode=mode,
+            note=redactor.redact(note).value if note else None,
+            source=HUMAN,
+            author=author,
+        )
+        .on_conflict_do_nothing(
+            index_elements=[Label.run_id, Label.span_id, Label.failure_mode],
+            index_where=Label.source == HUMAN,
+        )
+        .returning(Label.id)
     )
-    session.add(label)
-    session.flush()
-    return label
+    return session.get(Label, added) if added is not None else None
 
 
 @dataclass(frozen=True)
@@ -179,30 +187,37 @@ def labelled_count(session: Session, source: str = HUMAN) -> int:
 
 def rename_mode(session: Session, old: str, new: str) -> tuple[int, int]:
     """Renames (or merges) a mode on human labels. Where a run (or span) has both modes,
-    the old label is dropped (with its note) rather than doubling the new. Returns how many
-    labels were renamed and how many dropped."""
+    the old label is merged into the new one: its note is appended, marked as from before
+    the merge, and the old label deleted. Returns how many labels were renamed and merged.
+    Another labeller adding `new` meanwhile makes the rename fail (IntegrityError), whole."""
     old, new = old.strip(), check_mode(new)
-    if old == new:  # every label would match itself as "has both" and be dropped
+    if old == new:  # every label would match itself as "has both" and be merged away
         raise ValueError("the new name is the same as the old")
-    other = aliased(Label)
-    both = exists().where(
-        other.run_id == Label.run_id,
-        other.span_id.is_not_distinct_from(Label.span_id),
-        other.failure_mode == new,
-        other.source == HUMAN,
-    )
-    dropped = session.execute(
-        delete(Label).where(Label.failure_mode == old, Label.source == HUMAN, both)
-    )
+    kept = aliased(Label)
+    pairs = session.execute(
+        select(Label.id, Label.note, kept)
+        .join(
+            kept,
+            and_(
+                kept.run_id == Label.run_id,
+                kept.span_id.is_not_distinct_from(Label.span_id),
+                kept.failure_mode == new,
+                kept.source == HUMAN,
+            ),
+        )
+        .where(Label.failure_mode == old, Label.source == HUMAN)
+        .with_for_update()
+    ).all()
+    for _, note, label in pairs:
+        if note:
+            label.note = "; ".join(filter(None, [label.note, f"{MERGED.format(old)} {note}"]))
+    session.execute(delete(Label).where(Label.id.in_([dropped for dropped, _, _ in pairs])))
     renamed = session.execute(
         update(Label)
         .where(Label.failure_mode == old, Label.source == HUMAN)
         .values(failure_mode=new)
     )
-    return (
-        typed("CursorResult[Any]", renamed).rowcount,
-        typed("CursorResult[Any]", dropped).rowcount,
-    )
+    return typed("CursorResult[Any]", renamed).rowcount, len(pairs)
 
 
 def remove_labels(session: Session, run_id: uuid.UUID, mode: str | None = None) -> int:
