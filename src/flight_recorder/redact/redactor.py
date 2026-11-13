@@ -18,11 +18,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from flight_recorder.redact.patterns import (
-    MIN_SECRET_CHARS,
     PATTERNS,
     PLACEHOLDER_PREFIX,
     SECRET_NAME,
     Pattern,
+    is_a_value,
 )
 
 FINGERPRINT_CHARS = 8  # 32 bits: collisions are unlikely among one install's secrets
@@ -87,7 +87,7 @@ class Redactor:
         if (
             isinstance(key, str)
             and isinstance(value, str)
-            and len(value) >= MIN_SECRET_CHARS
+            and is_a_value(value)
             and not value.startswith(PLACEHOLDER_PREFIX)
             and _SECRET_KEY.search(key)
         ):

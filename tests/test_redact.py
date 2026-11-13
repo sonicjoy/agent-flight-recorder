@@ -170,10 +170,10 @@ def test_a_key_name_with_a_prefix_is_still_a_key_name(redactor: Redactor, label:
     """DB_PASSWORD=, JWT_SECRET=, dbPassword=: how .env files and code name secrets."""
     text, secret = prefixed_assignments()[label]
 
-    result, counts = redact(redactor, f"before {text} after")
+    result, counts = redact(redactor, f"before {text}\nafter")  # `key: value` runs to the end
 
     assert secret not in result
-    assert result.startswith("before ") and result.endswith(" after")
+    assert result.startswith("before ") and result.endswith("\nafter")
     assert counts == Counter({"secret_assignment": 1})
 
 
@@ -198,12 +198,54 @@ def test_values_under_keys_that_only_look_like_secrets_are_kept(redactor: Redact
         "input_tokens": "12345678",
         "token_count": "12345678",
         "secret_name": "prod-database-credentials",
-        "password": "short",  # under 8 characters, as for password=short
+        "password": "",
+        "auth_token": "null",  # says there is none
         "token": None,
         "api_key": 12345678901,  # not a string
     }
 
     assert redactor.redact(value).value == value
+
+
+# (text, the value that must go): short values, and values with spaces, after a secret's name
+SHORT_OR_SPACED = {
+    "short after =": ("password=hunter2", "hunter2"),
+    "short env var before a command": ("PGPASSWORD=abc123 psql -h db", "abc123"),
+    "phrase after a colon": ("password: correct horse battery", "correct horse battery"),
+    "phrase in double quotes": ('"password": "correct horse battery"', "correct horse battery"),
+    "phrase in single quotes": ("api_key = 'my key here'", "my key here"),
+    "phrase after = in quotes": ('DB_PASSWORD="two words"', "two words"),
+    "short in a JSON string": ('\\"token\\": \\"ab12\\"', "ab12"),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("label", SHORT_OR_SPACED)
+def test_short_and_spaced_values_after_a_secrets_name_are_redacted(
+    redactor: Redactor, label: str
+) -> None:
+    text, secret = SHORT_OR_SPACED[label]
+
+    result, counts = redact(redactor, f"{text}\nnext line")
+
+    expected = text.replace(secret, redactor.placeholder("secret_assignment", secret), 1)
+    assert result == f"{expected}\nnext line"
+    assert counts == Counter({"secret_assignment": 1})
+
+
+@pytest.mark.parametrize(
+    "text", ["password: null", "token = none", '"password": ""', "password=", "TOKEN=false"]
+)
+def test_a_secrets_name_with_no_value_is_left_alone(redactor: Redactor, text: str) -> None:
+    assert redact(redactor, text) == (text, Counter())
+
+
+def test_a_short_value_under_a_secret_key_is_redacted(redactor: Redactor) -> None:
+    result = redactor.redact({"password": "hunter2", "token": "two words"})
+
+    assert result.value == {
+        "password": redactor.placeholder("secret_assignment", "hunter2"),
+        "token": redactor.placeholder("secret_assignment", "two words"),
+    }
 
 
 ADVERSARIAL = {
@@ -220,6 +262,9 @@ ADVERSARIAL = {
     "long prefix": "a_" * 100_000 + "password=x",
     "camelCase keywords": "aPassword" * 40_000,
     "keyword then spaces": "password" + " " * 200_000,
+    "a long phrase after a colon": "password: " + "word " * 100_000,
+    "an unclosed quote": 'password: "' + "word " * 100_000,
+    "many phrases": "token: a b " * 40_000,
 }
 
 

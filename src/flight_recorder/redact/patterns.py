@@ -65,11 +65,24 @@ def _looks_random(match: re.Match[str]) -> bool:
 _IN_PLACEHOLDER = re.compile(r"\[REDACTED:[a-z_]{0,40}+$")
 
 
-def _not_a_placeholder(match: re.Match[str]) -> bool:
-    """Not the kind name inside a placeholder: [REDACTED:github_token:1a2b3c4d] ends in a
-    secret's name followed by `:` and eight characters."""
+# Words after a secret's name that say there is no secret, or name a type in code
+# (`password: str`), not a value.
+NOT_A_VALUE = frozenset(
+    {"null", "none", "nil", "undefined", "true", "false", "str", "string", "bytes", "secretstr"}
+)
+
+
+def is_a_value(text: str) -> bool:
+    """Whether text after a secret's name could be the secret."""
+    words = text.split()
+    return bool(words) and words[0].lower().rstrip("|,") not in NOT_A_VALUE
+
+
+def _assigned_value(match: re.Match[str]) -> bool:
+    """A value, and not the kind name inside a placeholder: [REDACTED:github_token:1a2b3c4d]
+    ends in a secret's name followed by `:` and eight characters."""
     before = match.string[max(0, match.start() - 60) : match.start()]
-    return not _IN_PLACEHOLDER.search(before)
+    return is_a_value(match.group("secret")) and not _IN_PLACEHOLDER.search(before)
 
 
 _TOKEN = r"A-Za-z0-9+/_=-"  # characters of base64 and URL-safe tokens
@@ -82,9 +95,22 @@ _TOKEN = r"A-Za-z0-9+/_=-"  # characters of base64 and URL-safe tokens
 SECRET_NAME = (
     r"(?:(?<![A-Za-z0-9])|(?<=[a-z0-9])(?=[A-Z]))"
     r"(?i:api[_-]?key|secret[_-]?key|client[_-]?secret|secret|password|passwd|pwd"
-    r"|access[_-]?token|auth[_-]?token|token)\b"
+    r"|pgpassword|access[_-]?token|auth[_-]?token|token)\b"
 )
-MIN_SECRET_CHARS = 8  # shorter values after a secret's name are left alone (see docs)
+# The value after a secret's name, of any length, in one of three forms, each a pattern of
+# its own (one regex can't name the secret in each branch); quoted runs first.
+_NAMED = SECRET_NAME + r"(?:\\?[\"'])?[ \t]*+"  # password, "password", \"password\"
+_WORD = r"[^\s\"'\\,;{}=][^\s\"'\\,;{}]*+"  # not starting with = (`token == x` is code)
+SECRET_VALUES = (
+    # password: "two words" / api_key='...' / \"token\": \"...\" (a JSON string): to the
+    # closing quote, at most 256 characters on one line; the quotes stay
+    _NAMED + r"[:=][ \t]*+\\?(?P<q>[\"'])"
+    r"(?P<secret>(?:(?!(?P=q))[^\\\n]){1,256}+)(?=\\?(?P=q))",
+    # password: correct horse battery staple (YAML, prose): the words to the end of the line
+    _NAMED + rf":[ \t]*+(?P<secret>{_WORD}(?:[ \t]++{_WORD})*+)",
+    # PGPASSWORD=abc123 psql (shell, .env): one word
+    _NAMED + rf"=(?!=)[ \t]*+(?P<secret>{_WORD})",
+)
 
 PATTERNS: tuple[Pattern, ...] = (
     # Unterminated keys (a truncated prompt) are redacted to the end of the text.
@@ -133,15 +159,12 @@ PATTERNS: tuple[Pattern, ...] = (
             r"(?P<secret>[^\s\"'\\]{1,128})@(?=[^\s@/?#\"'\\])"
         ),
     ),
-    Pattern(
-        "secret_assignment",  # password=..., "api_key": "...", and the same inside a JSON string
-        # (\"api_key\": \"...\"), which is how OTel sends gen_ai.input.messages. The backslash
-        # stays outside the secret so the JSON string remains valid after replacement.
-        re.compile(
-            SECRET_NAME + r"(?:\\?[\"'])?\s*[:=]\s*(?:\\?[\"'])?"
-            rf"(?P<secret>[^\s\"'\\,;{{}}]{{{MIN_SECRET_CHARS},}}+)"
-        ),
-        check=_not_a_placeholder,  # a kind name such as github_token ends in "token"
+    # password=..., "api_key": "...", and the same inside a JSON string (\"api_key\": \"...\"),
+    # which is how OTel sends gen_ai.input.messages. The backslash stays outside the secret so
+    # the JSON string remains valid after replacement. Any length: password=hunter2 too.
+    *(
+        Pattern("secret_assignment", re.compile(value), check=_assigned_value)
+        for value in SECRET_VALUES
     ),
     Pattern(
         "email",
