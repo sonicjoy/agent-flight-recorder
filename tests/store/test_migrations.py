@@ -214,3 +214,192 @@ def test_downgrade_needs_yes(
             assert connection.scalar(text("SELECT count(*) FROM runs")) == 0  # table still there
     finally:
         engine.dispose()
+
+
+def test_0007_merges_duplicate_human_labels_keeping_their_notes(
+    make_database: Callable[[], str],
+) -> None:
+    url = make_database()
+    upgrade(url, "0006")
+    engine = create_engine(url)
+    run = "'00000000-0000-0000-0000-000000000001'"
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(SEED_AT_0001))  # one human 'none' label, no note
+            connection.execute(text(f"""
+                INSERT INTO labels (run_id, failure_mode, source, note, created_at) VALUES
+                ({run}, 'none', 'human', 'second', '2026-11-06 18:00+00'),
+                ({run}, 'none', 'human', NULL, '2026-11-06 19:00+00'),
+                ({run}, 'none', 'human', 'fourth', '2026-11-06 20:00+00'),
+                ({run}, 'other', 'human', NULL, '2026-11-06 18:00+00'),
+                ({run}, 'none', 'judge', 'j1', '2026-11-06 18:00+00'),
+                ({run}, 'none', 'judge', 'j2', '2026-11-06 18:00+00')
+            """))  # fmt: skip
+        upgrade(url, "0007")
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT failure_mode, source, note FROM labels "
+                    "ORDER BY source, failure_mode, note"
+                )
+            ).all()
+    finally:
+        engine.dispose()
+
+    # the earliest 'none' (18:00, "second") is kept; the seed row's created_at is now()
+    assert [tuple(r) for r in rows] == [
+        ("none", "human", "second; [afr-note v1 at=2026-11-06T20:00:00Z by=- mode=none] fourth"),
+        ("other", "human", None),
+        ("none", "judge", "j1"),  # model labels may repeat
+        ("none", "judge", "j2"),
+    ]
+
+
+def test_0007_names_who_wrote_a_merged_duplicate_and_skips_empty_notes(
+    make_database: Callable[[], str],
+) -> None:
+    url = make_database()
+    upgrade(url, "0006")
+    engine = create_engine(url)
+    run = "'00000000-0000-0000-0000-000000000001'"
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(SEED_AT_0001))
+            connection.execute(text(f"""
+                INSERT INTO labels (run_id, failure_mode, source, note, author, created_at)
+                VALUES
+                ({run}, 'x', 'human', '', 'ann', '2026-11-06 18:00+00'),
+                ({run}, 'x', 'human', '', 'bob', '2026-11-06 19:00+00'),
+                ({run}, 'x', 'human', 'said so', 'cy', '2026-11-06 20:00+00')
+            """))  # fmt: skip
+        upgrade(url, "0007")
+        with engine.connect() as connection:
+            notes = (
+                connection.execute(text("SELECT note FROM labels WHERE failure_mode = 'x'"))
+                .scalars()
+                .all()
+            )
+    finally:
+        engine.dispose()
+
+    assert notes == ["[afr-note v1 at=2026-11-06T20:00:00Z by=cy mode=x] said so"]
+
+
+def test_0007_merges_spellings_of_one_mode_and_respells_them(
+    make_database: Callable[[], str],
+) -> None:
+    url = make_database()
+    upgrade(url, "0006")
+    engine = create_engine(url)
+    run = "'00000000-0000-0000-0000-000000000001'"
+    span = "'00000000-0000-0000-0000-000000000012'"
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(SEED_AT_0001))
+            connection.execute(text(f"""
+                INSERT INTO labels (run_id, span_id, failure_mode, source, note, author,
+                                    created_at) VALUES
+                ({run}, NULL, 'Tool Timeout', 'human', 'first', 'ann', '2026-11-06 18:00+00'),
+                ({run}, NULL, 'timeout_tool', 'human', 'second', 'bob', '2026-11-06 19:00+00'),
+                ({run}, {span}, 'TIMEOUT TOOL', 'human', NULL, 'cy', '2026-11-06 20:00+00')
+            """))  # fmt: skip
+        upgrade(url, "0007")
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT span_id IS NULL, failure_mode, note FROM labels "
+                    "WHERE failure_mode <> 'none' ORDER BY 1 DESC"
+                )
+            ).all()
+    finally:
+        engine.dispose()
+
+    assert [tuple(r) for r in rows] == [
+        (True, "tool-timeout",
+         "first; [afr-note v1 at=2026-11-06T19:00:00Z by=bob mode=timeout_tool] second"),
+        (False, "tool-timeout", None),  # another span: respelled, not merged
+    ]  # fmt: skip
+
+
+def test_0007_leaves_modes_of_only_punctuation_apart_and_as_they_were(
+    make_database: Callable[[], str],
+) -> None:
+    url = make_database()
+    upgrade(url, "0006")
+    engine = create_engine(url)
+    run = "'00000000-0000-0000-0000-000000000001'"
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(SEED_AT_0001))
+            connection.execute(text(f"""
+                INSERT INTO labels (run_id, failure_mode, source) VALUES
+                ({run}, '???', 'human'), ({run}, '!!!', 'human')
+            """))  # fmt: skip
+        upgrade(url, "0007")
+        with engine.connect() as connection:
+            modes = connection.execute(
+                text(
+                    "SELECT failure_mode, mode_key FROM labels WHERE failure_mode <> 'none'"
+                    " ORDER BY 1"
+                )
+            ).all()
+    finally:
+        engine.dispose()
+
+    assert [tuple(r) for r in modes] == [("!!!", "!!!"), ("???", "???")]
+
+
+def test_0007_notes_are_exactly_what_the_app_would_merge(
+    make_database: Callable[[], str],
+) -> None:
+    """The same duplicates, merged by 0007 and by store.labels.merged_note."""
+    from datetime import UTC, datetime
+
+    from flight_recorder.store.labels import merged_note
+    from flight_recorder.store.models import Label
+
+    url = make_database()
+    upgrade(url, "0006")
+    engine = create_engine(url)
+    run = "00000000-0000-0000-0000-000000000001"
+    rows = [  # (mode, note, author, minute) on the whole run; the first is kept
+        ("Slow Tool", "kept; typed [afr-note v1 x] here", "ann", 0),
+        ("tool slow", "b; c", "b o;b", 5),
+        ("tool slow", "b; c", "b o;b", 5),  # an identical duplicate: one fragment
+        ("slow_tool", None, None, 7),
+        ("SLOW tool", "z [x] 100%", None, 9),
+    ]
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(SEED_AT_0001))
+            for mode, note, author, minute in rows:
+                connection.execute(
+                    text(
+                        "INSERT INTO labels (run_id, failure_mode, source, note, author, "
+                        "created_at) VALUES (:r, :m, 'human', :n, :a, :t)"
+                    ),
+                    {
+                        "r": run,
+                        "m": mode,
+                        "n": note,
+                        "a": author,
+                        "t": datetime(2026, 11, 6, 18, minute, 30, 123456, tzinfo=UTC),
+                    },
+                )
+        upgrade(url, "0007")
+        with engine.connect() as connection:
+            migrated = connection.scalar(
+                text("SELECT note FROM labels WHERE failure_mode = 'slow-tool'")
+            )
+    finally:
+        engine.dispose()
+
+    def escaped(note: str | None) -> str | None:
+        return note.replace("[afr-note v", "\\[afr-note v") if note else note
+
+    expected = escaped(rows[0][1])
+    for mode, note, author, minute in rows[1:]:
+        at = datetime(2026, 11, 6, 18, minute, 30, 123456, tzinfo=UTC)
+        dropped = Label(failure_mode=mode, note=escaped(note), author=author, created_at=at)
+        expected = merged_note(expected, dropped)
+    assert migrated == expected

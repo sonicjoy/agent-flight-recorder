@@ -1,6 +1,6 @@
 """`afr label` and `afr labels`: label runs with failure modes by hand (#14, docs/cli.md).
 
-`afr label <run>` shows a run and asks for a failure mode and a note; `afr label --next`
+`afr label <run>` shows a run and asks for its failure modes, each with a note; `afr label --next`
 walks a seeded sample of runs, skipping those already labelled. `afr labels` lists, renames
 and removes modes. Only the `labels` table is written.
 """
@@ -10,6 +10,7 @@ from __future__ import annotations
 import getpass
 import re
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated
 
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
     from flight_recorder.redact import Redactor
+    from flight_recorder.store.labels import ModeCount
     from flight_recorder.store.read import RunSummary
 
 labels_app = typer.Typer(
@@ -31,6 +33,8 @@ labels_app = typer.Typer(
 )
 
 SEED = 14
+# another labeller got there first: unique violation, deadlock, serialization failure
+RACED = ("23505", "40P01", "40001")
 EVERY_RUN = 100_000
 SKIP, QUIT = "s", "q"
 NUMBER = re.compile(r"[0-9]{1,6}")  # ASCII only (str.isdigit() also takes ²), and short
@@ -42,6 +46,10 @@ class Quit(Exception):
 
 class Skip(Exception):
     pass
+
+
+class Done(Exception):
+    """No more modes for this run, and stop: `q` or end of input after a mode was saved."""
 
 
 def _author(given: str | None) -> str | None:
@@ -88,37 +96,108 @@ def show_run(out: Console, session: Session, summary: RunSummary) -> None:
             out.print(line)
 
 
-def _ask(
-    out: Console, session: Session, *, queue: bool, note: str | None = None
-) -> tuple[str, str | None]:
-    """A failure mode (an existing one by number, or a new name) and an optional note,
-    unless one was given. `q` quits; in the queue `s` skips the run."""
-    from flight_recorder.store.labels import check_mode, mode_counts
+def _pick(
+    out: Console,
+    modes: list[ModeCount],
+    already: Callable[[str], bool],
+    *,
+    queue: bool,
+    first: bool,
+) -> str | None:
+    """A failure mode: an existing one by number, or a new name; None when an answer after
+    the first is empty. `q` quits (Done after the first); in the queue `s` skips the run
+    (first answer only)."""
+    from flight_recorder.store.labels import check_mode
+
+    skip = queue and first
+    if first:
+        hint = "number or new name, " + ("s to skip, " if skip else "") + "q to quit"
+        question = f"failure mode ({hint})"
+    else:
+        question = "another mode (number or new name, Enter if none, q to quit)"
+    while True:
+        try:
+            answer = typer.prompt(question, default=None if first else "", show_default=False)
+        except typer.Abort:  # end of input or Ctrl-C: keep what's saved, say so, stop
+            if first:
+                raise
+            raise Done from None
+        answer = answer.strip()
+        if not first:
+            if not answer:
+                return None
+            if answer == QUIT:
+                raise Done
+            if answer == SKIP:
+                why = "s skips only before the first mode" if queue else "s isn't a mode name"
+                out.print(f"{why}; press Enter for no more modes")
+                continue
+        elif answer == QUIT:
+            raise Quit
+        elif skip and answer == SKIP:
+            raise Skip
+        if NUMBER.fullmatch(answer):
+            if not 1 <= int(answer) <= len(modes):
+                out.print(f"pick 1 to {len(modes)}, or type a name" if modes else "type a name")
+                continue
+            mode = modes[int(answer) - 1].mode
+        else:
+            try:
+                mode = check_mode(answer)
+            except ValueError as error:
+                out.print(render.text(f"{error}; try again"))
+                continue
+        if already(mode):  # in any spelling
+            out.print(render.text(f"already labelled {render.one_line(mode, 80)}; pick another"))
+            continue
+        return mode
+
+
+def _ask_and_save(
+    out: Console,
+    session: Session,
+    run_id: uuid.UUID,
+    *,
+    queue: bool,
+    author: str | None,
+    redactor: Redactor,
+    first_note: str | None = None,
+    span_id: uuid.UUID | None = None,
+) -> tuple[list[str], bool]:
+    """Asks for failure modes, each with an optional note (`first_note` is the first one's,
+    if given), and saves each as it's answered, until an empty answer. Returns the modes
+    saved, and whether to stop (`q` or end of input after a mode)."""
+    from flight_recorder.store.labels import mode_counts, mode_key, modes_of
 
     modes = mode_counts(session)
     if modes:
         out.print(Text("modes so far:", style="bold"))
         for i, count in enumerate(modes, 1):
             out.print(render.text(f"  {i}) {render.one_line(count.mode, 80)} ({count.runs})"))
-    hint = "number or new name, " + ("s to skip, " if queue else "") + "q to quit"
+    have = modes_of(session, run_id, span_id)  # keys
+
+    def already(mode: str) -> bool:
+        return mode_key(session, mode) in have
+
+    saved: list[str] = []
     while True:
-        answer = typer.prompt(f"failure mode ({hint})").strip()
-        if answer == QUIT or (queue and answer == SKIP):
-            raise Quit if answer == QUIT else Skip
-        if NUMBER.fullmatch(answer):
-            if 1 <= int(answer) <= len(modes):
-                mode = modes[int(answer) - 1].mode
-                break
-            out.print(f"pick 1 to {len(modes)}, or type a name" if modes else "type a name")
-            continue
         try:
-            mode = check_mode(answer)
-            break
-        except ValueError as error:
-            out.print(render.text(f"{error}; try again"))
-    if note is None:
-        note = typer.prompt("note (optional)", default="", show_default=False).strip()
-    return mode, note or None
+            mode = _pick(out, modes, already, queue=queue, first=not saved)
+        except Done:
+            return saved, True
+        if mode is None:
+            return saved, False
+        note = first_note if not saved else None
+        if note is None:
+            note = typer.prompt("note (optional)", default="", show_default=False).strip()
+        have.add(mode_key(session, mode))
+        stored = _save(session, run_id, mode, note, author=author, redactor=redactor,
+                       span_id=span_id)  # fmt: skip
+        if stored is not None:
+            saved.append(stored)
+        else:  # another labeller added it since the check
+            out.print(render.text(f"someone just added {render.one_line(mode, 80)} to this "
+                                  "run; yours wasn't saved"))  # fmt: skip
 
 
 def _save(
@@ -130,11 +209,14 @@ def _save(
     author: str | None,
     redactor: Redactor,
     span_id: uuid.UUID | None = None,
-) -> None:
+) -> str | None:
+    """The mode as stored, or None when the run (or span) already had it."""
     from flight_recorder.store.labels import add_label
 
-    add_label(session, run_id, mode, note, author=author, redactor=redactor, span_id=span_id)
+    added = add_label(session, run_id, mode, note, author=author, redactor=redactor,
+                      span_id=span_id)  # fmt: skip
     session.commit()
+    return added.failure_mode if added is not None else None
 
 
 def _queue(
@@ -175,13 +257,15 @@ def _queue(
         summary = runs[todo[0]]
         show_run(out, session, summary)
         try:
-            mode, note = _ask(out, session, queue=True)
+            _, stop = _ask_and_save(out, session, summary.run.id, queue=True, author=author,
+                                    redactor=redactor)  # fmt: skip
         except Quit:
             return
         except Skip:
             skipped.add(todo[0])
             continue
-        _save(session, summary.run.id, mode, note, author=author, redactor=redactor)
+        if stop:
+            return
 
 
 def label(
@@ -238,15 +322,25 @@ def label(
                 typer.echo(f"error: {error}", err=True)
                 raise typer.Exit(code=1) from error
         show_run(out, session, summary)
+        short = str(summary.run.id)[:8]
         if mode is None:
             try:
-                mode, note = _ask(out, session, queue=False, note=note)
+                saved, _ = _ask_and_save(out, session, summary.run.id, queue=False, author=who,
+                                         redactor=redactor, first_note=note,
+                                         span_id=span_id)  # fmt: skip
             except Quit:
                 return
-        _save(session, summary.run.id, mode, note, author=who, redactor=redactor, span_id=span_id)
-        out.print(
-            f"labelled {str(summary.run.id)[:8]}: {render.one_line(mode, 80)}", highlight=False
-        )
+        else:
+            added = _save(session, summary.run.id, mode, note, author=who, redactor=redactor,
+                          span_id=span_id)  # fmt: skip
+            if added is None:
+                where = f"span {span}" if span is not None else short
+                out.print(render.text(f"{where} already has {render.one_line(mode, 80)}; "
+                                      "not added"))  # fmt: skip
+                return
+            saved = [added]
+        modes = ", ".join(render.one_line(m, 80) for m in saved)
+        out.print(render.text(f"labelled {short}: {modes}"))
 
 
 @labels_app.command("list")
@@ -285,16 +379,40 @@ def labels_rename(
     new: Annotated[str, typer.Argument(help="Its new name; an existing mode merges them.")],
 ) -> None:
     """Rename a failure mode on human labels, or merge it into another."""
+    from sqlalchemy.exc import DBAPIError
+
     from flight_recorder.store.labels import rename_mode
 
     new = _mode(new)
     with open_store(readonly=False) as session:
-        changed = rename_mode(session, old, new)
-        if not changed:
+        try:
+            done = rename_mode(session, old, new)
+            session.flush()
+        except ValueError as error:
+            raise typer.BadParameter(str(error), param_hint="NEW") from None
+        except DBAPIError as error:
+            if getattr(error.orig, "sqlstate", None) not in RACED:
+                raise
+            session.rollback()
+            typer.echo("error: the labels changed while renaming; nothing renamed, try again",
+                       err=True)  # fmt: skip
+            raise typer.Exit(code=1) from None
+        if not sum(done):
             typer.echo(f"error: no human labels have the mode {old!r}", err=True)
             raise typer.Exit(code=1)
         session.commit()
-    typer.echo(f"renamed {changed} label{'s' if changed != 1 else ''}")
+
+    def labels(n: int) -> str:
+        return f"{n} label{'s' if n != 1 else ''}"
+
+    if done.respelled:
+        typer.echo(f"respelled {labels(done.respelled)} {new}")
+        return
+    message = f"renamed {labels(done.renamed)}"
+    if done.merged:
+        message += (f"; {done.merged} merged into labels their runs already had (their notes "
+                    "are kept there, each tagged afr-note v1)")  # fmt: skip
+    typer.echo(message)
 
 
 @labels_app.command("remove")
