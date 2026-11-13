@@ -32,12 +32,12 @@ The demo agent is the issue triager. It lives in its own public repo, [sonicjoy/
 Its bundled dataset is **this project's own issues**. That keeps everything self-contained:
 
 - The issues are ours, so the fixtures can be committed, and CI and the quickstart need no GitHub access.
-- Their area labels, `stretch` flag, milestone and duplicate links are real ground truth. #3 is a genuine duplicate of #2.
+- Their area labels, `stretch` flag and milestone are real ground truth. Duplicates are marked by a "Duplicate of #N" comment: #3 was filed as a duplicate of #2 on purpose, and the rest are separate tasks, so they're unmarked rather than reviewed ([error analysis](evals/error-analysis.md#caveats)).
 - It makes a good story: the agent triages the repo it's recorded in.
 
 The catch is size. About 33 issues is too few for solid evals on its own, so to make up for it (#4, #13):
 
-- About 60 synthetic cases (paraphrased variants of real issues, and hand-written tricky ones), marked as synthetic so results can be reported separately
+- About 60 synthetic cases (paraphrased variants of real issues, and tricky ones, drafted with Claude), marked as synthetic so results can be reported separately
 - 2–3 repeats of each real issue on each provider, which also measures how consistent the agent is
 - Re-exporting the issues as the list grows during the project
 
