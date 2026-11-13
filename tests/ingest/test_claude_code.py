@@ -890,3 +890,43 @@ def test_who_allowed_a_call_is_kept(
         "decision": "accept", "by": who, "source": source, "reason_type": reason_type,
         "reason_code": None,
     }  # fmt: skip
+
+
+# ---- Two clocks: hook stamps and transcript times -------------------------------------
+
+
+def test_a_call_refused_before_its_hook_stamped_it_keeps_its_turn_end(
+    client: TestClient, store: Engine
+) -> None:
+    """A deny rule refuses at once: the transcript's time comes before PreToolUse's own stamp,
+    which its hook process takes ~100 ms late. The turn end must still be stored whole."""
+    stop = ev(
+        "Stop",
+        5,
+        prompt_id="p1",
+        last_assistant_message="I was refused.",
+        usage=[usage("msg_1", input_tokens=1000, output_tokens=50)],
+        permissions=[decision("t1", "reject", "config", "rule", at=0.9)],
+    )
+    one_by_one(client, ev("PreToolUse", 1, tool_use_id="t1", **BASH), stop)
+
+    spans = stored(store)[1]
+    tool = spans["tool:t1"]
+    assert (tool.status, tool.error) == ("rejected", "rejected by a permission rule")
+    assert tool.ended_at == tool.started_at  # never before it
+    assert "llm:msg_1" in spans and spans["turn:p1"].ended_at is not None
+
+
+def test_a_tools_end_stamped_before_its_start_is_kept(client: TestClient, store: Engine) -> None:
+    """Pre- and PostToolUse are stamped by two hook processes: a fast tool's end can carry the
+    earlier time."""
+    read = {"prompt_id": "p1", "tool_name": "Read", "tool_input": {}}
+    one_by_one(
+        client,
+        ev("PreToolUse", 1.0, tool_use_id="t1", **read),
+        ev("PostToolUse", 0.99, tool_use_id="t1", tool_response="text", **read),
+    )
+
+    tool = stored(store)[1]["tool:t1"]
+    assert (tool.status, tool.output) == ("ok", "text")
+    assert tool.ended_at is not None and tool.ended_at >= tool.started_at

@@ -55,6 +55,7 @@ The trace is meant to tell the whole story of a session: what you asked, what Cl
 - **Read twice or in parts:** a response split across two turn-end reads keeps its request time, its earliest output and everything it said. Request times are kept between reads, since a queued prompt's request line can be read a turn early. The session keeps its earliest prompt and latest reply, however late events arrive.
 - **No loose ends:** if a span's turn or subagent hasn't arrived (its event was lost or is late), a placeholder parent is created under the session, and the real event fills it in later. A subagent with no `agent_type` is named `subagent <first 8 characters of its id>`.
 - **Compaction:** PostCompact closes the latest compaction still open.
+- **Two clocks:** each hook process stamps its own time, about 100 ms late, while decisions and model responses carry the transcript's time. When a span's end would fall before its start (a call refused at once, or a fast tool whose PostToolUse was stamped first), it ends when it started: no span ends before it starts, so no event is refused for it.
 
 | Run field | From |
 |---|---|

@@ -747,4 +747,14 @@ def apply_event(session: Session, redactor: Redactor, event: Mapping[str, Any]) 
     spans.insert(0, merge(**root))
     spans += _placeholders(session, session_id, spans, turn)
     run_in = RunIn(source=SOURCE, external_id=session_id, agent=AGENT, **run)
-    record_run(session, run_in, spans, redactor=redactor)
+    record_run(session, run_in, [_in_order(s) for s in spans], redactor=redactor)
+
+
+def _in_order(span: SpanIn) -> SpanIn:
+    """No span ends before it starts. Its start and end can come from two clocks: each hook
+    process stamps its own time, a little late, and decisions and responses carry the
+    transcript's. An end that lands before the start means the step took no measurable time.
+    Every span of every event passes through here, whichever route built it."""
+    if span.ended_at is not None and span.ended_at < span.started_at:
+        return span.model_copy(update={"ended_at": span.started_at})
+    return span
