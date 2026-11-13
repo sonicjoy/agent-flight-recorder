@@ -16,8 +16,20 @@ from typing import Any, cast
 
 from rich.text import Text
 
-from flight_recorder.cli.render import clean, cut, flat, one_line, text
-from flight_recorder.search.summary import flat_text
+from flight_recorder.cli.render import clean, one_line, text
+from flight_recorder.payloads import (
+    ANSWER_CHARS,
+    CALL_CHARS,
+    VALUE_CHARS,
+    as_dict,
+    as_list,
+    cut,
+    flat,
+    flat_text,
+    human,
+    model_answer,
+    plain,
+)
 from flight_recorder.store.read import SpanContent, SpanNode
 
 Content = Callable[[uuid.UUID], SpanContent]
@@ -26,109 +38,22 @@ TASK_LINES = 12
 TASK_CHARS = 1_200
 HEAD_STEPS = 8  # shown from the start of a long run,
 TAIL_STEPS = 4  # and from its end, where the decision usually is
-VALUE_CHARS = 400  # room for a rationale
-CALL_CHARS = 1_000
-ANSWER_CHARS = 400
 RESULT_ITEMS = 5
 JSON_CHARS = 100_000  # longer tool results aren't parsed, only shown as text
-PLAIN_DEPTH = 20
 STEP_KINDS = ("llm", "tool")
 NO_RESULTS = "(no results)"
 NOTHING = "(nothing recorded)"  # no output at all, e.g. a refused call
 LAST = datetime.max.replace(tzinfo=UTC)
 
 
-def _dict(value: Any) -> dict[str, Any] | None:
-    return cast("dict[str, Any]", value) if isinstance(value, dict) else None
-
-
-def _list(value: Any) -> list[Any] | None:
-    return cast("list[Any]", value) if isinstance(value, list) else None
-
-
-def _plain(value: Any, depth: int = 0) -> str:
-    """Any value as words: keys and values, numbers too; nothing for None."""
-    if value is None or depth > PLAIN_DEPTH:
-        return ""
-    found = _dict(value)
-    if found is not None:
-        pairs = (
-            f"{flat(str(key))} {_plain(v, depth + 1)}".strip()
-            for key, v in found.items()
-            if v is not None
-        )
-        return " ".join(pairs)
-    items = _list(value)
-    if items is not None:
-        return ", ".join(p for v in items if (p := _plain(v, depth + 1)))
-    return flat(str(value))
-
-
-def _message_text(content: Any) -> str:
-    """A message's content: a string, or text blocks joined."""
-    if isinstance(content, str):
-        return content
-    blocks = _list(content) or []
-    parts = [str(b.get("text") or "") for block in blocks if (b := _dict(block)) is not None]
-    return "\n".join(part for part in parts if part)
-
-
-def _human(prompt: Any) -> str | None:
-    """The last human message of a LangChain chat prompt: {"messages": [[message, ...]]}."""
-    batches = _list((_dict(prompt) or {}).get("messages"))
-    messages = _list(batches[0]) if batches else None
-    for item in reversed(messages or []):
-        kwargs = _dict((_dict(item) or {}).get("kwargs")) or {}
-        if kwargs.get("type") == "human":
-            return _message_text(kwargs.get("content")) or None
-    return None
-
-
-def _ai(result: Any) -> dict[str, Any] | None:
-    """The message kwargs of a LangChain LLMResult: generations[0][0].message.kwargs."""
-    generations = _list((_dict(result) or {}).get("generations"))
-    first = _list(generations[0]) if generations else None
-    generation = _dict(first[0]) if first else None
-    message = _dict((generation or {}).get("message"))
-    return _dict((message or {}).get("kwargs"))
-
-
-def _value(value: Any) -> str:
-    items = _list(value)
-    if items is not None:
-        return cut(", ".join(flat(str(v)) for v in items if v is not None), VALUE_CHARS)
-    return cut(flat(str(value)), VALUE_CHARS)
-
-
-def _call(tool_call: Any) -> str:
-    found = _dict(tool_call) or {}
-    args = _dict(found.get("args")) or {}
-    shown = "; ".join(
-        f"{flat(str(name))}: {_value(v)}" for name, v in args.items() if v is not None
-    )
-    return cut(f"{flat(str(found.get('name') or '?'))}({shown})", CALL_CHARS)
-
-
-def _model_answer(output: Any) -> str:
-    kwargs = _ai(output)
-    if kwargs is not None:
-        calls = _list(kwargs.get("tool_calls")) or []
-        if calls:
-            return ", ".join(_call(c) for c in calls)
-        said = flat(_message_text(kwargs.get("content")))
-        if said:
-            return f'"{cut(said, ANSWER_CHARS)}"'
-    return flat_text(output, ANSWER_CHARS) or cut(_plain(output), ANSWER_CHARS)
-
-
 def _record(item: dict[str, Any]) -> str:
     """A search hit or similar: `#id title (labels; milestone)`, from the fields it has."""
     number = f"#{flat(str(item['id']))}" if item.get("id") is not None else ""
     head = " ".join(p for p in (number, flat(str(item.get("title") or ""))) if p)
-    labels = ", ".join(flat(str(x)) for x in _list(item.get("labels")) or [] if x is not None)
+    labels = ", ".join(flat(str(x)) for x in as_list(item.get("labels")) or [] if x is not None)
     tail = "; ".join(d for d in (labels, flat(str(item.get("milestone") or ""))) if d)
     if not head and not tail:
-        return _plain(item)
+        return plain(item)
     return f"{head} ({tail})".strip() if tail else head
 
 
@@ -145,19 +70,19 @@ def _parsed(content: str) -> Any:
 def _tool_result(output: Any) -> str:
     if output is None:
         return NOTHING
-    data = _dict((_dict(output) or {}).get("data"))
+    data = as_dict((as_dict(output) or {}).get("data"))
     content = data["content"] if data is not None and "content" in data else output
     if isinstance(content, str):
         content = _parsed(content)
         if isinstance(content, str):
             return cut(flat(content), ANSWER_CHARS) or NO_RESULTS
-    items = _list(content)
+    items = as_list(content)
     if items is not None and items and all(isinstance(i, dict) for i in items):
         more = f" · … {len(items) - RESULT_ITEMS} more" if len(items) > RESULT_ITEMS else ""
         records = [_record(cast("dict[str, Any]", i)) for i in items[:RESULT_ITEMS]]
         joined = " · ".join(r for r in records if r)
         return cut(joined, CALL_CHARS - len(more)) + more if joined else NO_RESULTS
-    shown = flat_text(content, ANSWER_CHARS) or cut(_plain(content), ANSWER_CHARS)
+    shown = flat_text(content, ANSWER_CHARS) or cut(plain(content), ANSWER_CHARS)
     return shown or NO_RESULTS
 
 
@@ -177,7 +102,7 @@ def task(roots: Sequence[SpanNode], content: Content) -> Text | None:
     asked: str | None = None
     first_model = next((n for n in _steps(roots) if n.kind == "llm"), None)
     if first_model is not None:
-        asked = _human(content(first_model.id).input)
+        asked = human(content(first_model.id).input)
     if asked is None and roots:
         asked = flat_text(content(roots[0].id).input, TASK_CHARS + 1) or None
     if not asked:
@@ -199,9 +124,9 @@ def _step(number: int, node: SpanNode, content: Content) -> Text:
     line = Text(f"  {number:>2} ", style="dim")
     if node.kind == "llm":
         line.append("model → ", style="dim")
-        line.append_text(text(one_line(_model_answer(found.output), CALL_CHARS)))
+        line.append_text(text(one_line(model_answer(found.output), CALL_CHARS)))
     else:
-        given = flat_text(found.input, VALUE_CHARS) or cut(_plain(found.input), VALUE_CHARS)
+        given = flat_text(found.input, VALUE_CHARS) or cut(plain(found.input), VALUE_CHARS)
         line.append("tool ", style="dim")
         line.append_text(text(f"{one_line(flat(node.name), 80)}({one_line(given, VALUE_CHARS)})"))
         line.append(" → ", style="dim")

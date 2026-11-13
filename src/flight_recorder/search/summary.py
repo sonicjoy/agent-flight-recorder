@@ -9,13 +9,13 @@ first. Each part is cut on its own; the final cap is only a backstop.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Any, Literal
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from flight_recorder.payloads import call_line, flat_text, human, model_answer, tool_calls
 from flight_recorder.store.models import Run
 from flight_recorder.store.read import SpanNode, span_content, span_tree
 
@@ -54,24 +54,6 @@ def root_failures(roots: list[SpanNode]) -> list[SpanNode]:
     ]
 
 
-def _strings(value: Any) -> Iterator[str]:
-    """The text inside a recorded input or output: its strings, depth first."""
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for item in cast("dict[str, Any]", value).values():
-            yield from _strings(item)
-    elif isinstance(value, list):
-        for item in cast("list[Any]", value):
-            yield from _strings(item)
-
-
-def flat_text(value: Any, limit: int) -> str:
-    """A recorded value as one line of plain text, cut to `limit` characters."""
-    joined = " ".join(" ".join(s.split()) for s in _strings(value) if s.strip())
-    return joined if len(joined) <= limit else joined[: limit - 1] + "…"
-
-
 def _cap(lines: list[str]) -> str:
     return "\n".join(line for line in lines if line)[:MAX_CHARS]
 
@@ -90,7 +72,10 @@ def _conversation(session: Session, run: Run, roots: list[SpanNode]) -> tuple[An
     found = span_content(session, entry.id)
     asked, answered = found.input, found.output
     if run.source != "claude_code":
-        return asked, answered
+        if asked and answered:
+            return asked, answered
+        from_models = _from_model_calls(session, roots)
+        return asked or from_models[0], answered or from_models[1]
     turns = sorted(
         (c for c in entry.children if c.name == TURN), key=lambda n: (n.started_at, n.external_id)
     )
@@ -101,6 +86,27 @@ def _conversation(session: Session, run: Run, roots: list[SpanNode]) -> tuple[An
             (o for t in reversed(turns) if (o := span_content(session, t.id).output)), None
         )
     return asked, answered
+
+
+def _from_model_calls(session: Session, roots: list[SpanNode]) -> tuple[Any, Any]:
+    """What a LangChain run was asked and answered, from its model calls, for when its entry
+    span recorded neither (a LangGraph root records nothing): the first call's human message,
+    and its structured output (a tool call no tool span ran, like a ToolStrategy decision),
+    else the last call's answer."""
+    nodes = _all(roots)
+    models = [n for n in nodes if n.kind == "llm"]
+    if not models:
+        return None, None
+    tools = {n.name for n in nodes if n.kind == "tool"}
+    outputs = [span_content(session, m.id).output for m in models]
+    structured = [
+        call_line(call)
+        for output in outputs
+        for call in tool_calls(output)
+        if isinstance(call, dict) and call.get("name") not in tools  # pyright: ignore[reportUnknownMemberType]
+    ]
+    asked = human(span_content(session, models[0].id).input)
+    return asked, structured[-1] if structured else model_answer(outputs[-1]) or None
 
 
 def _failure_line(node: SpanNode) -> str:
