@@ -31,7 +31,9 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
+from sqlalchemy import cast as sql_cast
 from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from flight_recorder.redact import PATTERNS, Redactor
@@ -293,9 +295,11 @@ def _compaction_started(session: Session, session_id: str, at: datetime) -> str 
 
 def _same_call(hook: Mapping[str, Any], prefix: str = "") -> Any:
     """Spans for a call of this tool with this input (named with prefix). The hook redacts
-    with the same key as the server, so the stored input matches."""
+    with the same key as the server, so the stored input matches. Compared as jsonb: bound
+    as is, a string, number or bool has no `=` with jsonb (42883), and None is SQL NULL,
+    not the JSON null stored. (cast binds the value through JSONB, which encodes it.)"""
     return (Span.name == f"{prefix}{_str(hook, 'tool_name') or 'tool'}") & (
-        Span.input == cast("Any", hook.get("tool_input"))
+        Span.input == sql_cast(hook.get("tool_input"), JSONB)
     )
 
 

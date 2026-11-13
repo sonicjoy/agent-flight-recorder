@@ -564,6 +564,29 @@ def test_a_permission_wait_ends_under_its_tool_whatever_the_arrival_order(
         client.post(URL, json={"events": [events["PermissionRequest"]]})
 
 
+@pytest.mark.parametrize("tool_input", ["rm -r build", 3, True, None], ids=str)
+def test_a_tool_input_that_is_not_an_object_is_stored_not_retried_for_ever(
+    client: TestClient, store: Engine, tool_input: Any
+) -> None:
+    """Postgres can't compare jsonb with text, a number or a bool (42883). That was an
+    unexpected error, so a 503 for every retry, stalling the hook's backlog behind it."""
+    call = {"prompt_id": "p1", "tool_name": "Bash", "tool_input": tool_input}
+    events = [
+        ev("PreToolUse", 1, tool_use_id="t1", **call),
+        ev("PermissionRequest", 2, **call),
+        ev("PermissionDenied", 3, tool_use_id="t1", **call),
+        ev("PostToolUse", 4, tool_use_id="t1", **call),
+    ]
+
+    response = client.post(URL, json={"events": events})
+
+    assert response.status_code == 200
+    assert response.json()["rejected"] == 0
+    spans = stored(store)[1]
+    assert spans["tool:t1"].input == tool_input
+    assert waits(spans)[0].parent_id == spans["tool:t1"].id
+
+
 def test_a_fast_approval_never_ends_before_it_began(client: TestClient, store: Engine) -> None:
     """Each hook stamps its own time, a little late: the tool's run time can exceed the gap."""
     response = client.post(
