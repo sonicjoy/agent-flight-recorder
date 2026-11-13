@@ -46,7 +46,7 @@ Labels dominate everywhere. Before the proper error analysis in #14:
 
 The agent never sees it. Each run is graded after it ends, against the triager's bundled dataset:
 
-- **Real issues:** labels, milestone and duplicates come from this repo's GitHub issues, read-only via `triager export`. So "wrong" means "disagrees with how the issue was labelled on GitHub". Some disagreements may be the labels' fault, not the agent's: #14 should keep those apart.
+- **Real issues:** labels, milestone and duplicates come from this repo's GitHub issues, read-only via `triager export`. The issues were generated with Claude Code as the project's plan. A duplicate is an issue with a comment starting "Duplicate of #N", so an unmarked issue reads as having none. So "wrong" means "disagrees with how the issue was labelled on GitHub". Some disagreements may be the labels' fault, not the agent's: #14 should keep those apart.
 - **Synthetic cases:** truth written for the project in `synthetic.yaml`, drafted with Claude.
 
 The counts on this page are the grades as recorded. #14 found some truths wrong and fixed them: re-graded, the corpus is 81 correct and 119 wrong ([error-analysis.md](error-analysis.md#what-was-done-about-the-eval-set)).

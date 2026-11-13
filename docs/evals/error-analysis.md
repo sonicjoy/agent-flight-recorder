@@ -11,7 +11,7 @@ Hand error analysis of the [run corpus](corpus.md) ([#14](https://github.com/son
 ## Method
 
 **Terms.**
-- **Issue numbers.** The triager triages this repo's own GitHub issues, so `#16` in an example is this repo's issue #16. Cases `s01` to `s65` are synthetic: drafted with Claude for the project and kept in the triager's `synthetic.yaml`, some as paraphrases of real issues.
+- **Issue numbers.** The triager triages this repo's own GitHub issues, so `#16` in an example is this repo's issue #16. They were generated with Claude Code as the project's plan, one piece of work each. Cases `s01` to `s65` are synthetic: drafted with Claude for the project and kept in the triager's `synthetic.yaml`, some as paraphrases of real issues.
 - **Truth:** the answer a run is graded against: the issue's labels, milestone and links on GitHub, or the synthetic case's.
 - **Labels and milestones:** `stretch` marks optional work. Milestones are the plan's weeks, e.g. "Week 1: Demo agent and foundations".
 
@@ -130,6 +130,7 @@ By group, where over-labelling stands out in `synthetic-nano`:
    - 13 of 18 sampled `synthetic-nano` runs are `extra-label`, against 4 of 18 `real-mini` runs. Model and data change together between those groups, so this doesn't say whether nano or the synthetic issues are to blame.
 2. **Duplicate linking is too eager:** 10 runs.
    - In 9 of them, the agent linked a duplicate for an issue that has none. Its rationale is usually "overlaps with #N".
+   - For the 7 runs on real issues, "none" means only that no "Duplicate of #N" comment marks one on GitHub. The issues were written as a plan, so duplicates are unlikely, and each pair was read side by side while labelling; nobody else has checked them.
    - The prompt's warning ("wrongly closing a real issue as a duplicate is worse than missing one") isn't followed.
 3. **Milestone errors don't come alone:** each of the 5 runs with a wrong milestone also has a wrong label or link. In #4 and s62 the rationale shows the milestone following the label; the other three weren't traced.
 4. **Injected tool failures weren't what went wrong.** In the corpus, 23 of the 30 `injected-mini` runs had a tool call broken ([corpus.md](corpus.md#injected-tool-failures)). None of the 9 sampled runs' labels is about a tool failure: they show the same failures as the clean runs. How the agent coped with broken results wasn't examined here.
@@ -172,7 +173,7 @@ Recall@5 of `afr search` on 20 queries ([retrieval.yaml](retrieval.yaml), checke
 
 ## What it means for the evals (#15 onwards)
 
-- **Golden cases** should cover the two big failure modes: multi-area issues where only one label belongs (against over-labelling), and near-duplicate pairs that aren't duplicates (against over-eager linking).
+- **Golden cases** should cover the two big failure modes: multi-area issues where only one label belongs (against over-labelling), and near-duplicate pairs that aren't duplicates (against over-eager linking). Real duplicates need issues filed by people, which this repo doesn't have.
 - **Grading** should keep field-level marks. Most wrong runs have one wrong field, often a single extra label, so a run-level pass rate hides how close they are.
 - **Truth quality** needs its own check before a case enters the golden set. Synthetic cases especially should be reviewed by a person.
 
@@ -183,4 +184,5 @@ Recall@5 of `afr search` on 20 queries ([retrieval.yaml](retrieval.yaml), checke
 - **Model and source are confounded** (nano with synthetic, mini with real), as noted in finding 1.
 - **The s65 run's agent errors aren't labelled:** its only mode names the bad truth, though its labels and milestone are wrong too.
 - **The corpus ran on OpenAI and Gemini models,** not Claude (see [corpus.md](corpus.md)).
+- **Real issues' duplicate truth is unmarked, not reviewed.** It comes from "Duplicate of #N" comments, which a maintainer writes, not the person filing. The plan's issues have one (#3 of #2), so the set says little about real-world duplicates, filed by people who didn't search first.
 - **The retrieval queries were written by Claude, which also built search.** The topic queries reuse words from the issue titles, so they're easy.
