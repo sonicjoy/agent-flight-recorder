@@ -44,26 +44,37 @@ def _reason(error: Exception) -> str:
     return str(error) if isinstance(error, MappingError) else type(error).__name__
 
 
-# SQLSTATE classes that mean the database, not the data, is the trouble: connection
-# exception (08), insufficient resources (53), operator intervention such as a shutdown
-# (57), system error (58). Others, such as 54 (an id too long for an index row), come from
-# the data: retrying the same trace would fail the same way for ever.
-UNAVAILABLE_SQLSTATE_CLASSES = ("08", "53", "57", "58")
+# SQLSTATEs that say something about the moment, not the item: the same item goes in on
+# a retry. Connection exception (08), transaction rollback (40: serialization failure,
+# deadlock, completion unknown), insufficient resources (53), operator intervention such as
+# a shutdown or a statement timeout (57), system error (58). And single codes from other
+# classes: a lock not available or an object in use (55P03, 55006), a read-only database
+# or an idle-in-transaction timeout (25006, 25P03), a snapshot too old (72000).
+# Everything else is about the item, such as 54000 (an id too long for an index row) or
+# 40002 (a deferred constraint broken at commit): retrying would fail the same way for ever.
+TRANSIENT_SQLSTATE_CLASSES = ("08", "40", "53", "57", "58")
+TRANSIENT_SQLSTATES = frozenset({"55P03", "55006", "25006", "25P03", "72000"})
+NOT_TRANSIENT_SQLSTATES = frozenset({"40002"})
 RETRY_AFTER_SECONDS = "5"
 
 
 def _database_unavailable(error: Exception) -> bool:
-    """The database itself unreachable or out of connections: nothing wrong with the data.
-    OTLP exporters retry only 429, 502, 503 and 504, so this must be a 503, not a 500.
-    Retrying is safe: traces already written are upserted again, not duplicated."""
+    """The database can't take writes right now, whatever is sent: unreachable, out of
+    connections, or a lock, deadlock or timeout this moment. A 503: OTLP exporters retry
+    only 429, 502, 503 and 504, and the hook keeps its events. Retrying is safe: what was
+    already written is upserted again, not duplicated."""
     if isinstance(error, PoolTimeout):
         return True
-    if isinstance(error, DBAPIError) and error.connection_invalidated:
+    if not isinstance(error, DBAPIError):
+        return False
+    if error.connection_invalidated:
         return True
-    if isinstance(error, OperationalError):
-        code = getattr(error.orig, "sqlstate", None)  # None: no server answered at all
-        return not isinstance(code, str) or code.startswith(UNAVAILABLE_SQLSTATE_CLASSES)
-    return False
+    code = getattr(error.orig, "sqlstate", None)
+    if not isinstance(code, str):  # no server answered at all
+        return isinstance(error, OperationalError)
+    if code in NOT_TRANSIENT_SQLSTATES:
+        return False
+    return code in TRANSIENT_SQLSTATES or code.startswith(TRANSIENT_SQLSTATE_CLASSES)
 
 
 def _ingest(
