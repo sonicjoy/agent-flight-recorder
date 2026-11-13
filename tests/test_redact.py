@@ -215,6 +215,7 @@ SHORT_OR_SPACED = {
     "phrase in double quotes": ('"password": "correct horse battery"', "correct horse battery"),
     "phrase in single quotes": ("api_key = 'my key here'", "my key here"),
     "phrase after = in quotes": ('DB_PASSWORD="two words"', "two words"),
+    "on the next line, indented (YAML)": ("password:\n  Hunter22xyz", "Hunter22xyz"),
     "short in a JSON string": ('\\"token\\": \\"ab12\\"', "ab12"),
 }  # fmt: skip
 
@@ -233,7 +234,17 @@ def test_short_and_spaced_values_after_a_secrets_name_are_redacted(
 
 
 @pytest.mark.parametrize(
-    "text", ["password: null", "token = none", '"password": ""', "password=", "TOKEN=false"]
+    "text",
+    [
+        "password: null",
+        "token = none",
+        '"password": ""',
+        "password=",
+        "TOKEN=false",
+        "def connect(secret: str):",
+        "connect(password=None)",
+        "fields = [token: bytes]",
+    ],
 )
 def test_a_secrets_name_with_no_value_is_left_alone(redactor: Redactor, text: str) -> None:
     assert redact(redactor, text) == (text, Counter())
@@ -311,6 +322,7 @@ ADVERSARIAL = {
     "many placeholders after a name": "token: [REDACTED:github_token:12345678] " * 15_000,
     "escapes in an unclosed quote": 'password="' + "\\a" * 100_000,
     "many unclosed quotes": 'token="' * 40_000,
+    "many names with an indented next line": "password:\n  " * 40_000,
 }
 
 

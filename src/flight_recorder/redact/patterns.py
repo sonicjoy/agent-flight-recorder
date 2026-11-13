@@ -72,10 +72,16 @@ NOT_A_VALUE = frozenset(
 )
 
 
+_FIRST_NAME = re.compile(r"\w++(?![.-])")  # `str` in `str):`, `None` in `None)`, not `None.x`
+
+
 def is_a_value(text: str) -> bool:
     """Whether text after a secret's name could be the secret."""
     words = text.split()
-    return bool(words) and words[0].lower().rstrip("|,") not in NOT_A_VALUE
+    if not words:
+        return False
+    first = _FIRST_NAME.match(words[0])
+    return not (first and first.group(0).lower() in NOT_A_VALUE)
 
 
 def _assigned_value(match: re.Match[str]) -> bool:
@@ -103,10 +109,10 @@ _NAMED = SECRET_NAME + r"(?:\\?[\"'])?[ \t]*+"  # password, "password", \"passwo
 _WORD = r"[^\s\"'\\,;{}=][^\s\"'\\,;{}]*+"  # not starting with = (`token == x` is code)
 # What the words after `name:` must not start with, or the match would be skipped whole and
 # hide a secret later on the line: a placeholder, the inside of one ([REDACTED:github_token:
-# 1a2b3c4d] holds `token:1a2b3c4d]`), or a word that says there is no value. Checked in the
-# regex, so the search goes on from the next position instead.
+# 1a2b3c4d] holds `token:1a2b3c4d]`), or a word that says there is no value (as is_a_value
+# reads it). Checked in the regex, so the search goes on from the next position instead.
 _NOT_A_VALUE_WORD = "|".join(sorted(NOT_A_VALUE))
-_SKIPPED = rf"\[REDACTED:|[0-9a-f]{{8}}\]|(?i:{_NOT_A_VALUE_WORD})[|,]*+(?:[\s\"'\\,;{{}}]|$)"
+_SKIPPED = rf"\[REDACTED:|[0-9a-f]{{8}}\]|(?i:{_NOT_A_VALUE_WORD})(?![\w.-])"
 SECRET_VALUES = (
     # password: "two words" / api_key='...' / \"token\": \"...\" (a JSON string): to the
     # closing quote or the end of the line; the quotes stay. Inside plain quotes an escape
@@ -114,8 +120,9 @@ SECRET_VALUES = (
     # value stops at the next backslash, so the closing \" stays and the text still parses.
     _NAMED + r"[:=][ \t]*+(?P<esc>\\)?(?P<q>[\"'])(?P<secret>"
     r"(?(esc)(?:(?!(?P=q))[^\\\n])++|(?:\\.|(?!(?P=q))[^\\\n])++))",
-    # password: correct horse battery staple (YAML, prose): the words to the end of the line
-    _NAMED + rf":[ \t]*+(?!{_SKIPPED})(?P<secret>{_WORD}(?:[ \t]++{_WORD})*+)",
+    # password: correct horse battery staple (YAML, prose): the words to the end of the line,
+    # or of the next line when it is indented under the name (`password:\n  hunter2`)
+    _NAMED + rf":[ \t]*+(?:\r?\n[ \t]++)?(?!{_SKIPPED})(?P<secret>{_WORD}(?:[ \t]++{_WORD})*+)",
     # PGPASSWORD=abc123 psql (shell, .env): one word
     _NAMED + rf"=(?!=)[ \t]*+(?P<secret>{_WORD})",
 )
