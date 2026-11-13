@@ -74,9 +74,16 @@ uv run afr labels list                        # modes, most common first, with a
 
 ### `afr label <run>`
 
-Shows the run's header, its attributes, its problem spans (with their parents) and its labels so far, then asks for a **failure mode** and a **note**.
+Shows the run so it can be judged from the screen, top to bottom, then asks for a **failure mode** and a **note**:
 
-- **Decision next to truth.** An attribute `<prefix>.decided.<field>` that has a matching `<prefix>.expected.<field>` is shown as one row: `triager labels: infra  ≠  infra, recorder`. Any agent can use the convention; the triager records both on its root span. SDK attributes (`telemetry.*`, `service.instance.*`, `openinference.*`) are left out.
+1. **`agent vs truth`.** An attribute `<prefix>.decided.<field>` that has a matching `<prefix>.expected.<field>` is one row, with both sides named: `triager labels: agent evals, recorder  ≠  truth demo-agent`. The heading says where the truth came from when the run has `<prefix>.case_source`, and a synthetic case stands out: `agent vs truth · truth from a synthetic case (s65)`. Any agent can use the convention; the triager records it on its root span.
+2. **`task`.** What the agent was asked: the first model call's last human message (LangChain's chat prompt), or else the entry span's input.
+3. **`steps`.** The model and tool calls in time order, at most 12. A model call shows its tool calls with their arguments, such as the decision and its rationale, or its text. A tool call shows its input and result; a list of records, such as search hits, is shown as `#id title (labels; milestone)`. Other shapes are shown as their text.
+4. **`problems`.** The error spans, with their parents.
+5. **`attributes`.** The rest, dimmed. SDK attributes (`telemetry.*`, `service.instance.*`, `openinference.*`) are left out.
+6. **`labels`.** The run's labels so far.
+
+All recorded text was redacted at ingest, and control characters are shown as escapes.
 - **The mode:** type a number to reuse a mode (they're listed most used first, with how many runs have each), or type a new name: up to 80 printable characters, with a letter or digit, not a number and not `s` or `q`. Answer `q` to stop without labelling.
 - **One mode, whatever its spelling:** a mode is stored as its words joined with `-`. Words are split at ASCII punctuation and spaces, and only A–Z is lowercased, so `Tool Timeout` and `tool_timeout` are `tool-timeout`. Word order doesn't count either: `timeout-tool` is the same mode, and takes the spelling the mode already has. Any other character is part of a word as typed: `x²` and `x` are different modes, and non-ASCII letters keep their case (`ΟΔΟΣ` isn't `οδος`).
 - **The note** is optional, and redacted before it's stored, like everything else a person or model may copy from a run.

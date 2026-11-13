@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
     from flight_recorder.redact import Redactor
     from flight_recorder.store.labels import ModeCount
-    from flight_recorder.store.read import RunSummary
+    from flight_recorder.store.read import RunSummary, SpanContent
 
 labels_app = typer.Typer(
     help="Failure-mode labels: list, rename and remove them.", no_args_is_help=True
@@ -71,19 +71,42 @@ def _mode(value: str) -> str:
 
 
 def show_run(out: Console, session: Session, summary: RunSummary) -> None:
-    """The run, its attributes (decision next to truth), its problem spans and its labels."""
+    """The run, read top to bottom: the agent's decision next to the truth (and where the
+    truth came from), what it was asked, its model and tool calls, its problem spans, its
+    other attributes and its labels."""
+    from flight_recorder.cli import story
     from flight_recorder.store.labels import labels_of
-    from flight_recorder.store.read import span_tree
+    from flight_recorder.store.read import span_content, span_tree
 
     roots = span_tree(session, summary.run.id)
+    attributes = summary.run.attributes or {}
+
+    def content(span_id: uuid.UUID) -> SpanContent:
+        return span_content(session, span_id)
+
     out.print(render.run_header(summary, roots))
-    if summary.run.attributes:
-        out.print(Text("attributes", style="bold"))
-        out.print(render.run_attributes(summary.run.attributes))
+    rows = render.decision_rows(attributes)
+    if rows:
+        heading = Text("agent vs truth", style="bold")
+        source = render.truth_source(attributes)
+        if source is not None:
+            heading.append(" · ")
+            heading.append_text(source)
+        out.print(heading)
+        out.print(rows)
+    for title, section in (("task", story.task(roots, content)),
+                           ("steps", story.steps(roots, content))):  # fmt: skip
+        if section is not None:
+            out.print(Text(title, style="bold"))
+            out.print(section)
     problems = render.keep(roots, None, problems_only=True)
     if problems:
         out.print(Text("problems", style="bold"))
         out.print(render.span_tree(roots, shown=problems))
+    rest = render.other_attributes(attributes)
+    if rest:
+        out.print(Text("attributes", style="bold"))
+        out.print(rest)
     existing = labels_of(session, summary.run.id)
     if existing:
         out.print(Text("labels", style="bold"))

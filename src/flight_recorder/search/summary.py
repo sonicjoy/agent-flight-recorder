@@ -54,21 +54,21 @@ def root_failures(roots: list[SpanNode]) -> list[SpanNode]:
     ]
 
 
-def _strings(value: Any) -> Iterator[str]:
+def strings(value: Any) -> Iterator[str]:
     """The text inside a recorded input or output: its strings, depth first."""
     if isinstance(value, str):
         yield value
     elif isinstance(value, dict):
         for item in cast("dict[str, Any]", value).values():
-            yield from _strings(item)
+            yield from strings(item)
     elif isinstance(value, list):
         for item in cast("list[Any]", value):
-            yield from _strings(item)
+            yield from strings(item)
 
 
 def _text(value: Any, limit: int) -> str:
     """A recorded value as one line of plain text, cut to `limit` characters."""
-    joined = " ".join(" ".join(s.split()) for s in _strings(value) if s.strip())
+    joined = " ".join(" ".join(s.split()) for s in strings(value) if s.strip())
     return joined if len(joined) <= limit else joined[: limit - 1] + "…"
 
 

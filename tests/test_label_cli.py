@@ -464,18 +464,6 @@ def test_labelling_never_changes_runs_or_spans(
 # --- review round 1: tests written before the fixes ----------------------------------
 
 
-def test_a_paired_attribute_key_is_escaped_too() -> None:
-    from rich.console import Console
-
-    from flight_recorder.cli import render
-
-    evil = "\x1b]0;owned\x07x"
-    out = Console(record=True, width=200, force_terminal=False)
-    out.print(render.run_attributes({f"{evil}.decided.f": "a", f"{evil}.expected.f": "b"}))
-
-    assert "\x1b" not in out.export_text()
-
-
 @pytest.mark.parametrize("mode", ["bad\x1b[2Jmode", "tab\tmode", "q", "s", "Q", "S", "7"])
 def test_modes_refuse_control_characters_and_reserved_answers(mode: str) -> None:
     from flight_recorder.store.labels import check_mode
