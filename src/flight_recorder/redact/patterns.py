@@ -101,13 +101,21 @@ SECRET_NAME = (
 # its own (one regex can't name the secret in each branch); quoted runs first.
 _NAMED = SECRET_NAME + r"(?:\\?[\"'])?[ \t]*+"  # password, "password", \"password\"
 _WORD = r"[^\s\"'\\,;{}=][^\s\"'\\,;{}]*+"  # not starting with = (`token == x` is code)
+# What the words after `name:` must not start with, or the match would be skipped whole and
+# hide a secret later on the line: a placeholder, the inside of one ([REDACTED:github_token:
+# 1a2b3c4d] holds `token:1a2b3c4d]`), or a word that says there is no value. Checked in the
+# regex, so the search goes on from the next position instead.
+_NOT_A_VALUE_WORD = "|".join(sorted(NOT_A_VALUE))
+_SKIPPED = rf"\[REDACTED:|[0-9a-f]{{8}}\]|(?i:{_NOT_A_VALUE_WORD})[|,]*+(?:[\s\"'\\,;{{}}]|$)"
 SECRET_VALUES = (
     # password: "two words" / api_key='...' / \"token\": \"...\" (a JSON string): to the
-    # closing quote, at most 256 characters on one line; the quotes stay
-    _NAMED + r"[:=][ \t]*+\\?(?P<q>[\"'])"
-    r"(?P<secret>(?:(?!(?P=q))[^\\\n]){1,256}+)(?=\\?(?P=q))",
+    # closing quote or the end of the line; the quotes stay. Inside plain quotes an escape
+    # (\\ or \") is part of the value; inside escaped quotes (JSON in a JSON string) the
+    # value stops at the next backslash, so the closing \" stays and the text still parses.
+    _NAMED + r"[:=][ \t]*+(?P<esc>\\)?(?P<q>[\"'])(?P<secret>"
+    r"(?(esc)(?:(?!(?P=q))[^\\\n])++|(?:\\.|(?!(?P=q))[^\\\n])++))",
     # password: correct horse battery staple (YAML, prose): the words to the end of the line
-    _NAMED + rf":[ \t]*+(?P<secret>{_WORD}(?:[ \t]++{_WORD})*+)",
+    _NAMED + rf":[ \t]*+(?!{_SKIPPED})(?P<secret>{_WORD}(?:[ \t]++{_WORD})*+)",
     # PGPASSWORD=abc123 psql (shell, .env): one word
     _NAMED + rf"=(?!=)[ \t]*+(?P<secret>{_WORD})",
 )

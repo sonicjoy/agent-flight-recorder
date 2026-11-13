@@ -248,6 +248,48 @@ def test_a_short_value_under_a_secret_key_is_redacted(redactor: Redactor) -> Non
     }
 
 
+GITHUB_TOKEN = "ghp_" + "a1B2c3D4" * 5
+# A secret's name whose value is skipped (a placeholder, a type, "none"), then a real one
+# later on the same line: the skipped text must not hide the secret after it.
+AFTER_A_SKIPPED_VALUE = {
+    "after a token another pattern replaced": f"github token: {GITHUB_TOKEN} password: Hunter22xyz",
+    "after a placeholder": "token: [REDACTED:x:12345678] password: Hunter22xyz",
+    "after a type name": "password: str  # set later: password: Hunter22xyz",
+    "after none": "password: none here, then password: Hunter22xyz",
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("text", AFTER_A_SKIPPED_VALUE.values(), ids=AFTER_A_SKIPPED_VALUE.keys())
+def test_a_secret_after_a_skipped_value_on_the_same_line_is_redacted(
+    redactor: Redactor, text: str
+) -> None:
+    result, _ = redact(redactor, text)
+
+    assert "Hunter22xyz" not in result
+    assert result.endswith("password: " + redactor.placeholder("secret_assignment", "Hunter22xyz"))
+
+
+# (text, the value that must go): quoted values with escapes, and long ones
+QUOTED = {
+    "an escaped backslash in JSON": ('{"password": "Abcdefgh1\\\\xyz"}', "Abcdefgh1\\\\xyz"),
+    "an escaped quote in a JSON string": ('{"password": "Abc\\"defgh1"}', 'Abc\\"defgh1'),
+    "longer than 256 characters": ('token = "' + "x" * 300 + '"', "x" * 300),
+    "a long secret with dots": (json.dumps({"client_secret": "Ab1." * 70}), "Ab1." * 70),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("label", QUOTED)
+def test_a_quoted_value_with_escapes_or_over_256_characters_is_redacted_whole(
+    redactor: Redactor, label: str
+) -> None:
+    text, secret = QUOTED[label]
+
+    result, counts = redact(redactor, text)
+
+    assert result == text.replace(secret, redactor.placeholder("secret_assignment", secret), 1)
+    assert counts == Counter({"secret_assignment": 1})
+
+
 ADVERSARIAL = {
     "long word": "a" * 200_000,
     "many at signs": "a@" * 100_000,
@@ -265,6 +307,10 @@ ADVERSARIAL = {
     "a long phrase after a colon": "password: " + "word " * 100_000,
     "an unclosed quote": 'password: "' + "word " * 100_000,
     "many phrases": "token: a b " * 40_000,
+    "many skipped values": "password: none " * 40_000,
+    "many placeholders after a name": "token: [REDACTED:github_token:12345678] " * 15_000,
+    "escapes in an unclosed quote": 'password="' + "\\a" * 100_000,
+    "many unclosed quotes": 'token="' * 40_000,
 }
 
 
