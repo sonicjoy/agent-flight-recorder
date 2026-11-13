@@ -8,6 +8,7 @@ and removes modes. Only the `labels` table is written.
 from __future__ import annotations
 
 import getpass
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated
@@ -32,6 +33,7 @@ labels_app = typer.Typer(
 SEED = 14
 EVERY_RUN = 100_000
 SKIP, QUIT = "s", "q"
+NUMBER = re.compile(r"[0-9]+")  # ASCII only: str.isdigit() also takes ²
 
 
 class Quit(Exception):
@@ -78,38 +80,44 @@ def show_run(out: Console, session: Session, summary: RunSummary) -> None:
     if existing:
         out.print(Text("labels", style="bold"))
         for label in existing:
-            line = Text(f"- {label.failure_mode}")
+            line = render.text(f"- {render.one_line(label.failure_mode, 80)}")
             if label.note:
                 line.append_text(render.text(f": {render.one_line(label.note, 160)}"))
-            line.append(
-                f"  ({label.source}{f', {label.author}' if label.author else ''})", style="dim"
-            )
+            who = f"{label.source}{f', {label.author}' if label.author else ''}"
+            line.append_text(render.text(f"  ({render.one_line(who, 80)})", "dim"))
             out.print(line)
 
 
-def _ask(out: Console, session: Session, *, queue: bool) -> tuple[str, str | None]:
-    """A failure mode (an existing one by number, or a new name) and an optional note."""
+def _ask(
+    out: Console, session: Session, *, queue: bool, note: str | None = None
+) -> tuple[str, str | None]:
+    """A failure mode (an existing one by number, or a new name) and an optional note,
+    unless one was given. `q` quits; in the queue `s` skips the run."""
     from flight_recorder.store.labels import check_mode, mode_counts
 
     modes = mode_counts(session)
     if modes:
         out.print(Text("modes so far:", style="bold"))
         for i, count in enumerate(modes, 1):
-            out.print(f"  {i}) {count.mode} ({count.runs})", highlight=False)
-    hint = "number or new name" + (", s to skip, q to quit" if queue else "")
+            out.print(render.text(f"  {i}) {render.one_line(count.mode, 80)} ({count.runs})"))
+    hint = "number or new name, " + ("s to skip, " if queue else "") + "q to quit"
     while True:
         answer = typer.prompt(f"failure mode ({hint})").strip()
-        if queue and answer in (SKIP, QUIT):
+        if answer == QUIT or (queue and answer == SKIP):
             raise Quit if answer == QUIT else Skip
-        if answer.isdigit() and 1 <= int(answer) <= len(modes):
-            mode = modes[int(answer) - 1].mode
-            break
+        if NUMBER.fullmatch(answer):
+            if 1 <= int(answer) <= len(modes):
+                mode = modes[int(answer) - 1].mode
+                break
+            out.print(f"pick 1 to {len(modes)}, or type a name" if modes else "type a name")
+            continue
         try:
             mode = check_mode(answer)
             break
         except ValueError as error:
-            out.print(f"{error}; try again")
-    note = typer.prompt("note (optional)", default="", show_default=False).strip()
+            out.print(render.text(f"{error}; try again"))
+    if note is None:
+        note = typer.prompt("note (optional)", default="", show_default=False).strip()
     return mode, note or None
 
 
@@ -231,7 +239,10 @@ def label(
                 raise typer.Exit(code=1) from error
         show_run(out, session, summary)
         if mode is None:
-            mode, note = _ask(out, session, queue=False)
+            try:
+                mode, note = _ask(out, session, queue=False, note=note)
+            except Quit:
+                return
         _save(session, summary.run.id, mode, note, author=who, redactor=redactor, span_id=span_id)
         out.print(
             f"labelled {str(summary.run.id)[:8]}: {render.one_line(mode, 80)}", highlight=False
@@ -244,6 +255,10 @@ def labels_list(
 ) -> None:
     """Each failure mode with how many runs have it and the first one labelled."""
     from flight_recorder.store.labels import labelled_count, mode_counts
+    from flight_recorder.store.models import LABEL_SOURCES
+
+    if source not in LABEL_SOURCES:
+        raise typer.BadParameter(f"use one of {', '.join(LABEL_SOURCES)}", param_hint="--source")
 
     with open_store() as session:
         counts = mode_counts(session, source)

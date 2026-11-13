@@ -459,3 +459,67 @@ def test_labelling_never_changes_runs_or_spans(
     cli("label", str(ids["wrong"]["a"][0]), "--mode", "m", "--note", "n")
     cli("labels", "rename", "m", "n")
     assert snapshot() == before
+
+
+# --- review round 1: tests written before the fixes ----------------------------------
+
+
+def test_a_paired_attribute_key_is_escaped_too() -> None:
+    from rich.console import Console
+
+    from flight_recorder.cli import render
+
+    evil = "\x1b]0;owned\x07x"
+    out = Console(record=True, width=200, force_terminal=False)
+    out.print(render.run_attributes({f"{evil}.decided.f": "a", f"{evil}.expected.f": "b"}))
+
+    assert "\x1b" not in out.export_text()
+
+
+@pytest.mark.parametrize("mode", ["bad\x1b[2Jmode", "tab\tmode", "q", "s", "7"])
+def test_modes_refuse_control_characters_and_reserved_answers(mode: str) -> None:
+    from flight_recorder.store.labels import check_mode
+
+    with pytest.raises(ValueError):
+        check_mode(mode)
+
+
+def test_a_note_given_without_a_mode_is_kept(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    result = cli("label", str(ids["wrong"]["a"][0]), "--note", "from the flag", input="m\n")
+
+    assert result.exit_code == 0, result.output
+    assert labels(db)[0].note == "from the flag"
+
+
+@pytest.mark.parametrize("wrong", ["12", "0", "²"])
+def test_a_number_not_on_the_list_asks_again(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any], wrong: str
+) -> None:
+    run = str(ids["wrong"]["a"][0])
+    cli("label", run, "--mode", "existing")
+
+    result = cli("label", run, input=f"{wrong}\nreal-mode\n\n")
+
+    assert result.exit_code == 0, result.output
+    assert sorted(label.failure_mode for label in labels(db)) == ["existing", "real-mode"]
+
+
+def test_q_quits_a_single_run_without_labelling(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    result = cli("label", str(ids["wrong"]["a"][0]), input="q\n")
+
+    assert result.exit_code == 0, result.output
+    assert labels(db) == []
+
+
+def test_a_new_run_in_one_stratum_leaves_the_others_picks_alone() -> None:
+    from flight_recorder.store.labels import sample
+
+    population = [(f"a{i}", "a") for i in range(10)] + [(f"b{i}", "b") for i in range(10)]
+    before = [r for r in sample(population, 6, seed=14) if r.startswith("b")]
+    after = [r for r in sample([*population, ("a99", "a")], 6, seed=14) if r.startswith("b")]
+
+    assert before == after

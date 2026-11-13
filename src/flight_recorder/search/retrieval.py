@@ -8,6 +8,7 @@ fused with the same keyword ranking, so a comparison needs no migration and writ
 
 from __future__ import annotations
 
+import math
 import uuid
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
@@ -16,12 +17,12 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from flight_recorder.search.embedder import Embedder
-from flight_recorder.search.query import CANDIDATES_PER_RESULT, MIN_CANDIDATES, fuse, search
-from flight_recorder.store.models import KEYWORD_CONFIG, Embedding, Run
+from flight_recorder.search.query import by_words, candidates, fuse, pool_size, run_order, search
+from flight_recorder.store.models import Embedding, Run
 from flight_recorder.store.read import RunFilter, run_conditions
 
 K = 5
@@ -57,8 +58,8 @@ def recall_at_k(ranked: Sequence[str], relevant: Collection[str], k: int = K) ->
     """The share of the right runs in the top k, out of as many as k can hold."""
     if not relevant:
         raise ValueError("a query needs at least one right run")
-    found = len(set(ranked[:k]) & set(relevant))
-    return found / min(len(relevant), k)
+    right = set(relevant)
+    return len(set(ranked[:k]) & right) / min(len(right), k)
 
 
 def missing_runs(session: Session, queries: Sequence[Query]) -> list[str]:
@@ -68,78 +69,72 @@ def missing_runs(session: Session, queries: Sequence[Query]) -> list[str]:
     return sorted(wanted - present)
 
 
+def unsearchable_runs(
+    session: Session, queries: Sequence[Query], model: str, agent: str | None = None
+) -> list[str]:
+    """Right runs search can't return: no text embedded with `model`, or another agent's."""
+    wanted = {run for q in queries for run in q.runs}
+    query = (
+        select(Run.external_id)
+        .join(Embedding, Embedding.run_id == Run.id)
+        .where(Run.external_id.in_(wanted), Embedding.model == model)
+    )
+    if agent:
+        query = query.where(Run.agent == agent)
+    return sorted(wanted - set(session.scalars(query)))
+
+
 def stored_ranking(
-    session: Session, embedder: Embedder, query: str, k: int = K, where: RunFilter | None = None
+    session: Session, embedder: Embedder, query: str, k: int = K, agent: str | None = None
 ) -> list[str]:
     """What `afr search` returns for the query, as trace ids, best first."""
-    where = RunFilter(agent=where.agent if where else None, limit=k)
-    hits = search(session, embedder, query, where, datetime.now(UTC))
+    hits = search(session, embedder, query, RunFilter(agent=agent, limit=k), datetime.now(UTC))
     return [hit.summary.run.external_id for hit in hits]
+
+
+def _unit(vector: Sequence[float]) -> list[float]:
+    norm = math.sqrt(sum(v * v for v in vector)) or 1.0
+    return [v / norm for v in vector]
 
 
 class MemoryIndex:
     """The stored texts of `stored_model`, embedded again with `embedder`, in memory."""
 
     def __init__(
-        self,
-        session: Session,
-        *,
-        stored_model: str,
-        embedder: Embedder,
-        where: RunFilter | None = None,
+        self, session: Session, *, stored_model: str, embedder: Embedder, agent: str | None = None
     ) -> None:
         self.session = session
         self.stored_model = stored_model
         self.embedder = embedder
-        self.where = RunFilter(agent=where.agent if where else None)
+        self.where = RunFilter(agent=agent)
         rows = session.execute(
             select(Embedding.id, Embedding.run_id, Embedding.content, Run.external_id)
             .join(Run, Run.id == Embedding.run_id)
-            .where(Embedding.model == stored_model, *self._conditions())
+            .where(Embedding.model == stored_model, *run_conditions(self.where, datetime.now(UTC)))
             .order_by(Embedding.id)
         ).all()
         self.ids: list[uuid.UUID] = [row.id for row in rows]
         self.run_of: dict[uuid.UUID, uuid.UUID] = {row.id: row.run_id for row in rows}
         self.trace_of: dict[uuid.UUID, str] = {row.run_id: row.external_id for row in rows}
-        self.vectors = embedder.documents([row.content for row in rows]) if rows else []
-
-    def _conditions(self) -> list[Any]:
-        return run_conditions(self.where, datetime.now(UTC))
-
-    def _by_words(self, query: str, pool: int) -> list[uuid.UUID]:
-        """The keyword side of `afr search`, unchanged: Postgres full-text over the texts."""
-        words = func.websearch_to_tsquery(KEYWORD_CONFIG, query)
-        rank = func.ts_rank_cd(Embedding.content_tsv, words)
-        return list(
-            self.session.scalars(
-                select(Embedding.id)
-                .join(Run, Run.id == Embedding.run_id)
-                .where(
-                    Embedding.model == self.stored_model,
-                    *self._conditions(),
-                    Embedding.content_tsv.op("@@")(words),
-                    rank > 0,
-                )
-                .order_by(rank.desc())
-                .limit(pool)
-            )
-        )
+        texts = [row.content for row in rows]
+        self.vectors = [_unit(v) for v in embedder.documents(texts)] if rows else []
 
     def ranking(self, query: str, k: int = K) -> list[str]:
-        """Trace ids, best first: vector and keyword rankings fused as `afr search` does."""
+        """Trace ids, best first: cosine and keyword rankings fused as `afr search` does."""
         if not self.ids:
             return []
-        pool = max(MIN_CANDIDATES, CANDIDATES_PER_RESULT * k)
-        wanted = self.embedder.query(query)
+        pool = pool_size(k)
+        wanted = _unit(self.embedder.query(query))
         similarity = {
             text_id: sum(a * b for a, b in zip(vector, wanted, strict=True))
             for text_id, vector in zip(self.ids, self.vectors, strict=True)
         }
         by_meaning = sorted(self.ids, key=lambda i: -similarity[i])[:pool]
-        scores = fuse([by_meaning, self._by_words(query, pool)])
+        base = candidates(self.stored_model, self.where, datetime.now(UTC), pool)
+        scores = fuse([by_meaning, by_words(self.session, base, query)])
         best: dict[uuid.UUID, float] = {}
         for text_id, score in scores.items():
             run_id = self.run_of[text_id]
             best[run_id] = max(best.get(run_id, 0.0), score)
-        ranked = sorted(best, key=lambda run_id: (-best[run_id], run_id))[:k]  # as afr search
+        ranked = sorted(best, key=lambda run_id: run_order(run_id, best[run_id]))[:k]
         return [self.trace_of[run_id] for run_id in ranked]

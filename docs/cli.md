@@ -77,12 +77,12 @@ uv run afr labels list                        # modes, most common first, with a
 Shows the run's header, its attributes, its problem spans (with their parents) and its labels so far, then asks for a **failure mode** and a **note**.
 
 - **Decision next to truth.** An attribute `<prefix>.decided.<field>` that has a matching `<prefix>.expected.<field>` is shown as one row: `triager labels: infra  ≠  infra, recorder`. Any agent can use the convention; the triager records both on its root span. SDK attributes (`telemetry.*`, `service.instance.*`, `openinference.*`) are left out.
-- **The mode:** type a number to reuse a mode (they're listed most used first, with how many runs have each), or type a new name: up to 80 characters. A run can have several labels; run `afr label` again to add one.
+- **The mode:** type a number to reuse a mode (they're listed most used first, with how many runs have each), or type a new name: up to 80 printable characters, not a number and not `s` or `q`. Answer `q` to stop without labelling. A run can have several labels; run `afr label` again to add one.
 - **The note** is optional, and redacted before it's stored, like everything else a person or model may copy from a run.
 
 | Option | |
 |---|---|
-| `--mode`, `--note` | Skip the questions (for scripts, or an agent driving the CLI) |
+| `--mode`, `--note` | Skip the questions (for scripts, or an agent driving the CLI). `--note` alone asks only for the mode |
 | `--span` | Label one of the run's spans instead, by an id prefix; a span of another run is refused |
 | `--author` | Who's labelling. Default: the OS user name. It stays in the local store |
 
@@ -95,9 +95,16 @@ Walks a sample of runs, showing each run that has no human label yet and asking 
 | `--attr`, `--agent` | Which runs: the same filters as `runs list` |
 | `--sample N` | Label only N of them (default: all) |
 | `--by KEY` | Sample each value of this attribute in proportion to its share (largest remainder), e.g. one batch group in five gets a fifth of the sample |
-| `--seed` | The sample's seed (default 14). The sample is the same every time for the same runs, filters and seed |
+| `--seed` | The sample's seed (default 14). The sample is the same every time for the same runs, filters and seed. Each run's place comes from a hash of the seed and its id, so a run recorded later displaces at most one pick in its own group |
 
-The #13 corpus's sample: `afr label --next --attr triager.grade=wrong --attr triager.batch.group=real-mini --attr triager.batch.group=synthetic-nano --attr triager.batch.group=injected-mini --attr triager.batch.group=real-gemini --sample 50 --by triager.batch.group` ([evals/corpus.md](evals/corpus.md)).
+The #13 corpus's sample ([evals/corpus.md](evals/corpus.md)):
+
+```bash
+uv run afr label --next --attr triager.grade=wrong \
+  --attr triager.batch.group=real-mini --attr triager.batch.group=synthetic-nano \
+  --attr triager.batch.group=injected-mini --attr triager.batch.group=real-gemini \
+  --sample 50 --by triager.batch.group
+```
 
 ### `afr labels`
 

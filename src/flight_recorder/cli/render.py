@@ -503,7 +503,8 @@ def run_attributes(attributes: dict[str, Any]) -> Text:
             continue
         decided, expected = _attribute(attributes[key]), _attribute(attributes[expected_key])
         same = decided == expected
-        lines.append(f"{match['prefix']} {match['field']}: ", style="dim")
+        name = f"{one_line(match['prefix'], 60)} {one_line(match['field'], 40)}: "
+        lines.append_text(text(name, "dim"))
         lines.append_text(text(decided, "" if same else "bold red"))
         lines.append("  =  " if same else "  ≠  ", style="dim" if same else "red")
         lines.append_text(text(expected))

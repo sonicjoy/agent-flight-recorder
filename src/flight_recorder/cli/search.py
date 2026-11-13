@@ -137,6 +137,8 @@ def search_check(
     agent: Annotated[str | None, typer.Option(help="Search only this agent's runs.")] = None,
 ) -> None:
     """Recall@k of `afr search` on hand-written queries, and optionally of another model."""
+    from statistics import fmean
+
     from flight_recorder.search import embedder as embedders
     from flight_recorder.search.retrieval import (
         MemoryIndex,
@@ -144,52 +146,63 @@ def search_check(
         missing_runs,
         recall_at_k,
         stored_ranking,
+        unsearchable_runs,
     )
-    from flight_recorder.store.read import RunFilter
 
     try:
         cases = load_queries(queries)
     except (OSError, ValueError) as error:
         raise typer.BadParameter(str(error), param_hint="QUERIES") from error
-    where = RunFilter(agent=agent)
     stored = embedders.default_embedder()
+    out = render.console()
     with open_store() as session:
         if missing := missing_runs(session, cases):
             typer.echo(
-                f"error: these right runs aren't in the store: {', '.join(missing)}", err=True
+                render.clean(f"error: these right runs aren't in the store: {', '.join(missing)}"),
+                err=True,
             )
             raise typer.Exit(code=1)
-        other = (
-            MemoryIndex(
+        if unsearchable := unsearchable_runs(session, cases, stored.model, agent):
+            out.print(
+                render.text(
+                    f"warning: search can't return these right runs (not embedded, or not "
+                    f"{agent or 'any'} agent's): {', '.join(unsearchable)}",
+                    "yellow",
+                )
+            )
+        other = None
+        if compare:
+            other = MemoryIndex(
                 session,
                 stored_model=stored.model,
                 embedder=embedders.named_embedder(compare),
-                where=where,
+                agent=agent,
             )
-            if compare
-            else None
-        )
         table = Table(box=None, pad_edge=False, header_style="bold", collapse_padding=True)
         table.add_column("query")
         table.add_column("right", justify="right")
         table.add_column(f"afr search ({stored.model})", justify="right")
         if other:
-            table.add_column(other.embedder.model, justify="right")
-        totals = [0.0, 0.0]
+            table.add_column(render.clean(other.embedder.model), justify="right")
+        mine: list[float] = []
+        theirs: list[float] = []
         for case in cases:
-            mine = recall_at_k(stored_ranking(session, stored, case.text, k, where), case.runs, k)
-            row = [render.text(render.one_line(case.text, 70)), str(len(case.runs)), f"{mine:.2f}"]
-            totals[0] += mine
+            mine.append(
+                recall_at_k(stored_ranking(session, stored, case.text, k, agent), case.runs, k)
+            )
+            row = [
+                render.text(render.one_line(case.text, 70)),
+                str(len(set(case.runs))),
+                f"{mine[-1]:.2f}",
+            ]
             if other:
-                theirs = recall_at_k(other.ranking(case.text, k), case.runs, k)
-                totals[1] += theirs
-                row.append(f"{theirs:.2f}")
+                theirs.append(recall_at_k(other.ranking(case.text, k), case.runs, k))
+                row.append(f"{theirs[-1]:.2f}")
             table.add_row(*row)
-        n = len(cases)
         table.add_row(
-            Text(f"mean recall@{k} ({n} queries)", style="bold"),
+            Text(f"mean recall@{k} ({len(cases)} queries)", style="bold"),
             "",
-            f"{totals[0] / n:.2f}",
-            *([f"{totals[1] / n:.2f}"] if other else []),
+            f"{fmean(mine):.2f}",
+            *([f"{fmean(theirs):.2f}"] if other else []),
         )
-        render.console().print(table)
+        out.print(table)

@@ -46,23 +46,23 @@ Vector search always returns the nearest texts, so the bottom of the list can be
 Recall@k of `afr search` on hand-written queries (#14). Each query names its **right runs**, the runs a good search returns, by trace id (`runs.external_id`), so the file works on any copy of the store:
 
 ```yaml
-# evals/retrieval.yaml
+# a queries file
 - query: called a related issue a duplicate
   runs: [f9cd00b89a2b035a4f6ec819e51da547, 3c1e...]
 ```
 
 ```bash
-uv run afr search-check evals/retrieval.yaml --agent issue-triager
-uv run afr search-check evals/retrieval.yaml --agent issue-triager --compare BAAI/bge-base-en-v1.5
+uv run afr search-check queries.yaml --agent issue-triager
+uv run afr search-check queries.yaml --agent issue-triager --compare BAAI/bge-base-en-v1.5
 ```
 
-- **Recall@k:** the share of a query's right runs in the top k (default 5), out of as many as k can hold, averaged over the queries.
-- **`--compare MODEL`** ranks another fastembed model the same way, in memory: the stored texts are embedded with it and fused with the same keyword ranking. So a 768-dimension model can be tried without a migration, and nothing is written. Unlike bge-small, the compared model isn't pinned to a revision; fastembed downloads it into `AFR_HOME/models` on first use.
-- Right runs missing from the store are named, and the check stops.
+- **Recall@k:** the share of a query's right runs in the top k (default 5), out of as many as k can hold, averaged over the queries. A run named twice counts once.
+- **`--compare MODEL`** ranks another fastembed model the same way, in memory: the stored texts are embedded with it, ranked by cosine similarity and fused with the same keyword ranking. So a 768-dimension model can be tried without a migration, and nothing is written. Unlike bge-small, the compared model isn't pinned to a revision; fastembed downloads it into `AFR_HOME/models` on first use.
+- Right runs missing from the store are named, and the check stops. Right runs search can't return (nothing embedded with the stored model, or another agent's with `--agent`) are named in a warning, since they lower recall for every model.
 
 Ties between runs with the same fused score go by run id, so a ranking is the same every time.
 
-The result and the decision: [evals/retrieval.md](evals/retrieval.md).
+The #14 queries, result and decision come with the hand-labelled runs.
 
 ## In tests
 

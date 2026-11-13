@@ -6,7 +6,7 @@ text a person or a model may have copied from a run (docs/schema.md).
 
 from __future__ import annotations
 
-import random
+import hashlib
 import uuid
 from collections import defaultdict
 from collections.abc import Sequence
@@ -32,18 +32,27 @@ class SpanNotInRunError(LookupError):
     pass
 
 
+RESERVED = ("s", "q")  # the queue's skip and quit
+
+
 def check_mode(mode: str) -> str:
-    """A failure mode is a short name: stripped, not empty, at most 80 characters."""
+    """A failure mode is a short name: stripped, 1 to 80 printable characters, not a number
+    (numbers pick an existing mode) and not `s` or `q`."""
     mode = mode.strip()
-    if not mode or len(mode) > MAX_MODE:
-        raise ValueError(f"a failure mode is a name of 1 to {MAX_MODE} characters")
+    if not mode or len(mode) > MAX_MODE or not mode.isprintable():
+        raise ValueError(f"a failure mode is a name of 1 to {MAX_MODE} printable characters")
+    if mode.isdigit() or mode in RESERVED:
+        raise ValueError(
+            f"{mode!r} isn't a mode name: a number picks a listed mode, s and q skip and quit"
+        )
     return mode
 
 
 def sample(population: Sequence[tuple[str, str]], size: int, seed: int) -> list[str]:
     """`size` run ids from (run id, stratum) pairs, each stratum in proportion to its share
     (largest remainder), chosen with `seed`. The result is sorted, and doesn't depend on the
-    order of `population`."""
+    order of `population`. Each run's place comes from a hash of the seed and its id, so a
+    new run displaces at most one pick in its own stratum and none in the others."""
     if size >= len(population):
         return sorted(run for run, _ in population)
     strata: dict[str, list[str]] = defaultdict(list)
@@ -54,8 +63,11 @@ def sample(population: Sequence[tuple[str, str]], size: int, seed: int) -> list[
     by_remainder = sorted(strata, key=lambda s: (-(shares[s] - counts[s]), s))
     for stratum in by_remainder[: size - sum(counts.values())]:
         counts[stratum] += 1
-    rng = random.Random(seed)
-    picked = [run for s in sorted(strata) for run in rng.sample(strata[s], counts[s])]
+
+    def place(run: str) -> str:
+        return hashlib.sha256(f"{seed}:{run}".encode()).hexdigest()
+
+    picked = [run for s in sorted(strata) for run in sorted(strata[s], key=place)[: counts[s]]]
     return sorted(picked)
 
 
@@ -152,7 +164,7 @@ def rename_mode(session: Session, old: str, new: str) -> int:
     """Renames (or merges) a mode on human labels; returns how many labels changed."""
     result = session.execute(
         update(Label)
-        .where(Label.failure_mode == old, Label.source == HUMAN)
+        .where(Label.failure_mode == old.strip(), Label.source == HUMAN)
         .values(failure_mode=check_mode(new))
     )
     return typed("CursorResult[Any]", result).rowcount
@@ -162,5 +174,5 @@ def remove_labels(session: Session, run_id: uuid.UUID, mode: str | None = None) 
     """Deletes a run's human labels, or only those with `mode`; returns how many."""
     query = delete(Label).where(Label.run_id == run_id, Label.source == HUMAN)
     if mode is not None:
-        query = query.where(Label.failure_mode == mode)
+        query = query.where(Label.failure_mode == mode.strip())
     return typed("CursorResult[Any]", session.execute(query)).rowcount
