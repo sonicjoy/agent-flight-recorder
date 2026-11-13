@@ -1,6 +1,6 @@
 # The run corpus
 
-200 recorded triager runs for error analysis (#13, read in #14: [error-analysis.md](error-analysis.md)). Generated on 12 Nov 2026 with [issue-triage-agent](https://github.com/sonicjoy/issue-triage-agent)'s `triager batch` and recorded by `afr serve`.
+200 recorded triager runs for error analysis (#13, read in #14). Generated on 12 Nov 2026 with [issue-triage-agent](https://github.com/sonicjoy/issue-triage-agent)'s `triager batch` and recorded by `afr serve`.
 
 ## What's in it
 
@@ -46,10 +46,8 @@ Labels dominate everywhere. Before the proper error analysis in #14:
 
 The agent never sees it. Each run is graded after it ends, against the triager's bundled dataset:
 
-- **Real issues:** labels, milestone and duplicates come from this repo's GitHub issues, read-only via `triager export`. The issues are the tasks of the [project plan](../PLAN.md), generated with Claude Code; #3 was filed as a duplicate of #2 on purpose. A duplicate is an issue with a comment starting "Duplicate of #N", so an unmarked issue reads as having none. So "wrong" means "disagrees with how the issue was labelled on GitHub". Some disagreements may be the labels' fault, not the agent's: #14 should keep those apart.
-- **Synthetic cases:** truth written for the project in `synthetic.yaml`, drafted with Claude.
-
-The counts on this page are the grades as recorded. #14 found some truths wrong and fixed them: re-graded, the corpus is 81 correct and 119 wrong ([error-analysis.md](error-analysis.md#what-was-done-about-the-eval-set)).
+- **Real issues:** labels, milestone and duplicates come from this repo's GitHub issues, read-only via `triager export`. So "wrong" means "disagrees with how the issue was labelled on GitHub". Some disagreements may be the labels' fault, not the agent's: #14 should keep those apart.
+- **Synthetic cases:** hand-written truth in `synthetic.yaml`.
 
 ## Finding runs
 
