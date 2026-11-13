@@ -44,6 +44,7 @@ SOURCE = "claude_code"
 AGENT = "claude-code"
 ROOT = "session"
 NAME_CHARS = 80
+TURN_ENDS = ("Stop", "StopFailure", "SubagentStop", "SessionEnd")  # they carry items
 
 
 class EventError(ValueError):
@@ -193,8 +194,11 @@ def _responses(
     """One llm span per model response read from the transcript: from when the request was
     sent to its last block, with what it said, any thinking, and the tools it called.
 
-    A response read twice keeps the more specific parent (see _better_parent), and a
-    response read in two parts keeps both: the earliest start, the latest end, and what
+    Outside a subagent, a response goes under the turn the transcript says it was written
+    in (its prompt_id), whichever turn end carries it: later hooks read on in a long turn,
+    so one read can hold the end of one turn and the start of the next. Without one (an
+    older hook), a response read twice keeps the more specific parent (see _better_parent).
+    A response read in two parts keeps both: the earliest start, the latest end, and what
     each part said.
     """
     spans: list[SpanIn] = []
@@ -203,6 +207,7 @@ def _responses(
             continue
         external_id = f"llm:{item['message_id']}"
         stored = _stored(session, session_id, external_id)
+        written_in = _turn(item) if not parent.startswith("agent:") else None
         model = item.get("model")
         ended = _time(item.get("timestamp")) or at
         first = _time(item.get("started_at")) or ended
@@ -221,9 +226,8 @@ def _responses(
         spans.append(
             SpanIn(
                 external_id=external_id,
-                parent_external_id=_better_parent(
-                    stored.parent_external_id if stored else None, parent
-                ),
+                parent_external_id=written_in
+                or _better_parent(stored.parent_external_id if stored else None, parent),
                 kind="llm",
                 name=str(model or "model response"),
                 model=f"anthropic:{model}" if isinstance(model, str) else None,
@@ -563,7 +567,15 @@ def apply_event(session: Session, redactor: Redactor, event: Mapping[str, Any]) 
         "redactions": client,
     }
 
-    if name == "UserPromptSubmit" and turn:
+    if event.get("rest") is True and name in TURN_ENDS:
+        # More of a turn end already applied, read by a later hook: only its items are news.
+        # Applying the rest again would take the run back to that turn's permission mode.
+        subagent = _str(hook, "agent_id") if name == "SubagentStop" else None
+        under = f"agent:{subagent}" if subagent else turn or ROOT
+        spans += _responses(session, session_id, event.get("usage"), under, at)
+        spans += _decisions(session, session_id, event.get("permissions"))
+        run = {"started_at": at}
+    elif name == "UserPromptSubmit" and turn:
         prompt = _str(hook, "prompt") or ""
         spans.append(merge(**turn_fields, input=prompt, started_at=at))
         stored_root = _stored(session, session_id, ROOT)

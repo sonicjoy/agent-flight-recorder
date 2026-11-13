@@ -504,7 +504,8 @@ def run(stdin_text: str, config: HookConfig | None = None) -> None:
     if name not in SYNC_EVENTS and name not in TURN_END:  # no read of its own: carry one on
         try:
             if (rest := _take_rest(config.home)) is not None:
-                event = cast("dict[str, Any]", rest.record.get("event"))
+                # marked, so the recorder applies its items and not the old turn end again
+                event = cast("dict[str, Any]", rest.record.get("event")) | {"rest": True}
                 more = _parts(config.home, event, Counter[str](), rest.read, redactor)
                 events += [p for p in more if _items(p)]  # nothing new: nothing to resend
         except Exception as error:

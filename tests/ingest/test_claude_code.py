@@ -428,6 +428,53 @@ def test_a_response_moves_to_its_turn_even_when_session_end_came_first(
     assert spans["llm:msg_1"].parent_id == spans["turn:p1"].id
 
 
+def test_a_response_goes_under_the_turn_it_was_written_in_whichever_event_carries_it(
+    client: TestClient, store: Engine
+) -> None:
+    """Later hooks read a long turn's rest and send it with that turn's end, so the next
+    turn's responses can come with it, and the next Stop can carry the old turn's rest. The
+    transcript says which turn each response belongs to (its prompt_id)."""
+    client.post(
+        URL,
+        json={
+            "events": [
+                ev("UserPromptSubmit", 1, prompt_id="p1", prompt="first"),
+                ev("UserPromptSubmit", 5, prompt_id="p2", prompt="second"),
+                ev("Stop", 4, prompt_id="p1", usage=[usage("msg_2") | {"prompt_id": "p2"}]),
+                ev("Stop", 8, prompt_id="p2", usage=[usage("msg_1") | {"prompt_id": "p1"}]),
+                ev("Stop", 9, prompt_id="p2", usage=[usage("msg_3")]),  # an older hook's
+            ]
+        },
+    )
+
+    spans = stored(store)[1]
+    assert spans["llm:msg_1"].parent_id == spans["turn:p1"].id
+    assert spans["llm:msg_2"].parent_id == spans["turn:p2"].id
+    assert spans["llm:msg_3"].parent_id == spans["turn:p2"].id
+
+
+def test_the_rest_of_an_old_turn_end_adds_only_its_items(client: TestClient, store: Engine) -> None:
+    """The rest of a long turn, read by later hooks, comes as more parts of its turn end
+    (marked rest): it must not take the run back to that turn's permission mode."""
+    turn = {"prompt_id": "p1", "permission_mode": "default"}
+    client.post(
+        URL,
+        json={
+            "events": [
+                ev("UserPromptSubmit", 1, **turn, prompt="hi"),
+                ev("Stop", 4, **turn, last_assistant_message="done"),
+                ev("UserPromptSubmit", 6, prompt_id="p2", permission_mode="plan", prompt="go"),
+            ]
+        },
+    )
+    rest = ev("Stop", 4, **turn, last_assistant_message="done", usage=[usage("msg_9")])
+    client.post(URL, json={"events": [rest | {"rest": True}]})
+
+    [run], spans = stored(store)
+    assert run.attributes["claude_code.permission_mode"] == "plan"
+    assert spans["llm:msg_9"].parent_id == spans["turn:p1"].id
+
+
 def test_a_response_runs_from_its_request_and_says_what_it_did(
     client: TestClient, store: Engine
 ) -> None:

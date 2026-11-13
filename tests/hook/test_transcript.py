@@ -208,6 +208,39 @@ def test_a_read_stops_after_a_page_of_items_and_the_next_read_carries_on(tmp_pat
     assert (first.more, second.more, third.more) == (True, True, False)
 
 
+def test_each_response_says_which_turn_it_was_written_in(tmp_path: Path) -> None:
+    """A user line carries its turn's promptId (the hooks' prompt_id), and the responses
+    after it belong to that turn: one read can span two turns, and one turn two reads."""
+    transcript, state = tmp_path / "session.jsonl", tmp_path / "state"
+
+    def prompt(prompt_id: str) -> dict[str, Any]:
+        return {"type": "user", "promptId": prompt_id, "message": {"content": "go"}}
+
+    write(
+        transcript,
+        response("msg_0", 1),  # before any prompt: a session that predates the hooks
+        prompt("p1"),
+        response("msg_1", 1),
+        response("msg_2", 1),
+        response("msg_3", 1),
+        prompt("p2"),
+        response("msg_4", 1),
+    )
+
+    first = read_new(transcript, state, max_items=3)
+    first.commit()
+    second = read_new(transcript, state)
+
+    turns = [(u["message_id"], u["prompt_id"]) for r in (first, second) for u in r.usage]
+    assert turns == [
+        ("msg_0", None),
+        ("msg_1", "p1"),
+        ("msg_2", "p1"),
+        ("msg_3", "p1"),  # read on, after the position was saved
+        ("msg_4", "p2"),
+    ]
+
+
 def test_a_damaged_position_reads_from_the_start(tmp_path: Path) -> None:
     transcript, state = tmp_path / "session.jsonl", tmp_path / "state"
     write(transcript, response("msg_1", 1))

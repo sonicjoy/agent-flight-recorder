@@ -233,6 +233,9 @@ def test_a_subagent_longer_than_one_read_is_finished_by_later_hooks(
         ("SubagentStop", "a1")
     }
     assert len({e["received_at"] for e in parts}) == 1  # one turn end: its time doesn't move
+    # what later hooks read is marked, so the recorder doesn't apply the turn end again
+    first = READ_ITEMS // EVENT_ITEMS
+    assert [e.get("rest") for e in parts] == [None] * first + [True] * (len(parts) - first)
     assert all(items(e) <= EVENT_ITEMS for e in parts)
     assert pending(tmp_path) == []  # finished
     assert "rest next time" not in log(tmp_path)

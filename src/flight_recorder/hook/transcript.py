@@ -25,6 +25,10 @@ What it relies on, checked against Claude Code's transcripts on 11 Nov 2026:
   "config", "user_temporary", "user_permanent") and "reasonType" / "reasonCode" (such as
   "classifier", "rule", "mode", "safetyCheck"). Hooks don't say whether a call was
   rejected, so decisions are read from here.
+- User lines (prompts and tool results) carry "promptId", the same id hooks send as
+  prompt_id (checked with Claude Code 2.1.321 on 13 Nov 2026). The responses after one
+  belong to that turn, so each response carries it: a read can span two turns, since later
+  hooks read on in a long turn's transcript. The latest one is kept with the read position.
 
 Where reading stopped is kept per transcript in <AFR_HOME>/hook-state/, so each turn reads
 only new lines. The position is saved only once the events carrying the usage have been
@@ -165,11 +169,13 @@ class TranscriptRead:
     permissions: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     more: bool = False
     """Stopped before the end of what was written: the rest waits for the next read."""
+    prompt_id: str | None = None
+    """The turn the read stopped in, for the next read to carry on with."""
 
     def commit(self) -> None:
         if self.state_file is not None:
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            state = {"offset": self.offset, "requests": self.requests}
+            state = {"offset": self.offset, "requests": self.requests, "prompt_id": self.prompt_id}
             # Written whole, then renamed: a hook reading at the same moment never sees it empty.
             partial = self.state_file.with_suffix(f".{os.getpid()}.tmp")
             partial.write_text(json.dumps(state), encoding="utf-8")
@@ -205,6 +211,8 @@ def read_new(
     permissions: list[dict[str, Any]] = []
     # api-request id -> when it was sent, including requests read in earlier turns
     requests: dict[str, Any] = dict(cast("dict[str, Any]", kept)) if isinstance(kept, dict) else {}
+    turn: Any = cast("dict[str, Any]", saved).get("prompt_id") if isinstance(saved, dict) else None
+    prompt_id = turn if isinstance(turn, str) else None  # the turn being written
     consumed, paged = 0, False
     for raw in complete.splitlines(keepends=True):
         if max_items is not None and len(responses) + len(permissions) >= max_items:
@@ -223,12 +231,16 @@ def read_new(
             continue
         if line.get("isSidechain") and not include_sidechain:
             continue
+        if line.get("type") == "user" and isinstance(line.get("promptId"), str):
+            prompt_id = line["promptId"]
         permissions += permission_decisions(line)
         if (usage := response_usage(line)) is not None:
+            usage["prompt_id"] = prompt_id
             earlier = responses.get(usage["message_id"])
             if earlier is not None:  # a later line of the same response: keep when it began
                 usage["started_at"] = earlier["started_at"]
                 usage["output"] = _joined(earlier["output"], usage["output"])
+                usage["prompt_id"] = earlier["prompt_id"]
             responses[usage["message_id"]] = usage
     for usage in responses.values():
         usage["requested_at"] = requests.get(str(usage.pop("request_ref")))
@@ -236,7 +248,13 @@ def read_new(
     recent = dict(list(requests.items())[-KEPT_REQUESTS:])
     more = paged or offset + len(chunk) < size  # not a half-written last line
     return TranscriptRead(
-        list(responses.values()), state, offset + consumed, recent, permissions, more=more
+        list(responses.values()),
+        state,
+        offset + consumed,
+        recent,
+        permissions,
+        more=more,
+        prompt_id=prompt_id,
     )
 
 
