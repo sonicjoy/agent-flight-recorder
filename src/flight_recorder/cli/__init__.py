@@ -11,7 +11,7 @@ from flight_recorder.cli.hook import hook_app
 from flight_recorder.cli.label import label, labels_app
 from flight_recorder.cli.pricing import pricing_app
 from flight_recorder.cli.runs import replay, runs_app
-from flight_recorder.cli.search import embed, search
+from flight_recorder.cli.search import embed, search, search_check
 
 app = typer.Typer(
     name="afr",
@@ -27,6 +27,7 @@ app.command()(label)
 app.command()(replay)
 app.command()(embed)
 app.command()(search)
+app.command("search-check")(search_check)
 
 
 @app.callback()

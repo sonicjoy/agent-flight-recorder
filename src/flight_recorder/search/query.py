@@ -103,7 +103,8 @@ def search(
             best[row.run_id] = _Best(
                 scores[row.id], row.id, float(row.similarity), row.name, row.error
             )
-    ranked = sorted(best.items(), key=lambda item: -item[1].score)[: where.limit]
+    # ties (one side each, same rank) go by run id, so a ranking is the same every time
+    ranked = sorted(best.items(), key=lambda item: (-item[1].score, item[0]))[: where.limit]
     found = find_runs(session, RunFilter(limit=len(ranked)), now, ids=[i for i, _ in ranked])
     summaries = {s.run.id: s for s in found}
     meaning, by_word = set(by_meaning), set(by_words)
