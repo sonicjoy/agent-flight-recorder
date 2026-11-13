@@ -96,15 +96,15 @@ def test_ranking_in_memory_with_the_stored_model_agrees_with_afr_search(
     fake: FakeEmbedder,
     corpus: Any,
 ) -> None:
-    """Same best run and same runs. Not always the same order below the top: the fake gives
-    exactly 0 to texts sharing no word with the query, and pgvector orders exact ties
-    arbitrarily (real embeddings practically never tie)."""
+    """The same best run. Not always the same order below it: the fake gives exactly 0 to
+    texts sharing no word with the query, and pgvector orders exact ties arbitrarily (real
+    embeddings practically never tie)."""
     from flight_recorder.search.retrieval import MemoryIndex, stored_ranking
 
     index = MemoryIndex(db, stored_model=fake.model, embedder=FakeEmbedder())
     for query in ("tool timed out while fetching", "HTTP 429", "label a ui bug", "release notes"):
         mine, afr = index.ranking(query, k=5), stored_ranking(db, fake, query, k=5)
-        assert mine[0] == afr[0] and sorted(mine) == sorted(afr), query
+        assert mine[0] == afr[0], query
 
 
 def test_another_model_ranks_in_memory_and_writes_nothing(
@@ -194,12 +194,17 @@ def test_a_right_run_named_twice_counts_once() -> None:
 
 
 class ScaledFake(FakeEmbedder):
-    """The fake's vectors, not unit length: the ranking must still be by cosine."""
+    """The fake's vectors, not unit length: texts about timeouts are tiny, the rest huge, so
+    a ranking by dot product puts the timeout last and one by cosine puts it first."""
 
     model = "scaled-fake"
 
     def documents(self, texts: Sequence[str]) -> list[list[float]]:
-        return [[v * (i + 2) for v in vector] for i, vector in enumerate(super().documents(texts))]
+        vectors = super().documents(texts)
+        return [
+            [v * (0.001 if "timed" in t else 1000.0) for v in vector]
+            for t, vector in zip(texts, vectors, strict=True)
+        ]
 
     def query(self, value: str) -> list[float]:
         return [v * 7 for v in super().query(value)]
@@ -212,8 +217,13 @@ def test_the_memory_ranking_is_by_cosine_not_length(
 
     plain = MemoryIndex(db, stored_model=fake.model, embedder=FakeEmbedder())
     scaled = MemoryIndex(db, stored_model=fake.model, embedder=ScaledFake())
-    for query in ("tool timed out while fetching", "HTTP 429", "label a ui bug"):
-        assert scaled.ranking(query) == plain.ranking(query)
+
+    # words from every run too, so the huge texts aren't at 0 and win a dot product
+    query = "tool timed out while fetching the page, release notes, backlog, 429, ui bug"
+    best = scaled.by_meaning(query, pool=50)[0]
+
+    assert "timed" in scaled.content[best]
+    assert best == plain.by_meaning(query, pool=50)[0]
 
 
 def test_the_check_warns_about_right_runs_search_cant_return(

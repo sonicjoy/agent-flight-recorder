@@ -95,7 +95,7 @@ Walks a sample of runs, showing each run that has no human label yet and asking 
 | `--attr`, `--agent` | Which runs: the same filters as `runs list` |
 | `--sample N` | Label only N of them (default: all) |
 | `--by KEY` | Sample each value of this attribute in proportion to its share (largest remainder), e.g. one batch group in five gets a fifth of the sample |
-| `--seed` | The sample's seed (default 14). The sample is the same every time for the same runs, filters and seed. Each run's place comes from a hash of the seed and its id, so a run recorded later displaces at most one pick in its own group |
+| `--seed` | The sample's seed (default 14). The sample is the same every time for the same runs, filters and seed. Each run's place comes from a hash of the seed and its id, so a run recorded later costs the sample at most one pick |
 
 The #13 corpus's sample ([evals/corpus.md](evals/corpus.md)):
 

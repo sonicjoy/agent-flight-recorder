@@ -41,7 +41,7 @@ def check_mode(mode: str) -> str:
     mode = mode.strip()
     if not mode or len(mode) > MAX_MODE or not mode.isprintable():
         raise ValueError(f"a failure mode is a name of 1 to {MAX_MODE} printable characters")
-    if mode.isdigit() or mode in RESERVED:
+    if mode.isdigit() or mode.lower() in RESERVED:
         raise ValueError(
             f"{mode!r} isn't a mode name: a number picks a listed mode, s and q skip and quit"
         )
@@ -52,7 +52,7 @@ def sample(population: Sequence[tuple[str, str]], size: int, seed: int) -> list[
     """`size` run ids from (run id, stratum) pairs, each stratum in proportion to its share
     (largest remainder), chosen with `seed`. The result is sorted, and doesn't depend on the
     order of `population`. Each run's place comes from a hash of the seed and its id, so a
-    new run displaces at most one pick in its own stratum and none in the others."""
+    new run costs the sample at most one pick in all."""
     if size >= len(population):
         return sorted(run for run, _ in population)
     strata: dict[str, list[str]] = defaultdict(list)

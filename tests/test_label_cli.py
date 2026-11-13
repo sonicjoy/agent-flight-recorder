@@ -476,7 +476,7 @@ def test_a_paired_attribute_key_is_escaped_too() -> None:
     assert "\x1b" not in out.export_text()
 
 
-@pytest.mark.parametrize("mode", ["bad\x1b[2Jmode", "tab\tmode", "q", "s", "7"])
+@pytest.mark.parametrize("mode", ["bad\x1b[2Jmode", "tab\tmode", "q", "s", "Q", "S", "7"])
 def test_modes_refuse_control_characters_and_reserved_answers(mode: str) -> None:
     from flight_recorder.store.labels import check_mode
 
@@ -493,7 +493,7 @@ def test_a_note_given_without_a_mode_is_kept(
     assert labels(db)[0].note == "from the flag"
 
 
-@pytest.mark.parametrize("wrong", ["12", "0", "²"])
+@pytest.mark.parametrize("wrong", ["12", "0", "²", "9" * 5000])
 def test_a_number_not_on_the_list_asks_again(
     cli: Callable[..., Any], db: Session, ids: dict[str, Any], wrong: str
 ) -> None:

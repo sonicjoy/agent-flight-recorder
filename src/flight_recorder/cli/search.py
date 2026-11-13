@@ -165,8 +165,9 @@ def search_check(
         if unsearchable := unsearchable_runs(session, cases, stored.model, agent):
             out.print(
                 render.text(
-                    f"warning: search can't return these right runs (not embedded, or not "
-                    f"{agent or 'any'} agent's): {', '.join(unsearchable)}",
+                    "warning: search can't return these right runs (not embedded"
+                    + (f", or not {agent}'s" if agent else "")
+                    + f"): {', '.join(unsearchable)}",
                     "yellow",
                 )
             )

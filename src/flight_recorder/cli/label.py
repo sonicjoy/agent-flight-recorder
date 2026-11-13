@@ -33,7 +33,7 @@ labels_app = typer.Typer(
 SEED = 14
 EVERY_RUN = 100_000
 SKIP, QUIT = "s", "q"
-NUMBER = re.compile(r"[0-9]+")  # ASCII only: str.isdigit() also takes ²
+NUMBER = re.compile(r"[0-9]{1,6}")  # ASCII only (str.isdigit() also takes ²), and short
 
 
 class Quit(Exception):
@@ -266,11 +266,14 @@ def labels_list(
         if not counts:
             out.print("no labels yet")
             return
-        width = max(len(c.mode) for c in counts)
+        width = max(len(render.clean(c.mode)) for c in counts)
         out.print(f"{'mode':<{width}}  runs  labels  example", style="dim", highlight=False)
         for c in counts:
             out.print(
-                render.text(f"{c.mode:<{width}}  {c.runs:>4}  {c.labels:>6}  {str(c.example)[:8]}")
+                render.text(
+                    f"{render.clean(c.mode):<{width}}  {c.runs:>4}  {c.labels:>6}  "
+                    f"{str(c.example)[:8]}"
+                )
             )
         total = sum(c.labels for c in counts)
         out.print(f"{total} labels on {labelled_count(session, source)} runs", highlight=False)

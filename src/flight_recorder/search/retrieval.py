@@ -116,20 +116,25 @@ class MemoryIndex:
         self.ids: list[uuid.UUID] = [row.id for row in rows]
         self.run_of: dict[uuid.UUID, uuid.UUID] = {row.id: row.run_id for row in rows}
         self.trace_of: dict[uuid.UUID, str] = {row.run_id: row.external_id for row in rows}
+        self.content: dict[uuid.UUID, str] = {row.id: row.content for row in rows}
         texts = [row.content for row in rows]
         self.vectors = [_unit(v) for v in embedder.documents(texts)] if rows else []
+
+    def by_meaning(self, query: str, pool: int) -> list[uuid.UUID]:
+        """Text ids by cosine similarity to the query, best first, at most `pool`."""
+        wanted = _unit(self.embedder.query(query))
+        similarity = {
+            text_id: sum(a * b for a, b in zip(vector, wanted, strict=True))
+            for text_id, vector in zip(self.ids, self.vectors, strict=True)
+        }
+        return sorted(self.ids, key=lambda i: -similarity[i])[:pool]
 
     def ranking(self, query: str, k: int = K) -> list[str]:
         """Trace ids, best first: cosine and keyword rankings fused as `afr search` does."""
         if not self.ids:
             return []
         pool = pool_size(k)
-        wanted = _unit(self.embedder.query(query))
-        similarity = {
-            text_id: sum(a * b for a, b in zip(vector, wanted, strict=True))
-            for text_id, vector in zip(self.ids, self.vectors, strict=True)
-        }
-        by_meaning = sorted(self.ids, key=lambda i: -similarity[i])[:pool]
+        by_meaning = self.by_meaning(query, pool)
         base = candidates(self.stored_model, self.where, datetime.now(UTC), pool)
         scores = fuse([by_meaning, by_words(self.session, base, query)])
         best: dict[uuid.UUID, float] = {}
