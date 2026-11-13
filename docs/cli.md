@@ -1,6 +1,6 @@
 # Looking at recorded runs
 
-Three commands read the run store (`AFR_DATABASE_URL`, default: compose.yaml's Postgres). They only read: each one opens a read-only transaction.
+These commands use the run store (`AFR_DATABASE_URL`, default: compose.yaml's Postgres). `runs list`, `runs show` and `replay` only read: each one opens a read-only transaction. `label` and `labels` write labels, and nothing else ([Labelling runs](#labelling-runs)).
 
 ```bash
 uv run afr runs list                        # the newest 20 runs
@@ -19,6 +19,7 @@ Runs, newest first: id (first 8 characters), start time, agent, name, status, du
 | `--status` | `ok`, `error` or `unset` for finished runs; `running` or `unfinished` for runs with no end yet |
 | `--since`, `--until` | Start time: `30m`, `2h`, `3d` or `1w` ago; a date (`2026-11-10`, local midnight); or a local date and time (`2026-11-10T14:30`). `--since` is inclusive, `--until` isn't |
 | `--limit` | How many runs (default 20, at most 1000) |
+| `--attr KEY=VALUE` | A run attribute equals the value, compared as text (`--attr triager.grade=wrong`). Different keys must all match; repeat a key for any of several values (`--attr triager.batch.group=real-mini --attr triager.batch.group=real-gemini`) |
 
 **Running or unfinished:** a run with no end recorded is `running` if it, or any of its spans, changed in the last 30 minutes, else `unfinished`. (Spans count because writing one doesn't always touch the run's own row.) A run whose end never arrives stays unfinished, rather than looking as if it's still going:
 - a Claude Code session whose SessionEnd was lost (the terminal was killed, or the event was spooled and never sent);
@@ -59,6 +60,59 @@ Steps through the run's spans in time order. Each step shows its time since the 
 - `--kind llm` steps through only the model calls (or any other kind).
 
 Spans that start at the same moment go parents first, then by id. A placeholder parent (a turn whose event arrived late) starts with its earliest child.
+
+## Labelling runs
+
+Hand error analysis (#14): read runs and name what went wrong, before building any metric. Labels go in the `labels` table with source `human` ([schema.md](schema.md#labels)).
+
+```bash
+uv run afr label 7af8a849                     # show the run, then ask for a failure mode and a note
+uv run afr label 7af8a849 --mode false-duplicate --note "#12 is related, not the same"
+uv run afr label --next --attr triager.grade=wrong --sample 50 --by triager.batch.group
+uv run afr labels list                        # modes, most common first, with an example run
+```
+
+### `afr label <run>`
+
+Shows the run's header, its attributes, its problem spans (with their parents) and its labels so far, then asks for a **failure mode** and a **note**.
+
+- **Decision next to truth.** An attribute `<prefix>.decided.<field>` that has a matching `<prefix>.expected.<field>` is shown as one row: `triager labels: infra  ≠  infra, recorder`. Any agent can use the convention; the triager records both on its root span. SDK attributes (`telemetry.*`, `service.instance.*`, `openinference.*`) are left out.
+- **The mode:** type a number to reuse a mode (they're listed most used first, with how many runs have each), or type a new name: up to 80 printable characters, not a number and not `s` or `q`. Answer `q` to stop without labelling. A run can have several labels; run `afr label` again to add one.
+- **The note** is optional, and redacted before it's stored, like everything else a person or model may copy from a run.
+
+| Option | |
+|---|---|
+| `--mode`, `--note` | Skip the questions (for scripts, or an agent driving the CLI). `--note` alone asks only for the mode |
+| `--span` | Label one of the run's spans instead, by an id prefix; a span of another run is refused |
+| `--author` | Who's labelling. Default: the OS user name. It stays in the local store |
+
+### `afr label --next`
+
+Walks a sample of runs, showing each run that has no human label yet and asking for its mode and note. Answer `s` to skip a run or `q` to stop; run it again to carry on where you left off. It starts with how many are done (`12 of 50 labelled`).
+
+| Option | |
+|---|---|
+| `--attr`, `--agent` | Which runs: the same filters as `runs list` |
+| `--sample N` | Label only N of them (default: all) |
+| `--by KEY` | Sample each value of this attribute in proportion to its share (largest remainder), e.g. one batch group in five gets a fifth of the sample |
+| `--seed` | The sample's seed (default 14). The sample is the same every time for the same runs, filters and seed. Each run's place comes from a hash of the seed and its id, so a run recorded later costs the sample at most one pick |
+
+The #13 corpus's sample ([evals/corpus.md](evals/corpus.md)):
+
+```bash
+uv run afr label --next --attr triager.grade=wrong \
+  --attr triager.batch.group=real-mini --attr triager.batch.group=synthetic-nano \
+  --attr triager.batch.group=injected-mini --attr triager.batch.group=real-gemini \
+  --sample 50 --by triager.batch.group
+```
+
+### `afr labels`
+
+| Command | |
+|---|---|
+| `afr labels list` | Each mode with its runs, labels and first labelled run. `--source judge` or `analyst` for model labels (#17, #22) |
+| `afr labels rename OLD NEW` | Renames a mode on human labels, or merges it into an existing one. For open coding: name freely at first, then settle the names |
+| `afr labels remove <run>` | Deletes the run's human labels; `--mode` only those with that mode |
 
 ## Choosing a run
 

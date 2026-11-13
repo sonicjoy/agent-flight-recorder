@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 import typer
@@ -10,7 +11,7 @@ from rich.table import Table
 from rich.text import Text
 
 from flight_recorder.cli import render
-from flight_recorder.cli.runs import _choice, _store, parse_when  # pyright: ignore[reportPrivateUsage]
+from flight_recorder.cli.runs import _choice, open_store, parse_when  # pyright: ignore[reportPrivateUsage]
 
 if TYPE_CHECKING:
     from flight_recorder.search.query import Hit
@@ -32,7 +33,7 @@ def embed() -> None:
     from flight_recorder.search import embedder as embedders
     from flight_recorder.search.index import embed_runs
 
-    with _store(readonly=False) as session:
+    with open_store(readonly=False) as session:
         stats = embed_runs(
             session, embedders.default_embedder(), commit_every=COMMIT_EVERY, commit=session.commit
         )
@@ -78,7 +79,7 @@ def search(
         limit=limit,
     )
     model = embedders.default_embedder()
-    with _store() as session:
+    with open_store() as session:
         hits = run_search(session, model, query.strip(), where, now)
         missing = pending_runs(session, model.model)
         out = render.console()
@@ -122,3 +123,87 @@ def _table(hits: list[Hit]) -> Table:
             f"{hit.similarity:.2f}",
         )
     return table
+
+
+def search_check(
+    queries: Annotated[
+        Path, typer.Argument(help="YAML: a list of {query, runs: [trace id, ...]}.", dir_okay=False)
+    ],
+    compare: Annotated[
+        str | None,
+        typer.Option(help="Another fastembed model, ranked in memory (downloaded on first use)."),
+    ] = None,
+    k: Annotated[int, typer.Option("-k", min=1, max=50, help="Recall at this many runs.")] = 5,
+    agent: Annotated[str | None, typer.Option(help="Search only this agent's runs.")] = None,
+) -> None:
+    """Recall@k of `afr search` on hand-written queries, and optionally of another model."""
+    from statistics import fmean
+
+    from flight_recorder.search import embedder as embedders
+    from flight_recorder.search.retrieval import (
+        MemoryIndex,
+        load_queries,
+        missing_runs,
+        recall_at_k,
+        stored_ranking,
+        unsearchable_runs,
+    )
+
+    try:
+        cases = load_queries(queries)
+    except (OSError, ValueError) as error:
+        raise typer.BadParameter(str(error), param_hint="QUERIES") from error
+    stored = embedders.default_embedder()
+    out = render.console()
+    with open_store() as session:
+        if missing := missing_runs(session, cases):
+            typer.echo(
+                render.clean(f"error: these right runs aren't in the store: {', '.join(missing)}"),
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        if unsearchable := unsearchable_runs(session, cases, stored.model, agent):
+            out.print(
+                render.text(
+                    "warning: search can't return these right runs (not embedded"
+                    + (f", or not {agent}'s" if agent else "")
+                    + f"): {', '.join(unsearchable)}",
+                    "yellow",
+                )
+            )
+        other = None
+        if compare:
+            other = MemoryIndex(
+                session,
+                stored_model=stored.model,
+                embedder=embedders.named_embedder(compare),
+                agent=agent,
+            )
+        table = Table(box=None, pad_edge=False, header_style="bold", collapse_padding=True)
+        table.add_column("query")
+        table.add_column("right", justify="right")
+        table.add_column(f"afr search ({stored.model})", justify="right")
+        if other:
+            table.add_column(render.clean(other.embedder.model), justify="right")
+        mine: list[float] = []
+        theirs: list[float] = []
+        for case in cases:
+            mine.append(
+                recall_at_k(stored_ranking(session, stored, case.text, k, agent), case.runs, k)
+            )
+            row = [
+                render.text(render.one_line(case.text, 70)),
+                str(len(set(case.runs))),
+                f"{mine[-1]:.2f}",
+            ]
+            if other:
+                theirs.append(recall_at_k(other.ranking(case.text, k), case.runs, k))
+                row.append(f"{theirs[-1]:.2f}")
+            table.add_row(*row)
+        table.add_row(
+            Text(f"mean recall@{k} ({len(cases)} queries)", style="bold"),
+            "",
+            f"{fmean(mine):.2f}",
+            *([f"{fmean(theirs):.2f}"] if other else []),
+        )
+        out.print(table)

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, NamedTuple
 
-from sqlalchemy import func, select, text
+from sqlalchemy import Select, func, select, text
 from sqlalchemy.orm import Session
 
 from flight_recorder.search.embedder import Embedder
@@ -59,31 +59,52 @@ def fuse(rankings: Sequence[Sequence[uuid.UUID]]) -> dict[uuid.UUID, float]:
     return scores
 
 
-def search(
-    session: Session, embedder: Embedder, query: str, where: RunFilter, now: datetime
-) -> list[Hit]:
-    """The runs that best match `query`, best first, at most `where.limit`."""
-    pool = max(MIN_CANDIDATES, CANDIDATES_PER_RESULT * where.limit)
-    # Filters apply after the HNSW scan; keep scanning until enough rows pass them.
-    session.execute(text("SET LOCAL hnsw.iterative_scan = strict_order"))
-    session.execute(text(f"SET LOCAL hnsw.ef_search = {min(max(pool, 40), 1000)}"))
-    distance = Embedding.embedding.cosine_distance(embedder.query(query))
-    words = func.websearch_to_tsquery(KEYWORD_CONFIG, query)
-    rank = func.ts_rank_cd(Embedding.content_tsv, words)
-    base = (
+def pool_size(limit: int) -> int:
+    """Texts each side ranks before fusing."""
+    return max(MIN_CANDIDATES, CANDIDATES_PER_RESULT * limit)
+
+
+def candidates(model: str, where: RunFilter, now: datetime, pool: int) -> Select[uuid.UUID]:
+    """Embedded texts of `model` whose runs pass the filter, at most `pool`."""
+    return (
         select(Embedding.id)
         .join(Run, Run.id == Embedding.run_id)
-        .where(Embedding.model == embedder.model, *run_conditions(where, now))
+        .where(Embedding.model == model, *run_conditions(where, now))
         .limit(pool)
     )
-    by_meaning = list(session.scalars(base.order_by(distance)))
-    by_words = list(
+
+
+def by_words(session: Session, base: Select[uuid.UUID], query: str) -> list[uuid.UUID]:
+    """The keyword side: Postgres full-text over the candidates, best first."""
+    words = func.websearch_to_tsquery(KEYWORD_CONFIG, query)
+    rank = func.ts_rank_cd(Embedding.content_tsv, words)
+    return list(
         session.scalars(
             # rank > 0: a query of only negations (`-timeout`) matches everything at rank 0
             base.where(Embedding.content_tsv.op("@@")(words), rank > 0).order_by(rank.desc())
         )
     )
-    scores = fuse([by_meaning, by_words])
+
+
+def run_order(run_id: uuid.UUID, score: float) -> tuple[float, uuid.UUID]:
+    """Best fused score first; ties (one side each, same rank) by run id, so a ranking is
+    the same every time."""
+    return (-score, run_id)
+
+
+def search(
+    session: Session, embedder: Embedder, query: str, where: RunFilter, now: datetime
+) -> list[Hit]:
+    """The runs that best match `query`, best first, at most `where.limit`."""
+    pool = pool_size(where.limit)
+    # Filters apply after the HNSW scan; keep scanning until enough rows pass them.
+    session.execute(text("SET LOCAL hnsw.iterative_scan = strict_order"))
+    session.execute(text(f"SET LOCAL hnsw.ef_search = {min(max(pool, 40), 1000)}"))
+    distance = Embedding.embedding.cosine_distance(embedder.query(query))
+    base = candidates(embedder.model, where, now, pool)
+    by_meaning = list(session.scalars(base.order_by(distance)))
+    word_ranked = by_words(session, base, query)
+    scores = fuse([by_meaning, word_ranked])
     if not scores:
         return []
     rows = session.execute(
@@ -103,10 +124,11 @@ def search(
             best[row.run_id] = _Best(
                 scores[row.id], row.id, float(row.similarity), row.name, row.error
             )
-    ranked = sorted(best.items(), key=lambda item: -item[1].score)[: where.limit]
+    ranked = sorted(best.items(), key=lambda item: run_order(item[0], item[1].score))
+    ranked = ranked[: where.limit]
     found = find_runs(session, RunFilter(limit=len(ranked)), now, ids=[i for i, _ in ranked])
     summaries = {s.run.id: s for s in found}
-    meaning, by_word = set(by_meaning), set(by_words)
+    meaning, by_word = set(by_meaning), set(word_ranked)
     hits: list[Hit] = []
     for run_id, top in ranked:
         text_id = top.id

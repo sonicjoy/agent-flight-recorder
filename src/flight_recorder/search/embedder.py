@@ -91,6 +91,39 @@ class FastEmbedder:
         return [float(x) for x in vector]
 
 
+class NamedEmbedder:
+    """Any fastembed text model by name, loaded on first use: for comparing models in the
+    retrieval check (#14), never for stored vectors. Unlike bge-small it isn't pinned to a
+    revision, so it downloads whatever fastembed's catalogue names."""
+
+    def __init__(self, model: str) -> None:
+        self.model = model
+        self._loaded: TextEmbedding | None = None
+        self._prefix = QUERY_PREFIX if "bge-" in model.lower() else ""
+
+    def _engine(self) -> TextEmbedding:
+        if self._loaded is None:
+            from fastembed import TextEmbedding  # pyright: ignore[reportMissingTypeStubs]
+
+            from flight_recorder.settings import Settings
+
+            self._loaded = TextEmbedding(self.model, cache_dir=str(Settings().afr_home / "models"))
+        return self._loaded
+
+    def documents(self, texts: Sequence[str]) -> list[list[float]]:
+        vectors = self._engine().embed(list(texts), batch_size=BATCH)
+        return [[float(x) for x in vector] for vector in vectors]
+
+    def query(self, value: str) -> list[float]:
+        (vector,) = self._engine().embed([self._prefix + value])
+        return [float(x) for x in vector]
+
+
+def named_embedder(model: str) -> Embedder:
+    """A fastembed model by name, for comparisons (tests swap in a fake)."""
+    return NamedEmbedder(model)
+
+
 def default_embedder() -> Embedder:
     """The embedder the commands use (tests swap in a fake)."""
     return FastEmbedder()
