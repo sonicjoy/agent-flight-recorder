@@ -126,6 +126,18 @@ def test_an_unavailable_recorder_keeps_events(tmp_path: Path) -> None:
     assert [e["hook"]["tool_use_id"] for e in spooled(tmp_path)] == ["t1"]
 
 
+def test_a_spool_line_that_is_not_an_event_is_skipped(tmp_path: Path, recorder: Recorder) -> None:
+    """A damaged spool (a hand edit, a bad disk) loses that line, not the events after it."""
+    run(event(1), config(tmp_path))  # recorder down: spooled
+    with (tmp_path / "spool.jsonl").open("a", encoding="utf-8") as spool:
+        spool.write("[1, 2]\n42\n")
+
+    run(event(2), config(tmp_path, recorder.url))
+
+    sent = [e["hook"]["tool_use_id"] for batch in recorder.batches for e in batch]
+    assert sent == ["t1", "t2"]
+
+
 def test_the_spool_keeps_its_cap_dropping_the_oldest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

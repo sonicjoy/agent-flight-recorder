@@ -269,9 +269,11 @@ def _claim_backlog(home: Path) -> tuple[list[Path], list[dict[str, Any]]]:
             continue
         for line in lines:
             try:
-                events.append(json.loads(line))
+                spooled = json.loads(line)
             except ValueError:
                 continue
+            if isinstance(spooled, dict):  # a damaged line is skipped, as the server would
+                events.append(cast("dict[str, Any]", spooled))
     return claimed, events
 
 
