@@ -84,11 +84,30 @@ def prefixed_assignments() -> dict[str, tuple[str, str]]:
         "camelCase token": 'authToken: "{}"',
         "dotted": "spring.datasource.password={}",
         "kebab": "--db-password={}",
+        # near-misses: a flag and its value, other assignment operators, more names
+        "flag then a space": "docker login --password {} registry",
+        "kebab flag then a space": "tool --db-password {} --verbose",
+        "mysql -p": "mysql -uroot -h db -p{} app",
+        "Go :=": 'password := "{}"',
+        "Ruby and PHP =>": "'password' => '{}'",
+        "annotated default": 'password: str = "{}"',
+        "acronym prefix": "DBPassword={}",
+        "trailing digit": "PASSWORD1={}",
+        "short suffix": "DB_PASS={}",
+        "passphrase": "SSH_PASSPHRASE={}",
+        "private key": "PRIVATE_KEY={}",
+        "k8s env, YAML": "- name: DB_PASSWORD\n  value: {}",
+        "k8s env, JSON": '{{"name": "DB_PASSWORD", "value": "{}"}}',
     }
     cases: dict[str, tuple[str, str]] = {}
     for label, shape in names.items():
         secret = value()
         cases[label] = (shape.format(secret), secret)
+    # punctuation that generated passwords hold: the value doesn't stop at it
+    semicolon = "Tr0ub;&4dor{" + random_text(6) + "}x"
+    cases["; and braces after ="] = (f"DB_PASSWORD={semicolon}", semicolon)
+    comma = "P@ss,word;" + random_text(6)
+    cases[", and ; after a colon"] = (f"password: {comma}", comma)
     return cases
 
 

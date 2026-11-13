@@ -172,9 +172,25 @@ def test_a_key_name_with_a_prefix_is_still_a_key_name(redactor: Redactor, label:
 
     result, counts = redact(redactor, f"before {text}\nafter")  # `key: value` runs to the end
 
-    assert secret not in result
-    assert result.startswith("before ") and result.endswith("\nafter")
+    # the whole value, not cut short at its punctuation, and nothing else
+    placeholder = redactor.placeholder("secret_assignment", secret)
+    assert result == f"before {text.replace(secret, placeholder)}\nafter"
     assert counts == Counter({"secret_assignment": 1})
+
+
+@pytest.mark.parametrize("label", sorted(prefixed_assignments()))
+def test_a_key_name_with_a_prefix_is_still_a_key_name_inside_a_json_string(
+    redactor: Redactor, label: str
+) -> None:
+    """OTel sends messages as a JSON string: quotes arrive escaped and a line break as \\n."""
+    text, secret = prefixed_assignments()[label]
+    encoded = json.dumps([{"content": f"before {text}\nafter"}])
+
+    result, counts = redact(redactor, encoded)
+
+    assert secret not in result
+    assert counts == Counter({"secret_assignment": 1})
+    assert json.loads(result)[0]["content"].startswith("before ")  # still valid JSON
 
 
 @pytest.mark.parametrize("key", sorted(in_dicts()))
@@ -201,10 +217,45 @@ def test_values_under_keys_that_only_look_like_secrets_are_kept(redactor: Redact
         "password": "",
         "auth_token": "null",  # says there is none
         "token": None,
-        "api_key": 12345678901,  # not a string
+        "api_key": True,  # a setting, not a secret
+        "env": [{"name": "DB_USER", "value": "app"}, {"name": "PASSWORD_FILE", "value": "/run/x"}],
     }
 
     assert redactor.redact(value).value == value
+
+
+def test_numbers_lists_and_name_value_pairs_under_a_secret_are_redacted(
+    redactor: Redactor,
+) -> None:
+    """A numeric PIN, a list of keys, and Kubernetes or ECS env entries, where the name and
+    the value are separate fields."""
+    value = {
+        "password": 12345678,
+        "api_keys": ["Corr3ctHorse9", "Battery5taple"],
+        "env": [
+            {"name": "DB_PASSWORD", "value": "Tr0ub4dor3x"},
+            {"name": "DB_USER", "value": "app"},
+            {"key": "apiToken", "value": "Wr0ngHorse7"},
+        ],
+    }
+
+    result = redactor.redact(value)
+
+    secret = redactor.placeholder
+    assert result.value == {
+        "password": secret("secret_assignment", "12345678"),
+        "api_keys": [
+            secret("secret_assignment", "Corr3ctHorse9"),
+            secret("secret_assignment", "Battery5taple"),
+        ],
+        "env": [
+            {"name": "DB_PASSWORD", "value": secret("secret_assignment", "Tr0ub4dor3x")},
+            {"name": "DB_USER", "value": "app"},
+            {"key": "apiToken", "value": secret("secret_assignment", "Wr0ngHorse7")},
+        ],
+    }
+    assert result.counts == Counter({"secret_assignment": 5})
+    assert redactor.redact(result.value).counts == Counter()  # idempotent
 
 
 # (text, the value that must go): short values, and values with spaces, after a secret's name
@@ -216,6 +267,7 @@ SHORT_OR_SPACED = {
     "phrase in single quotes": ("api_key = 'my key here'", "my key here"),
     "phrase after = in quotes": ('DB_PASSWORD="two words"', "two words"),
     "on the next line, indented (YAML)": ("password:\n  Hunter22xyz", "Hunter22xyz"),
+    "on the next line, in a JSON string": ("password:\\n  Hunter22xyz", "Hunter22xyz"),
     "starting like a type name": ("password: Str@ng123x", "Str@ng123x"),
     "starting like none": ("PASSWORD=None!Shall9", "None!Shall9"),
     "starting like true, in quotes": ('password: "True$Love99"', "True$Love99"),
@@ -247,6 +299,14 @@ def test_short_and_spaced_values_after_a_secrets_name_are_redacted(
         "def connect(secret: str):",
         "connect(password=None)",
         "fields = [token: bytes]",
+        "def connect(password: str = None):",
+        "mysql -uroot -p app",  # -p alone: mysql asks for it
+        "deploy --password-file /run/secrets/db",
+        "login --password $DB_PASSWORD",  # a variable, not its value
+        "login --password --stdin",
+        "- name: PASSWORD_FILE\n  value: /run/secrets/db",
+        "First pass: read the files",
+        "bypass=1 passthrough=yes",
     ],
 )
 def test_a_secrets_name_with_no_value_is_left_alone(redactor: Redactor, text: str) -> None:
@@ -334,6 +394,17 @@ ADVERSARIAL = {
     "escapes in an unclosed quote": 'password="' + "\\a" * 100_000,
     "many unclosed quotes": 'token="' * 40_000,
     "many names with an indented next line": "password:\n  " * 40_000,
+    "many flags": "--password " * 40_000,
+    "many kebab flags": "--a-b-c-" * 40_000 + "password x",
+    "many mysql words": "mysql " * 60_000,
+    "mysql with many arguments": "mysql" + " -u" * 100_000,
+    "many env names": "- name: DB_PASSWORD\n  " * 30_000,
+    "many env names, JSON": '{"name": "DB_PASSWORD", ' * 30_000,
+    "many operators": "password :=" * 20_000 + "password =>" * 20_000,
+    "acronym humps": "ABPassword" * 40_000,
+    "many escaped line breaks": "password:\\n  " * 40_000 + "name: a_token\\n" * 20_000,
+    "many annotations": "password: str" * 40_000,
+    "punctuation runs": "password=" + "a;" * 100_000,
 }
 
 

@@ -20,14 +20,14 @@ from typing import Any
 from flight_recorder.redact.patterns import (
     PATTERNS,
     PLACEHOLDER_PREFIX,
-    SECRET_NAME,
+    SECRET_KEY,
     Pattern,
     is_a_value,
 )
 
 FINGERPRINT_CHARS = 8  # 32 bits: collisions are unlikely among one install's secrets
 KEY_PATTERN = "secret_assignment"  # a value under a secret's key: the same kind of secret
-_SECRET_KEY = re.compile(SECRET_NAME + r"\W*+$")  # the key ends in a secret's name
+NAME_FIELDS = ("name", "key")  # {"name": "DB_PASSWORD", "value": ...}: Kubernetes, ECS
 
 
 @dataclass
@@ -70,26 +70,37 @@ class Redactor:
     def value(self, value: Any, counts: Counter[str]) -> Any:
         """Redact every string at any depth, dict keys included. Other values pass through.
 
-        A string under a key that names a secret ({"password": "..."}, {"DB_PASSWORD": ...})
-        is replaced whole: the key isn't in the value's text, so no pattern would see it.
+        A string or number under a key that names a secret ({"password": "..."},
+        {"DB_PASSWORD": 1234}), or in a list there, is replaced whole: the key isn't in the
+        value's text, so no pattern would see it. So is the value of an entry whose name
+        field names a secret ({"name": "DB_PASSWORD", "value": "..."}).
         """
         if isinstance(value, str):
             return self.text(value, counts)
         if isinstance(value, dict):
             items: dict[Any, Any] = value  # pyright: ignore[reportUnknownVariableType]
-            return {self.value(k, counts): self._under(k, v, counts) for k, v in items.items()}
+            named = next((items[f] for f in NAME_FIELDS if isinstance(items.get(f), str)), None)
+            return {
+                self.value(k, counts): self._under(named if k == "value" else k, v, counts)
+                for k, v in items.items()
+            }
         if isinstance(value, list | tuple):
             sequence: list[Any] | tuple[Any, ...] = value  # pyright: ignore[reportUnknownVariableType]
             return [self.value(v, counts) for v in sequence]
         return value
 
     def _under(self, key: Any, value: Any, counts: Counter[str]) -> Any:
+        if not (isinstance(key, str) and SECRET_KEY.search(key)):
+            return self.value(value, counts)
+        if isinstance(value, list | tuple):
+            sequence: list[Any] | tuple[Any, ...] = value  # pyright: ignore[reportUnknownVariableType]
+            return [self._under(key, v, counts) for v in sequence]
+        if isinstance(value, int | float) and not isinstance(value, bool):  # a PIN, a number
+            value = str(value)
         if (
-            isinstance(key, str)
-            and isinstance(value, str)
+            isinstance(value, str)
             and is_a_value(value)
             and not value.startswith(PLACEHOLDER_PREFIX)
-            and _SECRET_KEY.search(key)
         ):
             counts[KEY_PATTERN] += 1
             return self.placeholder(KEY_PATTERN, value)
