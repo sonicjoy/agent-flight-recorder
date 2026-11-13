@@ -27,7 +27,7 @@ from sqlalchemy.exc import TimeoutError as PoolTimeout
 from starlette.concurrency import run_in_threadpool
 
 from flight_recorder.ingest import otlp
-from flight_recorder.ingest.claude_code import EventError, apply_event
+from flight_recorder.ingest.claude_code import EventError, apply_event, items_over_limit
 from flight_recorder.ingest.mapping import MappingError, map_trace, traces
 from flight_recorder.redact import Redactor
 from flight_recorder.store.db import session_scope
@@ -120,18 +120,25 @@ def _ingest_claude_code(engine: Engine, redactor: Redactor, body: bytes) -> Resp
 
     valid = [cast("dict[str, Any]", e) for e in events if isinstance(e, dict)]
     ordered = sorted(valid, key=fired_at)
-    accepted, reasons = 0, list[str]()
+    accepted, dropped, reasons = 0, 0, list[str]()
     for event in ordered:
         try:
             with session_scope(engine) as session:
                 apply_event(session, redactor, event)
             accepted += 1
+            dropped += items_over_limit(event)
         except Exception as error:  # one event's problem; the others are still applied
             if _database_unavailable(error):  # the hook keeps the events and sends them again
                 return _unavailable(error)
             reasons.append(str(error) if isinstance(error, EventError) else _reason(error))
-    rejected = len(events) - accepted
-    return JSONResponse({"accepted": accepted, "rejected": rejected, "errors": reasons[:20]})
+    reply: dict[str, Any] = {
+        "accepted": accepted,
+        "rejected": len(events) - accepted,
+        "errors": reasons[:20],
+    }
+    if dropped:  # usage or decision entries past MAX_ITEMS in an accepted event
+        reply["dropped_items"] = dropped
+    return JSONResponse(reply)
 
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]"})

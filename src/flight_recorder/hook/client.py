@@ -6,12 +6,18 @@ It must never get in Claude Code's way:
 - Fails open: every error is caught and logged (without content) to <AFR_HOME>/hook.log,
   and it always exits 0, which never blocks anything. It prints nothing, to stdout or
   stderr: an async hook's output reaches the model on its next turn.
+- A turn end (Stop, SubagentStop, SessionEnd) carries the model responses and permission
+  decisions written since the last one ("items"). It is sent as one or more parts, each a
+  whole event with at most EVENT_ITEMS items and EVENT_BYTES, which the recorder merges, so
+  no single event can outgrow a request or the timeout. One hook reads at most READ_ITEMS
+  items; the rest waits for the next turn end.
 - If the recorder is down, the event is kept in <AFR_HOME>/spool.jsonl. Later async events
-  send the backlog first, oldest first, in chunks small enough to finish within the timeout
-  and under the server's size limit. A chunk the server refuses outright (a 4xx) is dropped
-  and logged rather than retried for ever. The spool keeps at most MAX_SPOOL_BYTES, newest
-  events first. A hook killed mid-send leaves its claimed batch behind; the next hook picks
-  it up once it's stale.
+  send the backlog first, oldest first, in chunks that are estimated to finish well within
+  the timeout (EVENT_SECONDS per event, ITEM_SECONDS per item) and are under the server's
+  size limit. A chunk the server refuses outright (a 4xx) is dropped and logged rather than
+  retried for ever. The spool keeps at most MAX_SPOOL_BYTES, dropping the oldest events.
+  A hook killed mid-send leaves its claimed batch behind; the next hook picks it up once
+  it's stale. Whatever is dropped, by the hook or the recorder, is logged.
 
 Before sending or spooling, it redacts (the first pass; the server redacts again) and caps
 each string at MAX_FIELD_CHARS, since a tool can return a whole file. The counts of what it
@@ -35,7 +41,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from flight_recorder.hook.install import SYNC_EVENTS
 from flight_recorder.hook.transcript import TranscriptRead, read_new
@@ -44,10 +50,20 @@ from flight_recorder.redact.redactor import Redactor
 
 MAX_FIELD_CHARS = 32_768
 MAX_SPOOL_BYTES = 20 * 1024 * 1024
-CHUNK_EVENTS = 50  # the server applies ~60 events a second: a chunk fits the timeout
+# A turn end's responses and decisions ("items") go in parts of at most this many, and an
+# event of at most this size. tests/ingest/test_limits.py checks that the limits agree.
+EVENT_ITEMS = 100
+EVENT_BYTES = 2 * 1024 * 1024
+READ_ITEMS = 1_000  # read from a transcript by one hook; the rest waits for the next turn end
+# The recorder's time to apply an event, and each item in it: measured on Windows with a
+# local Postgres (an ordinary event 20 to 28 ms, a response 4 to 6 ms), rounded up.
+EVENT_SECONDS = 0.03
+ITEM_SECONDS = 0.008
+CHUNK_SECONDS = 2.0  # a chunk's estimated time, with headroom under SEND_TIMEOUT_SECONDS
+CHUNK_EVENTS = 50
 CHUNK_BYTES = 4 * 1024 * 1024  # well under the server's 10 MB request limit
 SEND_TIMEOUT_SECONDS = 3.0
-SYNC_SEND_TIMEOUT_SECONDS = 0.5  # SessionEnd is synchronous; a local recorder answers in ms
+SYNC_SEND_TIMEOUT_SECONDS = 0.5  # SessionEnd is synchronous; it sends one bare event
 STALE_CLAIM_SECONDS = 120  # a claimed batch older than this was left by a killed hook
 DEFAULT_URL = "http://127.0.0.1:4318/v1/claude-code/events"
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
@@ -93,28 +109,94 @@ def cap(value: Any) -> Any:
     return value
 
 
-def build_event(
+def build_events(
     payload: dict[str, Any], config: HookConfig, redactor: Redactor
-) -> tuple[dict[str, Any], TranscriptRead | None]:
-    """The hook payload, plus when it fired and any new token usage, redacted and capped.
+) -> tuple[list[dict[str, Any]], TranscriptRead | None]:
+    """The hook payload, plus when it fired and any new token usage, redacted and capped: one
+    event, or for a turn end its parts (see _split).
 
-    Also returns the transcript read, to commit once the event is safely sent or spooled.
+    Also returns the transcript read, to commit once the events are safely sent or spooled.
     """
+    name = str(payload.get("hook_event_name"))
     event: dict[str, Any] = {"received_at": time.time(), "hook": payload}
     read = None
-    if (key := TURN_END.get(str(payload.get("hook_event_name")))) and payload.get(key):
-        read = read_new(
-            Path(str(payload[key])),
-            config.home / "hook-state",
-            include_sidechain=key == "agent_transcript_path",
-        )
-        event["usage"] = read.usage
-        event["permissions"] = read.permissions
+    if (key := TURN_END.get(name)) and payload.get(key):
+        try:
+            read = read_new(
+                Path(str(payload[key])),
+                config.home / "hook-state",
+                include_sidechain=key == "agent_transcript_path",
+                max_items=READ_ITEMS,
+            )
+        except Exception as error:  # the turn still ends; only its token usage is missing
+            _log(config.home, f"could not read the transcript ({type(error).__name__}): {name}")
+        event["usage"] = read.usage if read else []
+        event["permissions"] = read.permissions if read else []
+        if read is not None and read.more:
+            _log(config.home, f"read {_items(event)} transcript items ({name}); rest next time")
     event["hook"] = {k: v for k, v in payload.items() if k not in PATH_KEYS}
     redacted = redactor.redact(event)
     event = cap(redacted.value)
     event["client_redactions"] = dict(redacted.counts)
-    return event, read
+    if "usage" not in event:
+        return [event], read
+    parts, cut = _split(event)
+    if cut:
+        _log(config.home, f"dropped the output of {cut} model responses too big to send")
+    if name in SYNC_EVENTS and _items(event):  # its own event first, alone: it must be quick
+        parts.insert(0, event | {"usage": [], "permissions": []})
+    return parts, read
+
+
+def _items(event: dict[str, Any]) -> int:
+    """How many responses and decisions an event carries: the recorder's work is per item."""
+    lists = (event.get("usage"), event.get("permissions"))
+    return sum(len(cast("list[Any]", v)) for v in lists if isinstance(v, list))
+
+
+def estimated_seconds(events: list[dict[str, Any]]) -> float:
+    """What the recorder is expected to take to apply these events."""
+    return sum(EVENT_SECONDS + ITEM_SECONDS * _items(e) for e in events)
+
+
+def _size(value: Any) -> int:
+    return len(json.dumps(value))
+
+
+def _split(event: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+    """A turn end as parts of at most EVENT_ITEMS items and EVENT_BYTES: each is the same
+    event with some of its items, and the recorder merges them. A response too big for any
+    part keeps its tokens but not its output. Returns the parts and how many outputs were
+    cut. Events spooled by an older hook are split the same way when they are sent."""
+    usage, permissions = event.get("usage"), event.get("permissions")
+    every = [("usage", u) for u in (cast("list[Any]", usage) if isinstance(usage, list) else [])]
+    every += [
+        ("permissions", p)
+        for p in (cast("list[Any]", permissions) if isinstance(permissions, list) else [])
+    ]
+    base: dict[str, Any] = {**event, **_empty()}
+    room = EVENT_BYTES - _size(base)
+    parts: list[dict[str, Any]] = []
+    current: dict[str, list[Any]] = _empty()
+    count = size = cut = 0
+    for kind, item in every:
+        length = _size(item) + 2  # and its separator
+        if length > room and kind == "usage" and isinstance(item, dict):
+            dropped = f"[output dropped by the hook: {length} bytes, too big to send]"
+            item = cast("dict[str, Any]", item) | {"output": {"text": dropped}}
+            length, cut = _size(item) + 2, cut + 1
+        if count and (count >= EVENT_ITEMS or size + length > room):
+            parts.append({**base, **current})
+            current, count, size = _empty(), 0, 0
+        current[kind].append(item)
+        count, size = count + 1, size + length
+    if count or not parts:
+        parts.append({**base, **current})
+    return parts, cut
+
+
+def _empty() -> dict[str, list[Any]]:
+    return {"usage": [], "permissions": []}
 
 
 def _opener(url: str) -> urllib.request.OpenerDirector:
@@ -142,15 +224,17 @@ def _post(url: str, events: list[dict[str, Any]], timeout: float) -> dict[str, A
 
 
 def _chunks(events: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Requests that each stay within CHUNK_EVENTS, CHUNK_BYTES and CHUNK_SECONDS."""
     chunks: list[list[dict[str, Any]]] = [[]]
-    size = 0
+    size, seconds = 0, 0.0
     for event in events:
-        length = len(json.dumps(event))
-        if chunks[-1] and (len(chunks[-1]) >= CHUNK_EVENTS or size + length > CHUNK_BYTES):
+        length, cost = _size(event), estimated_seconds([event])
+        over = size + length > CHUNK_BYTES or seconds + cost > CHUNK_SECONDS
+        if chunks[-1] and (len(chunks[-1]) >= CHUNK_EVENTS or over):
             chunks.append([])
-            size = 0
+            size, seconds = 0, 0.0
         chunks[-1].append(event)
-        size += length
+        size, seconds = size + length, seconds + cost
     return chunks
 
 
@@ -191,22 +275,45 @@ def _claim_backlog(home: Path) -> tuple[list[Path], list[dict[str, Any]]]:
     return claimed, events
 
 
-def _spool(home: Path, events: list[dict[str, Any]]) -> int:
-    """Append, keeping the spool under MAX_SPOOL_BYTES (newest win). Returns how many dropped."""
-    _private_dir(home)
-    spool = home / "spool.jsonl"
-    room = MAX_SPOOL_BYTES - (spool.stat().st_size if spool.exists() else 0)
-    lines = [json.dumps(e) + "\n" for e in events]
+def _newest(lines: list[str], room: int) -> list[str]:
+    """The newest lines that fit in room bytes, oldest first."""
     kept: list[str] = []
-    for line in reversed(lines):  # newest first
+    for line in reversed(lines):
         if len(line.encode()) > room:
             break
         kept.append(line)
         room -= len(line.encode())
+    return kept[::-1]
+
+
+def _spool(home: Path, events: list[dict[str, Any]]) -> int:
+    """Append, keeping the spool under MAX_SPOOL_BYTES by dropping its oldest events, whether
+    this hook claimed the spool (async events) or not (SessionEnd). Returns how many dropped."""
+    _private_dir(home)
+    spool = home / "spool.jsonl"
+    lines = [json.dumps(e) + "\n" for e in events]
+    held = spool.stat().st_size if spool.exists() else 0
+    if held + sum(len(line.encode()) for line in lines) > MAX_SPOOL_BYTES:
+        try:  # full: rewrite it without its oldest events
+            every = spool.read_text(encoding="utf-8").splitlines(keepends=True) + lines
+            kept = _newest(every, MAX_SPOOL_BYTES)
+            partial = home / f"spool.jsonl.{os.getpid()}.tmp"
+            fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as file:
+                file.writelines(kept)
+            os.replace(partial, spool)  # an append by another hook at this moment is lost
+            return len(every) - len(kept)
+        except OSError:  # held open elsewhere (Windows): keep what still fits after it
+            pass
+    kept = _newest(lines, MAX_SPOOL_BYTES - (spool.stat().st_size if spool.exists() else 0))
     fd = os.open(spool, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(fd, "a", encoding="utf-8") as file:
-        file.writelines(reversed(kept))
+        file.writelines(kept)
     return len(lines) - len(kept)
+
+
+def _count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def _log(home: Path, message: str) -> None:
@@ -218,20 +325,25 @@ def _log(home: Path, message: str) -> None:
         pass
 
 
-def _deliver(config: HookConfig, event: dict[str, Any], name: str) -> None:
-    """Send the backlog (async events only) and this event; spool whatever didn't get through."""
+def _deliver(config: HookConfig, events: list[dict[str, Any]], name: str) -> None:
+    """Send the backlog (async events only) and these events; spool whatever didn't get
+    through. SessionEnd sends only its first event, alone, and spools any other parts."""
     sync = name in SYNC_EVENTS
     try:
         claimed, backlog = ([], []) if sync else _claim_backlog(config.home)
-    except OSError as error:  # can't read the spool: still send or spool this event
+    except OSError as error:  # can't read the spool: still send or spool these events
         _log(config.home, f"could not read the spool: {type(error).__name__}")
         claimed, backlog = [], []
-    pending = [*backlog, event]
+    backlog = [part for event in backlog for part in _split(event)[0]]
+    pending = [*backlog, *events]
     timeout = SYNC_SEND_TIMEOUT_SECONDS if sync else SEND_TIMEOUT_SECONDS
-    sent = rejected = refused = 0
+    chunks = [[e] for e in pending] if sync else _chunks(pending)
+    limit = 1 if sync else MAX_CHUNKS_PER_HOOK
+    sent = rejected = refused = cut = 0
+    reasons: set[str] = set()
     failure = ""
-    for number, chunk in enumerate(_chunks(pending)):
-        if number == MAX_CHUNKS_PER_HOOK:  # leave the rest for the next hook
+    for number, chunk in enumerate(chunks):
+        if number == limit:  # leave the rest for the next hook
             failure = "deferred"
             break
         try:
@@ -245,7 +357,12 @@ def _deliver(config: HookConfig, event: dict[str, Any], name: str) -> None:
             failure = type(error).__name__
             break
         sent += len(chunk)
-        rejected += int(reply.get("rejected") or 0)
+        rejected += _count(reply.get("rejected"))
+        cut += _count(reply.get("dropped_items"))
+        errors = reply.get("errors")
+        reasons |= (
+            {str(e) for e in cast("list[Any]", errors)} if isinstance(errors, list) else set()
+        )
     unsent = pending[sent:]
     if unsent:
         dropped = _spool(config.home, unsent)
@@ -259,8 +376,11 @@ def _deliver(config: HookConfig, event: dict[str, Any], name: str) -> None:
             _log(config.home, f"spool full: dropped the {dropped} oldest events")
     for path in claimed:  # only now: a hook killed before this leaves them for the next one
         path.unlink(missing_ok=True)
-    if rejected:
-        _log(config.home, f"recorder rejected {rejected} events (see the recorder's reply)")
+    if rejected:  # the recorder's reasons are field and type names, never data
+        why = "; ".join(sorted(reasons))[:500] or "no reason given"
+        _log(config.home, f"recorder rejected {rejected} events: {why}")
+    if cut:
+        _log(config.home, f"recorder dropped {cut} usage or decision items over its limit")
     if backlog and sent > refused:
         _log(config.home, f"sent {min(len(backlog), sent)} spooled events")
 
@@ -277,12 +397,12 @@ def run(stdin_text: str, config: HookConfig | None = None) -> None:
         if not payload.get("session_id") or not isinstance(name, str) or not name:  # pyright: ignore[reportUnknownMemberType]
             raise ValueError("hook input has no session_id or hook_event_name")
         redactor = Redactor(key_from(config.key, config.home / KEY_NAME))
-        event, read = build_event(payload, config, redactor)  # pyright: ignore[reportUnknownArgumentType]
+        events, read = build_events(payload, config, redactor)  # pyright: ignore[reportUnknownArgumentType]
     except Exception as error:  # never let a bad event or key reach Claude Code
         _log(config.home, f"skipped event: {type(error).__name__}")
         return
     try:
-        _deliver(config, event, name)
+        _deliver(config, events, name)
         if read is not None:
             read.commit()  # sent or spooled: the transcript lines are safe to skip next time
     except Exception as error:

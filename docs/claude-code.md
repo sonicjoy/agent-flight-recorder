@@ -24,10 +24,10 @@ It refuses to install in your home folder, which would amount to user-level sett
 |---|---|
 | Async | Every event except SessionEnd runs as an `async` hook, so Claude Code doesn't wait for it. SessionEnd runs once, at exit: it sends only its own event (no backlog), with a 0.5 s send timeout, well inside the 1.5 s Claude Code allows SessionEnd hooks. It stays synchronous because under `claude -p` Claude Code kills async hooks still running at exit, and the run would then never be closed |
 | Fails open | The hook always exits 0, so it never blocks anything. It prints nothing; an async hook's output would reach the model. Errors go to `~/.afr/hook.log`, without content |
-| Recorder down | Events are kept in `~/.afr/spool.jsonl` and sent, oldest first, by the next async event that gets through. A backlog goes in chunks of at most 50 events and 4 MB, so each chunk finishes within the timeout and under the recorder's 10 MB request limit |
+| Recorder down | Events are kept in `~/.afr/spool.jsonl` and sent, oldest first, by the next async event that gets through. A backlog goes in chunks of at most 50 events, 4 MB and an estimated 2 s of the recorder's time (30 ms per event, 8 ms per model response or decision, measured on Windows and rounded up), so each chunk finishes within the 3 s timeout and under the recorder's 10 MB request limit. `tests/ingest/test_limits.py` checks these limits against each other and times a full chunk against the real app |
 | Refused | If the recorder refuses the events themselves (400, 413 or 422), they're dropped and logged, not retried for ever. Anything else, such as a 404 from an older recorder, a 421 from a host name in `AFR_HOOK_URL`, a 5xx or no answer, keeps them. One hook sends at most 10 chunks; a bigger backlog carries on with the next hook, so progress is never lost |
-| Capped | The spool keeps at most 20 MB, newest events first; anything dropped is logged |
-| Crash-safe | A hook killed mid-send leaves its batch claimed; the next hook sends it once it's two minutes old. A turn end's transcript position is saved only once its event is sent or spooled, so a killed hook's token usage is read again later. Transcript paths aren't sent: the recorder doesn't need them |
+| Capped | The spool keeps at most 20 MB, dropping its oldest events, also when SessionEnd is the event that doesn't fit; anything dropped is logged |
+| Crash-safe | A hook killed mid-send leaves its batch claimed; the next hook sends it once it's two minutes old. A turn end's transcript position is saved only once all its parts are sent or spooled, and only as far as they reach, so a killed hook's token usage is read again later. Transcript paths aren't sent: the recorder doesn't need them |
 | Isolated | The hook runs as `python -I -m flight_recorder.hook`. Claude Code runs hooks in the project folder, and without `-I` a file such as `json.py` or `hmac.py` there would replace the standard module and run, as you, on every event, outside Claude Code's approvals |
 | Cost per event | About 260 ms of process time in the background (measured on Windows), or about 0.7 s for SessionEnd when the recorder is down |
 
@@ -70,10 +70,12 @@ A turn that ends in an API error (StopFailure) is marked `error`.
 
 ## Tokens and cost
 
-Hooks don't carry token counts; the session transcript does. At each turn end (Stop, SubagentStop and SessionEnd), the hook reads the transcript lines written since last time and sends one entry per model response:
+Hooks don't carry token counts; the session transcript does. At each turn end (Stop, SubagentStop and SessionEnd), the hook reads the transcript lines written since last time and sends one entry per model response, and the permission decisions (together, "items"):
 - **Tokens:** input, output, cache reads, and 5-minute and 1-hour cache writes.
 - **Fast mode,** if used.
 - **Repeated lines** are counted once: a response can span several transcript lines.
+
+**A turn end goes in parts.** Each part is the same hook event with at most 100 items and 2 MB; the recorder merges them, so a long turn can't outgrow the timeout or the 10 MB request limit, and nothing is cut or refused whole. A response too big for any part (its tool calls' inputs over 2 MB) keeps its tokens, and its output is replaced by a note saying so. One hook reads at most 1,000 items; the position is saved there and the next turn end carries on. That matters for a session started before the hooks were installed: its first turn end reads from the beginning of its transcript, a page at a time. SessionEnd sends its own event first, alone, so the run is closed within its 0.5 s, and leaves the responses it read to the next async event. What is still dropped is logged in `hook.log`: an output too big to send, items past what one read takes, events the recorder rejected (with its reasons, which are field and type names, never content) and items the recorder cut. The recorder takes at most 1,000 items per event, and its reply's `dropped_items` counts any past that.
 
 The recorder stores each response as an `llm` span and prices it at Claude's API rates, cache included ([llm-providers.md](llm-providers.md)). On a subscription, that's the API-equivalent cost, not what you paid.
 

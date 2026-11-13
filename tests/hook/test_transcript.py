@@ -190,3 +190,29 @@ def test_claude_codes_own_messages_are_not_model_calls(tmp_path: Path) -> None:
     write(transcript, synthetic, response("msg_real", 5))
 
     assert [u["message_id"] for u in new_usage(transcript, tmp_path / "state")] == ["msg_real"]
+
+
+def test_a_read_stops_after_a_page_of_items_and_the_next_read_carries_on(tmp_path: Path) -> None:
+    """A session that predates the hooks: its first turn end would read the whole transcript."""
+    transcript, state = tmp_path / "session.jsonl", tmp_path / "state"
+    write(transcript, *(response(f"msg_{n}", 1) for n in range(25)))
+
+    first = read_new(transcript, state, max_items=10)
+    first.commit()
+    second = read_new(transcript, state, max_items=10)
+    second.commit()
+    third = read_new(transcript, state, max_items=10)
+
+    pages = [[u["message_id"] for u in r.usage] for r in (first, second, third)]
+    assert pages == [[f"msg_{n}" for n in range(i, min(i + 10, 25))] for i in (0, 10, 20)]
+    assert (first.more, second.more, third.more) == (True, True, False)
+
+
+def test_a_damaged_position_reads_from_the_start(tmp_path: Path) -> None:
+    transcript, state = tmp_path / "session.jsonl", tmp_path / "state"
+    write(transcript, response("msg_1", 1))
+    new_usage(transcript, state)
+    [saved] = state.glob("*.json")
+    saved.write_text('{"offset": -1}', encoding="utf-8")
+
+    assert [u["message_id"] for u in new_usage(transcript, state)] == ["msg_1"]

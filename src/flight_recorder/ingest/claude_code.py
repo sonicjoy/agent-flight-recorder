@@ -389,7 +389,14 @@ def _placeholders(
     return added
 
 
-MAX_ITEMS = 1_000  # usage or decisions per event: far more than one turn has
+MAX_ITEMS = 1_000  # usage or decisions per event; the hook sends at most 100 (EVENT_ITEMS)
+
+
+def items_over_limit(event: Mapping[str, Any]) -> int:
+    """How many usage and decision entries past MAX_ITEMS this event's lists hold: they are
+    not applied, and the reply says how many (dropped_items)."""
+    lists = (event.get("usage"), event.get("permissions"))
+    return sum(max(0, len(cast("list[Any]", v)) - MAX_ITEMS) for v in lists if isinstance(v, list))
 
 
 def _items(value: Any) -> list[dict[str, Any]]:

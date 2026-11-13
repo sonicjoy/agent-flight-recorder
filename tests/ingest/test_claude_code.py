@@ -951,3 +951,14 @@ def test_an_out_of_range_time_in_the_transcript_is_unknown(
 
     assert client.post(URL, json={"events": [stop]}).json()["rejected"] == 0
     assert "llm:msg_1" in stored(store)[1]
+
+
+def test_items_past_the_limit_are_reported_not_dropped_silently(
+    client: TestClient, store: Engine
+) -> None:
+    many = [usage(f"msg_{n}") for n in range(1_500)]
+
+    reply = client.post(URL, json={"events": [ev("Stop", 5, prompt_id="p1", usage=many)]}).json()
+
+    assert reply["dropped_items"] == 500
+    assert sum(1 for s in stored(store)[1] if s.startswith("llm:")) == 1_000
