@@ -66,3 +66,37 @@ def in_context() -> dict[str, tuple[str, str]]:
         "connection_password": (f"postgresql://app:{password}@db.internal:5432/runs", password),
         "secret_assignment": (f'{{"api_key": "{assigned}"}}', assigned),
     }
+
+
+def prefixed_assignments() -> dict[str, tuple[str, str]]:
+    """secret_assignment with the key name spelled as in .env files and code: a prefix
+    (DB_PASSWORD, STRIPE_API_KEY) or camelCase (dbPassword). Label -> (text, secret)."""
+
+    def value() -> str:
+        return "Tr0ub4dor-" + random_text(10)
+
+    names = {
+        "env prefix": "DB_PASSWORD={}",
+        "yaml prefix": "POSTGRES_PASSWORD: {}",
+        "jwt secret": "JWT_SECRET={}",
+        "api key with prefix": "STRIPE_API_KEY={}",
+        "camelCase": "dbPassword={}",
+        "camelCase token": 'authToken: "{}"',
+        "dotted": "spring.datasource.password={}",
+        "kebab": "--db-password={}",
+    }
+    cases: dict[str, tuple[str, str]] = {}
+    for label, shape in names.items():
+        secret = value()
+        cases[label] = (shape.format(secret), secret)
+    return cases
+
+
+def in_dicts() -> dict[str, tuple[dict[str, str], str]]:
+    """Secrets under a key that names them, as tool inputs and outputs carry them: the
+    value alone has no recognisable shape. Label -> (value, secret)."""
+    cases: dict[str, tuple[dict[str, str], str]] = {}
+    for key in ("password", "api_key", "token", "DB_PASSWORD", "clientSecret", "auth-token"):
+        secret = "Corr3ctHorse" + random_text(8)
+        cases[key] = ({"user": "app", key: secret}, secret)
+    return cases

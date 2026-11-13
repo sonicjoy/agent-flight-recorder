@@ -8,7 +8,7 @@ from collections.abc import Callable, Generator
 from typing import Any
 
 import pytest
-from fake_secrets import secrets_by_kind
+from fake_secrets import in_dicts, secrets_by_kind
 from fastapi.testclient import TestClient
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceResponse
 from opentelemetry.trace import Tracer
@@ -121,6 +121,32 @@ def test_batches_of_one_trace_merge_and_link(client: TestClient, store: Engine) 
     root_row = next(s for s in stored if s.parent_id is None)
     assert run.name == root_row.name and run.status == "ok"
     assert all(s.parent_id == root_row.id for s in stored if s is not root_row)
+
+
+def test_a_secret_in_tool_arguments_sent_as_json_text_is_redacted(
+    client: TestClient, store: Engine
+) -> None:
+    """The mapping parses a JSON-string attribute into the span's input, so the value
+    arrives alone under its key: {"password": "..."}, with no `password=` around it."""
+    value, secret = in_dicts()["password"]
+
+    def build(tracer: Tracer) -> None:
+        attributes = {
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.tool.name": "connect",
+            "gen_ai.tool.call.arguments": json.dumps(value),
+        }
+        with tracer.start_as_current_span("execute_tool connect", attributes=attributes):
+            pass
+
+    post(client, protobuf(record(build)))
+
+    [_], [span] = rows(store)
+    assert span.input == {
+        "user": "app",
+        "password": REDACTOR.placeholder("secret_assignment", secret),
+    }
+    assert span.redactions == {"secret_assignment": 1}
 
 
 def bad_tokens(secret: str) -> Callable[[Tracer], None]:

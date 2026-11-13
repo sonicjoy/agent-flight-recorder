@@ -17,9 +17,17 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
-from flight_recorder.redact.patterns import PATTERNS, PLACEHOLDER_PREFIX, Pattern
+from flight_recorder.redact.patterns import (
+    MIN_SECRET_CHARS,
+    PATTERNS,
+    PLACEHOLDER_PREFIX,
+    SECRET_NAME,
+    Pattern,
+)
 
 FINGERPRINT_CHARS = 8  # 32 bits: collisions are unlikely among one install's secrets
+KEY_PATTERN = "secret_assignment"  # a value under a secret's key: the same kind of secret
+_SECRET_KEY = re.compile(SECRET_NAME + r"\W*+$")  # the key ends in a secret's name
 
 
 @dataclass
@@ -60,16 +68,32 @@ class Redactor:
         return whole[:start] + self.placeholder(pattern.name, secret) + whole[end:]
 
     def value(self, value: Any, counts: Counter[str]) -> Any:
-        """Redact every string at any depth, dict keys included. Other values pass through."""
+        """Redact every string at any depth, dict keys included. Other values pass through.
+
+        A string under a key that names a secret ({"password": "..."}, {"DB_PASSWORD": ...})
+        is replaced whole: the key isn't in the value's text, so no pattern would see it.
+        """
         if isinstance(value, str):
             return self.text(value, counts)
         if isinstance(value, dict):
             items: dict[Any, Any] = value  # pyright: ignore[reportUnknownVariableType]
-            return {self.value(k, counts): self.value(v, counts) for k, v in items.items()}
+            return {self.value(k, counts): self._under(k, v, counts) for k, v in items.items()}
         if isinstance(value, list | tuple):
             sequence: list[Any] | tuple[Any, ...] = value  # pyright: ignore[reportUnknownVariableType]
             return [self.value(v, counts) for v in sequence]
         return value
+
+    def _under(self, key: Any, value: Any, counts: Counter[str]) -> Any:
+        if (
+            isinstance(key, str)
+            and isinstance(value, str)
+            and len(value) >= MIN_SECRET_CHARS
+            and not value.startswith(PLACEHOLDER_PREFIX)
+            and _SECRET_KEY.search(key)
+        ):
+            counts[KEY_PATTERN] += 1
+            return self.placeholder(KEY_PATTERN, value)
+        return self.value(value, counts)
 
     def redact(self, value: Any) -> Redaction:
         counts: Counter[str] = Counter()

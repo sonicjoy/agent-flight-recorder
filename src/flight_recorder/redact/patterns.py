@@ -62,7 +62,29 @@ def _looks_random(match: re.Match[str]) -> bool:
     return classes == 3 and _entropy(token) >= 4.0
 
 
+_IN_PLACEHOLDER = re.compile(r"\[REDACTED:[a-z_]{0,40}+$")
+
+
+def _not_a_placeholder(match: re.Match[str]) -> bool:
+    """Not the kind name inside a placeholder: [REDACTED:github_token:1a2b3c4d] ends in a
+    secret's name followed by `:` and eight characters."""
+    before = match.string[max(0, match.start() - 60) : match.start()]
+    return not _IN_PLACEHOLDER.search(before)
+
+
 _TOKEN = r"A-Za-z0-9+/_=-"  # characters of base64 and URL-safe tokens
+
+# Names of a secret, anywhere a key name may end in one: password, DB_PASSWORD, dbPassword,
+# spring.datasource.password, --db-password. The name starts where a word starts (not after
+# a letter or digit) or at a camelCase hump, and ends at a word boundary, so PASSWORD_FILE,
+# secret_name and max_tokens are not names of a secret. The lookbehinds are case-sensitive;
+# only the name itself ignores case.
+SECRET_NAME = (
+    r"(?:(?<![A-Za-z0-9])|(?<=[a-z0-9])(?=[A-Z]))"
+    r"(?i:api[_-]?key|secret[_-]?key|client[_-]?secret|secret|password|passwd|pwd"
+    r"|access[_-]?token|auth[_-]?token|token)\b"
+)
+MIN_SECRET_CHARS = 8  # shorter values after a secret's name are left alone (see docs)
 
 PATTERNS: tuple[Pattern, ...] = (
     # Unterminated keys (a truncated prompt) are redacted to the end of the text.
@@ -116,10 +138,10 @@ PATTERNS: tuple[Pattern, ...] = (
         # (\"api_key\": \"...\"), which is how OTel sends gen_ai.input.messages. The backslash
         # stays outside the secret so the JSON string remains valid after replacement.
         re.compile(
-            r"(?i)\b(?:api[_-]?key|secret[_-]?key|client[_-]?secret|secret|password|passwd|pwd"
-            r"|access[_-]?token|auth[_-]?token|token)\b(?:\\?[\"'])?\s*[:=]\s*(?:\\?[\"'])?"
-            r"(?P<secret>[^\s\"'\\,;{}]{8,}+)"
+            SECRET_NAME + r"(?:\\?[\"'])?\s*[:=]\s*(?:\\?[\"'])?"
+            rf"(?P<secret>[^\s\"'\\,;{{}}]{{{MIN_SECRET_CHARS},}}+)"
         ),
+        check=_not_a_placeholder,  # a kind name such as github_token ends in "token"
     ),
     Pattern(
         "email",

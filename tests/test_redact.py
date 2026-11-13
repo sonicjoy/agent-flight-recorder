@@ -13,7 +13,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from fake_secrets import in_context, private_key, random_text, secrets_by_kind
+from fake_secrets import (
+    in_context,
+    in_dicts,
+    prefixed_assignments,
+    private_key,
+    random_text,
+    secrets_by_kind,
+)
 from pydantic import SecretStr, ValidationError
 
 from flight_recorder.redact import PATTERNS, RedactionKeyError, Redactor, load_key
@@ -68,6 +75,9 @@ NEAR_MISSES = {
     "prose": "The agent searched three times, then decided the issue was a duplicate.",
     "port and scoped package": "npm install from http://localhost:4873/@types/node",
     "URL with no password": "https://github.com/sonicjoy/agent-flight-recorder/pull/43",
+    "names that only start with a keyword": "PASSWORD_FILE=/run/secrets/db_password_file "
+    "secret_name=prod-database-credentials tokenizer=cl100k_base_tokenizer",
+    "counts named like a keyword": "num_tokens=12345678 maxTokens=40960000",
 }
 
 
@@ -155,6 +165,47 @@ def test_structured_values_are_redacted_at_any_depth(redactor: Redactor) -> None
     assert result.counts == Counter({"openai_key": 1, "email": 1, "github_token": 1})
 
 
+@pytest.mark.parametrize("label", sorted(prefixed_assignments()))
+def test_a_key_name_with_a_prefix_is_still_a_key_name(redactor: Redactor, label: str) -> None:
+    """DB_PASSWORD=, JWT_SECRET=, dbPassword=: how .env files and code name secrets."""
+    text, secret = prefixed_assignments()[label]
+
+    result, counts = redact(redactor, f"before {text} after")
+
+    assert secret not in result
+    assert result.startswith("before ") and result.endswith(" after")
+    assert counts == Counter({"secret_assignment": 1})
+
+
+@pytest.mark.parametrize("key", sorted(in_dicts()))
+def test_a_value_under_a_secret_key_is_redacted_whole(redactor: Redactor, key: str) -> None:
+    """Tool inputs and outputs are dicts: the key that names the secret isn't in the value's
+    string, so no pattern sees `password=` and the value has no shape of its own."""
+    value, secret = in_dicts()[key]
+
+    result = redactor.redact({"tool_input": value, "list": [value]})
+
+    dumped = json.dumps(result.value)
+    assert secret not in dumped
+    assert result.value["tool_input"]["user"] == "app"  # other values kept
+    assert result.counts == Counter({"secret_assignment": 2})
+    assert redactor.redact(result.value).counts == Counter()  # idempotent
+
+
+def test_values_under_keys_that_only_look_like_secrets_are_kept(redactor: Redactor) -> None:
+    value = {
+        "max_tokens": 4096,
+        "input_tokens": "12345678",
+        "token_count": "12345678",
+        "secret_name": "prod-database-credentials",
+        "password": "short",  # under 8 characters, as for password=short
+        "token": None,
+        "api_key": 12345678901,  # not a string
+    }
+
+    assert redactor.redact(value).value == value
+
+
 ADVERSARIAL = {
     "long word": "a" * 200_000,
     "many at signs": "a@" * 100_000,
@@ -165,6 +216,10 @@ ADVERSARIAL = {
     "url-ish with at signs": "x://a:b@" * 30_000,
     "url then a long password": "x://a:" + "b" * 200_000,
     "assignments": "token=" * 40_000,
+    "prefixed assignments": "DB_PASSWORD=" * 30_000,
+    "long prefix": "a_" * 100_000 + "password=x",
+    "camelCase keywords": "aPassword" * 40_000,
+    "keyword then spaces": "password" + " " * 200_000,
 }
 
 
@@ -173,6 +228,15 @@ def test_matching_stays_fast_on_hostile_input(redactor: Redactor, text: str) -> 
     """Redaction runs on untrusted agent output; a slow regex would stall ingest."""
     started = time.perf_counter()
     redact(redactor, text)
+
+    assert time.perf_counter() - started < 2.0
+
+
+def test_dict_keys_stay_fast_on_hostile_input(redactor: Redactor) -> None:
+    value = {"a_" * 100_000 + "token": "x" * 10, "aPassword" * 40_000: "y" * 10}
+
+    started = time.perf_counter()
+    redactor.redact(value)
 
     assert time.perf_counter() - started < 2.0
 

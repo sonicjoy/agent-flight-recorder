@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from fake_secrets import in_context, secrets_by_kind
+from fake_secrets import in_context, in_dicts, prefixed_assignments, secrets_by_kind
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
@@ -45,8 +45,21 @@ def test_planted_secrets_never_reach_the_database(session: Session) -> None:
     """The canary test: a fake of every kind, in every field that takes text."""
     canaries = secrets_by_kind()
     contextual = in_context()
-    everything = " ".join(canaries.values()) + " " + " ".join(t for t, _ in contextual.values())
-    secret_parts = [*canaries.values(), *(part for _, part in contextual.values())]
+    prefixed = prefixed_assignments()
+    shaped = in_dicts()  # a tool's input or output: the key names the secret
+    everything = " ".join(
+        [
+            *canaries.values(),
+            *(t for t, _ in contextual.values()),
+            *(t for t, _ in prefixed.values()),
+        ]
+    )
+    secret_parts = [
+        *canaries.values(),
+        *(part for _, part in contextual.values()),
+        *(part for _, part in prefixed.values()),
+        *(part for _, part in shaped.values()),
+    ]
 
     run = run_in(
         agent=f"agent {canaries['email']}",
@@ -68,7 +81,10 @@ def test_planted_secrets_never_reach_the_database(session: Session) -> None:
             input_tokens=1000,
             output_tokens=65,
             input={"messages": [{"role": "user", "content": everything}]},
-            output={"content": f"Use {canaries['github_token']}"},
+            output={
+                "content": f"Use {canaries['github_token']}",
+                "tool_calls": [{"name": "connect", "input": v} for v, _ in shaped.values()],
+            },
             attributes={
                 "gen_ai.input.messages": json.dumps([{"content": everything}]),  # a JSON string
                 canaries["aws_access_key"]: "a secret used as a key",
