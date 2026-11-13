@@ -121,7 +121,8 @@ def _pick(
             if answer == QUIT:
                 raise Done
             if answer == SKIP:
-                out.print("s skips only before the first mode; press Enter for no more modes")
+                why = "s skips only before the first mode" if queue else "s isn't a mode name"
+                out.print(f"{why}; press Enter for no more modes")
                 continue
         elif answer == QUIT:
             raise Quit

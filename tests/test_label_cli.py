@@ -642,10 +642,12 @@ def test_input_ending_at_the_another_mode_prompt_keeps_the_label_and_exits_0(
     run = str(ids["wrong"]["a"][0])
 
     single = cli("label", run, input="m1\nnote\n")
-    queued = cli("label", "--next", "--attr", "triager.batch.group=c", input="m2\n\n")
+    queued = cli("label", "--next", "--attr", "triager.grade=wrong", input="m2\n\n")
 
     assert single.exit_code == 0 and queued.exit_code == 0, single.output + queued.output
     assert "labelled" in single.output
+    # the single run above is in the queue too, so it starts at 1; stopping means no 2
+    assert "1 of " in queued.output and "2 of " not in queued.output
     assert sorted(label.failure_mode for label in labels(db)) == ["m1", "m2"]
 
 
