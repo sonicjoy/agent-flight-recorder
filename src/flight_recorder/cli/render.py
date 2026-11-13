@@ -24,6 +24,8 @@ from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
 
+from flight_recorder.payloads import cut, flat
+
 if TYPE_CHECKING:
     from flight_recorder.store.read import RunSummary, SpanNode
 
@@ -91,21 +93,11 @@ def text(value: object, style: str = "") -> Text:
     return Text(clean(str(value)), style=style)
 
 
-def cut(value: str, width: int) -> str:
-    """`value` shortened to `width` characters, ending in … when it was longer."""
-    return value if len(value) <= width else value[: width - 1] + "…"
-
-
 def one_line(value: str | None, width: int) -> str:
     """The first line, cleaned and shortened to `width` characters."""
     if not value:
         return ""
     return cut(clean(value.strip().split("\n", 1)[0]), width)
-
-
-def flat(value: str) -> str:
-    """All of `value` on one line: every run of whitespace, newlines too, is one space."""
-    return " ".join(value.split())
 
 
 def tokens(count: int | None) -> str:
