@@ -536,3 +536,53 @@ def test_the_label_screen_reads_each_spans_content_once(
 
     assert CliRunner().invoke(app, ["label", str(store[1]), "--mode", "m2"]).exit_code == 0
     assert len(seen) == len(set(seen))
+
+
+# --- review round 2 ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("records", [[{"id": None, "title": None}], [{}]])
+def test_records_with_nothing_in_them_say_no_results(records: list[Any]) -> None:
+    from flight_recorder.cli import story
+
+    roots, contents = spans(("tool", "t", "q", tool_result(records)))
+
+    assert shown(story.steps(roots, lookup(contents))).rstrip().endswith("(no results)")
+
+
+def test_a_tool_with_no_recorded_output_says_so() -> None:
+    from flight_recorder.cli import story
+
+    roots, contents = spans(("tool", "Bash", "rm -rf build", None))
+
+    out = shown(story.steps(roots, lookup(contents)))
+
+    assert out.rstrip().endswith("(nothing recorded)") and "no results" not in out
+
+
+def test_newlines_in_names_ids_and_keys_dont_cut_the_line() -> None:
+    from flight_recorder.cli import story
+
+    roots, contents = spans(
+        ("llm", "m", None, answer(tool_calls=[call("f", **{"a\nb": "x", "after": "seen"})])),
+        ("tool", "t", "q", tool_result([{"id": "1\n2", "title": "kept"}])),
+        ("tool", "u", "q", tool_result({"k\nz": 1, "later": 2})),  # no strings: keys shown
+    )  # fmt: skip
+
+    out = shown(story.steps(roots, lookup(contents)))
+
+    assert "a b: x; after: seen" in out
+    assert "#1 2 kept" in out
+    assert "k z 1 later 2" in out
+
+
+def test_separator_characters_in_the_task_show_as_escapes_not_lines() -> None:
+    from flight_recorder.cli import story
+
+    odd = "one\u2028two\x0cthree\x1cfour\x85five"
+    roots, contents = spans(("llm", "m", prompt(message("human", odd)), answer("ok")))
+
+    task = shown(story.task(roots, lookup(contents)))
+
+    assert len(task.strip().splitlines()) == 1
+    assert "\\u2028" in task and "\\x0c" in task

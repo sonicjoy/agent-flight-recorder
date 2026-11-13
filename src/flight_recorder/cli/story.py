@@ -34,6 +34,7 @@ JSON_CHARS = 100_000  # longer tool results aren't parsed, only shown as text
 PLAIN_DEPTH = 20
 STEP_KINDS = ("llm", "tool")
 NO_RESULTS = "(no results)"
+NOTHING = "(nothing recorded)"  # no output at all, e.g. a refused call
 LAST = datetime.max.replace(tzinfo=UTC)
 
 
@@ -52,7 +53,9 @@ def _plain(value: Any, depth: int = 0) -> str:
     found = _dict(value)
     if found is not None:
         pairs = (
-            f"{key} {_plain(v, depth + 1)}".strip() for key, v in found.items() if v is not None
+            f"{flat(str(key))} {_plain(v, depth + 1)}".strip()
+            for key, v in found.items()
+            if v is not None
         )
         return " ".join(pairs)
     items = _list(value)
@@ -100,7 +103,9 @@ def _value(value: Any) -> str:
 def _call(tool_call: Any) -> str:
     found = _dict(tool_call) or {}
     args = _dict(found.get("args")) or {}
-    shown = "; ".join(f"{name}: {_value(v)}" for name, v in args.items() if v is not None)
+    shown = "; ".join(
+        f"{flat(str(name))}: {_value(v)}" for name, v in args.items() if v is not None
+    )
     return cut(f"{flat(str(found.get('name') or '?'))}({shown})", CALL_CHARS)
 
 
@@ -118,7 +123,7 @@ def _model_answer(output: Any) -> str:
 
 def _record(item: dict[str, Any]) -> str:
     """A search hit or similar: `#id title (labels; milestone)`, from the fields it has."""
-    number = f"#{item['id']}" if item.get("id") is not None else ""
+    number = f"#{flat(str(item['id']))}" if item.get("id") is not None else ""
     head = " ".join(p for p in (number, flat(str(item.get("title") or ""))) if p)
     labels = ", ".join(flat(str(x)) for x in _list(item.get("labels")) or [] if x is not None)
     tail = "; ".join(d for d in (labels, flat(str(item.get("milestone") or ""))) if d)
@@ -138,6 +143,8 @@ def _parsed(content: str) -> Any:
 
 
 def _tool_result(output: Any) -> str:
+    if output is None:
+        return NOTHING
     data = _dict((_dict(output) or {}).get("data"))
     content = data["content"] if data is not None and "content" in data else output
     if isinstance(content, str):
@@ -148,7 +155,8 @@ def _tool_result(output: Any) -> str:
     if items is not None and items and all(isinstance(i, dict) for i in items):
         more = f" · … {len(items) - RESULT_ITEMS} more" if len(items) > RESULT_ITEMS else ""
         records = [_record(cast("dict[str, Any]", i)) for i in items[:RESULT_ITEMS]]
-        return cut(" · ".join(r for r in records if r), CALL_CHARS - len(more)) + more
+        joined = " · ".join(r for r in records if r)
+        return cut(joined, CALL_CHARS - len(more)) + more if joined else NO_RESULTS
     shown = flat_text(content, ANSWER_CHARS) or cut(_plain(content), ANSWER_CHARS)
     return shown or NO_RESULTS
 
@@ -176,7 +184,9 @@ def task(roots: Sequence[SpanNode], content: Content) -> Text | None:
         return None
     raw = asked.strip()
     was_cut = len(raw) > TASK_CHARS
-    lines = raw[:TASK_CHARS].splitlines()  # cut before cleaning: the text may be huge
+    # cut before cleaning (the text may be huge); split on newlines only, so other
+    # separators (\u2028, \x0c...) are shown as escapes by clean()
+    lines = raw[:TASK_CHARS].replace("\r\n", "\n").split("\n")
     if len(lines) > TASK_LINES:
         lines, was_cut = lines[:TASK_LINES], True
     if was_cut:
