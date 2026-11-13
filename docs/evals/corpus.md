@@ -84,6 +84,8 @@ WHERE s.run_id = r.id AND s.parent_id IS NULL AND s.attributes ? 'triager.grade'
   AND NOT r.attributes ? 'triager.grade';
 ```
 
+**Decision and truth (#14):** since issue-triage-agent#9, the root span also has `triager.decided.<field>` and `triager.expected.<field>` for labels, milestone, duplicate_of and regression_of (labels a sorted list; `(none)` when empty), which `afr label` shows side by side. The 200 corpus runs came before that. Their values were added once, on the run row and the root span, by a local script: `expected` from the triager's dataset by `triager.case`, `decided` from the last `triage` step's output. Re-grading the 200 decided values against the expected ones gave every run its stored grade.
+
 **Extra traces that aren't corpus runs:** a retried attempt leaves its own error trace (`triager.batch.attempt` > 1, or an earlier attempt that hit a 503). The manifest is the list of record: count the latest line per key, or runs with `triager.grade` in the four corpus groups (a few trial runs from testing the batch have other group names, such as `smoke-nano`). The batch's first pass had 5 Gemini runs end on 503s; they were retried and completed once the 503 retry fix landed (issue-triage-agent#7).
 
 ## Regenerating it
