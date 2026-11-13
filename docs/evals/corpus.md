@@ -1,6 +1,6 @@
 # The run corpus
 
-200 recorded triager runs for error analysis (#13, read in #14). Generated on 12 Nov 2026 with [issue-triage-agent](https://github.com/sonicjoy/issue-triage-agent)'s `triager batch` and recorded by `afr serve`.
+200 recorded triager runs for error analysis (#13, read in #14: [error-analysis.md](error-analysis.md)). Generated on 12 Nov 2026 with [issue-triage-agent](https://github.com/sonicjoy/issue-triage-agent)'s `triager batch` and recorded by `afr serve`.
 
 ## What's in it
 
