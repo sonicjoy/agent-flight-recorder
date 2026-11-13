@@ -1,10 +1,22 @@
 # Error analysis: 50 wrong triager runs, read by hand
 
-Hand error analysis of the [run corpus](corpus.md) (#14). It was done before building any metric, so that the metrics measure the failures that actually happen.
+Hand error analysis of the [run corpus](corpus.md) ([#14](https://github.com/sonicjoy/agent-flight-recorder/issues/14)). It was done before building any metric, so that the metrics measure the failures that actually happen.
+
+**In short:**
+- **Over-labelling is the main failure:** 29 of the 49 labels on agent failures are an extra or wrong label.
+- **Duplicate links are too eager:** 10 runs link a duplicate, 9 of them where there is none.
+- **The eval set caused some of the "failures":** 9 of the 50 runs (18%) were wrong only because of a bad truth. Fixing the truth flipped them to correct.
+- **Search can find these runs by topic and by decision,** with recall@5 of 0.81. **bge-small stays:** bge-base scored 0.77.
 
 ## Method
 
-- **Sample.** 50 of the corpus's 130 wrong runs, drawn with seed 14 and stratified by batch group:
+**Terms.**
+- **Issue numbers.** The triager triages this repo's own GitHub issues, so `#16` in an example is this repo's issue #16. Cases `s01` to `s65` are synthetic: written by hand for the project in the triager's `synthetic.yaml`, some as paraphrases of real issues.
+- **Truth:** the answer a run is graded against: the issue's labels, milestone and links on GitHub, or the synthetic case's.
+- **Labels and milestones:** `stretch` marks optional work. Milestones are the plan's weeks, e.g. "Week 1: Demo agent and foundations".
+
+**Steps.**
+- **Sample.** 50 of the corpus's 130 wrong runs (as graded before the fixes below), drawn with seed 14 in proportion to each batch group:
 
   | Group | Model | Wrong runs | Sampled |
   |---|---|---|---|
@@ -22,9 +34,9 @@ Hand error analysis of the [run corpus](corpus.md) (#14). It was done before bui
   - the issue the agent read;
   - its searches and their results;
   - its decision and rationale.
-- **Labelling.** Open coding: failure modes were named freely while reading, one per independent failure, so a run can have several. That gave **61 labels on 50 runs**, with 9 runs having more than one.
-- **Settling.** The names were then checked for consistency. They were already consistent (`extra-` / `missed-` / `wrong-` label, and the same pattern for links), so nothing was merged. Two labels were corrected after review: s58 became `debatable-truth`, and a #23 run's `missed-duplication` became `wrong-duplication`.
-- **Truth problems.** Where the truth, rather than the agent, was wrong, the run got a truth-quality mode instead of an agent mode, so the two are counted apart.
+- **Labelling.** Failure modes were named while reading, not picked from a list, one per independent failure, so a run can have several. That gave **61 labels on 50 runs**, with 9 runs having more than one.
+- **Settling.** The names were already consistent (`extra-` / `missed-` / `wrong-` for labels and links), so none were merged. Two labels were corrected on review: s58 became `debatable-truth`, and a #23 run's `missed-duplication` became `wrong-duplication`.
+- **Truth problems.** Where the truth was wrong rather than the agent, the run got a truth-quality mode, so the two are counted apart.
 
 ## Taxonomy
 
@@ -47,7 +59,7 @@ Eval-set problems: the run was graded wrong because of the truth.
 | `bad-synthetic-truth` | 2 | A synthetic case's truth was wrong (s19, s65) |
 | `debatable-truth` | 1 | Both answers are reasonable (s58: a duplicate of #23 or not) |
 
-By group:
+By group, where over-labelling stands out in `synthetic-nano`:
 
 | Mode | real-mini | synthetic-nano | injected-mini | real-gemini |
 |---|---|---|---|---|
@@ -103,8 +115,8 @@ By group:
 - **Note:** "should have the mcp label".
 
 **`bad-synthetic-truth`: s65 "Add retries when the provider returns 503" (synthetic-nano, 0096e78a)**
-- **Truth:** regression of #2.
-- **Why it's wrong:** #2 (provider config) never promised retries.
+- **Truth, before the fix:** regression of #2.
+- **Why it's wrong:** #2 (provider config) never promised retries. It's now a plain bug.
 
 **`debatable-truth`: s58 "How good is the failure clustering?" (synthetic-nano, 6f1a5986)**
 - **Truth:** duplicate of #23.
@@ -115,66 +127,60 @@ By group:
 
 1. **Over-labelling is the main failure:** 29 of 49 agent labels (59%) are `extra-label` or `wrong-label`.
    - The agent picks labels for the areas an issue *touches* rather than what it *is*. It reaches for `stretch`, `recorder` and `documentation` most.
-   - On synthetic cases, gpt-5.4-nano does this far more than gpt-5.4-mini does on real issues: 13 of 18 sampled synthetic-nano runs are `extra-label`, against 4 of 18 real-mini runs. Nano and synthetic issues are confounded here, so this can't separate model from data.
+   - 13 of 18 sampled `synthetic-nano` runs are `extra-label`, against 4 of 18 `real-mini` runs. Model and data change together between those groups, so this doesn't say whether nano or the synthetic issues are to blame.
 2. **Duplicate linking is too eager:** 10 runs.
    - In 9 of them, the agent linked a duplicate for an issue that has none. Its rationale is usually "overlaps with #N".
    - The prompt's warning ("wrongly closing a real issue as a duplicate is worse than missing one") isn't followed.
 3. **Milestone errors don't come alone:** each of the 5 runs with a wrong milestone also has a wrong label or link. In #4 and s62 the rationale shows the milestone following the label; the other three weren't traced.
-4. **Injected tool failures weren't what went wrong.** All 9 sampled injected-mini runs had timeouts, bad data, empty results and noise injected, yet none of their labels is about a tool failure. They show the same kinds of failure as the clean runs: over-labelling, over-eager linking and bad truth. How the agent coped with the injected failures wasn't examined here.
-5. **A quarter of the "failures" were the eval set's fault:** 12 of 50 runs (24%).
+4. **Injected tool failures weren't what went wrong.** In the corpus, 23 of the 30 `injected-mini` runs had a tool call broken ([corpus.md](corpus.md#injected-tool-failures)). None of the 9 sampled runs' labels is about a tool failure: they show the same failures as the clean runs. How the agent coped with broken results wasn't examined here.
+5. **The eval set caused some of the "failures."** 12 runs got a truth-quality mode. After the fixes below, 9 of them (18% of the sample) are graded correct: they were wrong only because of the truth.
    - The real issues' labels were thinner than the work: `mcp`, `infra` and `documentation` were missing.
-   - Two of the synthetic cases (which Claude generated) were wrong, and one is debatable.
-   - This is the largest single correction to the measured error rate.
+   - Two synthetic cases were wrong, and one is debatable.
+   - The other 3 are still wrong because the agent also erred: the s58 run added `stretch`, the s65 run has the wrong labels and milestone, and one #33 run answered `infra` alone (see below).
 
 ## What was done about the eval set
 
 The eval set was fixed in [issue-triage-agent#10](https://github.com/sonicjoy/issue-triage-agent/pull/10):
 
-- **Accepted answers, not overrides.** The six under-labelled real issues (#1, #7, #17, #20, #26 and #33) accept the agent's fuller label set as well as their exported truth.
-  - #20's comes from s19, its paraphrase.
+- **Accepted answers, not overrides.** Six real issues (#1, #7, #17, #20, #26 and #33) accept the agent's fuller label set as well as their exported truth. #20 is there because of s19, its paraphrase. The synthetic cases that paraphrase or duplicate these issues accept the same answers.
   - Overriding the truth was tried first, but would have turned 8 correct runs wrong. The search tools show past issues' truth, so those runs had copied the labels they were shown.
 - **s58** accepts "no duplicate".
 - **s65** is a plain bug, not a regression.
 
-After re-grading, the corpus went from 70 correct and 130 wrong to **81 correct and 119 wrong**: 11 runs flipped, all to correct. Of the 50 sampled runs, 9 are now graded correct, and their labels say why they used to be wrong.
+After re-grading, the corpus went from 70 correct and 130 wrong to **81 correct and 119 wrong**: 11 runs flipped, all to correct, 9 of them in the sample.
 
-**Decided against:** one #33 run answered `infra` alone, and the labeller's note says infra "makes more sense". #33 still accepts only `documentation, infra`, so that run stays wrong: dropping `documentation` from a launch checklist isn't an acceptable answer.
+**Decided against:** one #33 run answered `infra` alone, and the labeller's note says infra "makes more sense". #33 accepts `documentation` or `documentation, infra`, so that run stays wrong: dropping `documentation` from a launch checklist isn't an acceptable answer.
 
 ## Can search find these runs?
 
-The failures here only help if they can be found again (#22's analyst and #24's MCP server search for them). So `afr search` was checked on 20 queries in [retrieval.yaml](retrieval.yaml), recall@5 over the 200 triager runs ([search.md](../search.md#afr-search-check-queries-is-the-model-good-enough)):
-
-- **Topic (11 queries):** the issue a run triaged, e.g. "containerise the API and MCP server". The right runs are every run of that issue.
-- **Behaviour (9 queries):** what the agent decided, e.g. "marked the issue as a duplicate of another issue". The right runs are every run whose decided attributes show it, right or wrong.
-
-The behaviour queries started out as failure patterns ("called a related issue a duplicate"), with the labelled runs as the right ones. They scored about 0, for two reasons that are about the check, not the model:
-
-- **A summary can't tell right from wrong.** It has what the agent decided, never the truth, so a wrong duplicate reads like a correct one.
-- **Only 50 of 119 wrong runs are labelled.** Search returned unlabelled runs with the same failure, and they counted as misses.
-
-So finding *wrong* runs is a job for the grade attributes (`triager.grade.*`), not for search. A search filter on them is a follow-up.
+Recall@5 of `afr search` on 20 queries ([retrieval.yaml](retrieval.yaml), checked with [`afr search-check`](../search.md#afr-search-check-queries-is-the-model-good-enough)): the share of a query's right runs in the top 5. It matters because the analyst (#22) and the MCP server (#24) find failures through search.
 
 | | bge-small-en-v1.5 (stored, 384-d) | bge-base-en-v1.5 (768-d) |
 |---|---|---|
-| Mean recall@5, 20 queries | **0.82** | 0.78 |
-| Topic, 11 queries | 1.00 on all | 1.00 on all but one (0.80) |
+| **Mean, 20 queries** | **0.81** | 0.77 |
+| Topic, 11 queries | 1.00 on all but one (0.80) | 1.00 on all but two (0.80) |
 | Behaviour, 9 queries | 0.00 to 1.00 | 0.00 to 1.00 |
 
-- **bge-base wins 2 queries and loses 4:** "added the stretch label" (1.00 against 0.80) and "MCP work" (0.80 against 0.60); it loses most on "marked as a duplicate" (0.20 against 0.80).
-- **Both miss label combinations:** "labelled infrastructure work as documentation too" scores 0 on both, and "an eval issue as recorder work too" 0.20. A summary lists labels, but a query for two of them matches runs with either.
+**Decision: keep bge-small.** bge-base isn't better here, and it would need a migration to 768 dimensions and three times the download. Twenty queries is a small set, so this only says bge-base isn't worth it *now*; `afr search-check` reruns the comparison when the corpus or the summaries change.
 
-**Decision: keep bge-small.** The larger model isn't better here, and it would need a migration to 768 dimensions and three times the download. Twenty queries is a small set, so this says bge-base isn't worth it *now*; `afr search-check` can rerun the comparison when the corpus or the summaries change.
+- **The queries.** Both kinds take their right runs from every triager run with a decision (200 of the store's 218), so the sets are complete. A script writes the file from the store ([scripts/retrieval_queries.py](../../scripts/retrieval_queries.py)).
+  - **Topic (11):** the issue a run triaged, e.g. "containerise the API and MCP server". The right runs are every run of that issue and its paraphrases.
+  - **Behaviour (9):** what the agent decided, e.g. "marked the issue as a duplicate of another issue". The right runs are every run that decided it, right or wrong.
+- **Where the models differ.** bge-base wins on "added the stretch label" (1.00 against 0.80) and "MCP work" (0.80 against 0.60). It loses on "marked as a duplicate" (0.20 against 0.80), "UI work" (0.40 against 0.60), "the week 1 milestone" (0.60 against 0.80) and "promptfoo or DeepEval" (0.80 against 1.00).
+- **Both miss label pairs.** "Labelled infrastructure work as documentation too" scores 0 on both, and "an eval issue as recorder work too" 0.20. A query for two labels matches runs with either.
+- **Search can't find *wrong* runs.** The first queries described failures ("called a related issue a duplicate"), with the labelled runs as the right ones, and scored about 0. A summary has what the agent decided but never the truth, so a wrong duplicate reads like a correct one. And only 41 of the 119 wrong runs are labelled, so search's other good matches counted as misses. Finding wrong runs is a job for the grade attributes (`triager.grade.*`); a search filter on them is a follow-up.
 
 ## What it means for the evals (#15 onwards)
 
 - **Golden cases** should cover the two big failure modes: multi-area issues where only one label belongs (against over-labelling), and near-duplicate pairs that aren't duplicates (against over-eager linking).
 - **Grading** should keep field-level marks. Most wrong runs have one wrong field, often a single extra label, so a run-level pass rate hides how close they are.
-- **Truth quality** needs its own check before a case enters the golden set. One in four "failures" here was the eval set's fault. Synthetic cases especially should be reviewed by a person.
+- **Truth quality** needs its own check before a case enters the golden set. Synthetic cases especially should be reviewed by a person.
 
 ## Caveats
 
-- **One labeller.** The first labelling pass read the screen's sides the wrong way round. It was discarded and redone after the screen was fixed (#53), and the first pass is kept in a local backup only.
+- **One labeller.** A first labelling pass misread which side of the screen was the agent and which the truth. It was discarded and redone after the screen was fixed (#53); the first pass is kept in a local backup only.
 - **50 runs.** Counts under 5 are anecdotes.
 - **Model and source are confounded** (nano with synthetic, mini with real), as noted in finding 1.
+- **The s65 run's agent errors aren't labelled:** its only mode names the bad truth, though its labels and milestone are wrong too.
 - **The corpus ran on OpenAI and Gemini models,** not Claude (see [corpus.md](corpus.md)).
-- **The retrieval queries were written by Claude, which also built search,** and the right runs come from attributes. The topic queries reuse words from the issue titles, so they're easy.
+- **The retrieval queries were written by Claude, which also built search.** The topic queries reuse words from the issue titles, so they're easy.

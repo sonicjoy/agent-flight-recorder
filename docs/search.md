@@ -45,11 +45,11 @@ Vector search always returns the nearest texts, so the bottom of the list can be
 
 ## `afr search-check <queries>`: is the model good enough?
 
-Recall@k of `afr search` on hand-written queries (#14). Each query names its **right runs**, the runs a good search returns, by trace id (`runs.external_id`), so the file works on any copy of the store:
+Recall@k of `afr search` on a file of queries (#14). Each query names its **right runs**, the runs a good search returns, by trace id (`runs.external_id`), so the file works on any copy of the store:
 
 ```yaml
 # a queries file
-- query: called a related issue a duplicate
+- query: marked the issue as a duplicate of another issue
   runs: [f9cd00b89a2b035a4f6ec819e51da547, 3c1e...]
 ```
 
@@ -64,7 +64,7 @@ uv run afr search-check queries.yaml --agent issue-triager --compare BAAI/bge-ba
 
 Ties between runs with the same fused score go by run id, so a ranking is the same every time.
 
-The #14 queries are in [evals/retrieval.yaml](evals/retrieval.yaml); the result and the decision to keep bge-small are in [error-analysis.md](evals/error-analysis.md#can-search-find-these-runs).
+The #14 queries are in [evals/retrieval.yaml](evals/retrieval.yaml), written from the store by `scripts/retrieval_queries.py`; the result and the decision to keep bge-small are in [error-analysis.md](evals/error-analysis.md#can-search-find-these-runs).
 
 ## In tests
 

@@ -49,6 +49,8 @@ The agent never sees it. Each run is graded after it ends, against the triager's
 - **Real issues:** labels, milestone and duplicates come from this repo's GitHub issues, read-only via `triager export`. So "wrong" means "disagrees with how the issue was labelled on GitHub". Some disagreements may be the labels' fault, not the agent's: #14 should keep those apart.
 - **Synthetic cases:** hand-written truth in `synthetic.yaml`.
 
+The counts on this page are the grades as recorded. #14 found some truths wrong and fixed them: re-graded, the corpus is 81 correct and 119 wrong ([error-analysis.md](error-analysis.md#what-was-done-about-the-eval-set)).
+
 ## Finding runs
 
 Each run's root span carries its grade: `triager.grade` (`correct`, `wrong` or `failed`) and one `ok` or `wrong` per field (`triager.grade.labels`, `.milestone`, `.duplicate_of`, `.regression_of`). It also has `triager.batch.group`, `.repeat`, `.attempt`, `triager.case`, `triager.inject` and `triager.triage_model`. OTel ingest copies root span attributes onto the run (since #13), so they're on `runs.attributes` too.
