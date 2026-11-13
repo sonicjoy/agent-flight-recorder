@@ -128,7 +128,7 @@ def _maybe_json(value: Any) -> Any:
     if isinstance(value, str) and value[:1] in ("{", "["):
         try:
             return json.loads(value)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):  # too deeply nested: kept as text
             return value
     return value
 

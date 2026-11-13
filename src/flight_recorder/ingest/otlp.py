@@ -90,8 +90,16 @@ def parse(data: bytes, kind: str) -> ExportTraceServiceRequest:
             request.ParseFromString(data)
         else:
             document = json.loads(data)
+            if not isinstance(document, dict):
+                raise PayloadError("not a valid OTLP trace export: not a JSON object")
             json_format.ParseDict(_hex_ids_to_base64(document), request, ignore_unknown_fields=True)
-    except (DecodeError, json.JSONDecodeError, json_format.ParseError, UnicodeDecodeError) as error:
+    except (
+        DecodeError,
+        json.JSONDecodeError,
+        json_format.ParseError,
+        UnicodeDecodeError,
+        RecursionError,  # nested deeper than a trace export ever is
+    ) as error:
         raise PayloadError(f"not a valid OTLP trace export: {type(error).__name__}") from error
     return request
 

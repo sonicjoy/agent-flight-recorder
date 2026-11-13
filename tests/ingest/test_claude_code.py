@@ -930,3 +930,24 @@ def test_a_tools_end_stamped_before_its_start_is_kept(client: TestClient, store:
     tool = stored(store)[1]["tool:t1"]
     assert (tool.status, tool.output) == ("ok", "text")
     assert tool.ended_at is not None and tool.ended_at >= tool.started_at
+
+
+@pytest.mark.parametrize("received_at", [1e20, -1e20, 10**400])
+def test_a_time_out_of_range_does_not_sink_the_batch(
+    client: TestClient, store: Engine, received_at: float
+) -> None:
+    odd = {"received_at": received_at, "hook": {"session_id": "s2", "hook_event_name": "Stop"}}
+
+    response = client.post(URL, json={"events": [odd, ev("SessionStart", 0)]})
+
+    assert response.status_code == 200  # the hook retries a 500 for ever
+    assert {r.external_id for r in stored(store)[0]} >= {"sess-1"}
+
+
+def test_an_out_of_range_time_in_the_transcript_is_unknown(
+    client: TestClient, store: Engine
+) -> None:
+    stop = ev("Stop", 5, prompt_id="p1", usage=[usage("msg_1") | {"timestamp": 1e20}])
+
+    assert client.post(URL, json={"events": [stop]}).json()["rejected"] == 0
+    assert "llm:msg_1" in stored(store)[1]

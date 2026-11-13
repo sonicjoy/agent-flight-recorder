@@ -49,8 +49,12 @@ class EventError(ValueError):
 
 
 def _time(value: Any) -> datetime | None:
+    """A time from seconds since the epoch or ISO 8601; None if it isn't one we can store."""
     if isinstance(value, int | float) and not isinstance(value, bool):
-        return datetime.fromtimestamp(value, tz=UTC)
+        try:
+            return datetime.fromtimestamp(value, tz=UTC)
+        except (OverflowError, OSError, ValueError):  # past year 9999, or not a number
+            return None
     if isinstance(value, str):
         try:
             parsed = datetime.fromisoformat(value)

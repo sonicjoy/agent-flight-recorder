@@ -5,7 +5,8 @@ Each trace in a request is written in its own transaction through record_run(), 
 redacts first. A trace that can't be mapped is rejected on its own and reported in the
 response's partial_success; the others are still stored. Error messages never include
 the rejected data, which may be sensitive. If the database can't be reached, the request
-gets a 503 so the exporter sends it again.
+gets a 503 so the exporter sends it again; anything else one trace or event gets wrong
+rejects only that one, so a batch is never refused for one bad item.
 
 No authentication yet (#25): serve on 127.0.0.1 only. Requests must also name a loopback
 host, so a web page can't reach the API through DNS rebinding.
@@ -21,7 +22,7 @@ from fastapi import FastAPI, Header, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import Engine
-from sqlalchemy.exc import DataError, IntegrityError, OperationalError
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeout
 from starlette.concurrency import run_in_threadpool
 
@@ -43,15 +44,26 @@ def _reason(error: Exception) -> str:
     return str(error) if isinstance(error, MappingError) else type(error).__name__
 
 
-# What one trace can get wrong. DataError is a value Postgres won't take: a NUL character,
-# NaN in JSON, a count too big for its column. IntegrityError is a broken check, such as
-# a span that ends before it starts.
-TRACE_ERRORS = (ValueError, DataError, IntegrityError)
-# The database itself unreachable or out of connections: nothing wrong with the data.
-# OTLP exporters retry only 429, 502, 503 and 504, so this must be a 503, not a 500.
-# Retrying is safe: traces already written are upserted again, not duplicated.
-UNAVAILABLE = (OperationalError, PoolTimeout)
+# SQLSTATE classes that mean the database, not the data, is the trouble: connection
+# exception (08), insufficient resources (53), operator intervention such as a shutdown
+# (57), system error (58). Others, such as 54 (an id too long for an index row), come from
+# the data: retrying the same trace would fail the same way for ever.
+UNAVAILABLE_SQLSTATE_CLASSES = ("08", "53", "57", "58")
 RETRY_AFTER_SECONDS = "5"
+
+
+def _database_unavailable(error: Exception) -> bool:
+    """The database itself unreachable or out of connections: nothing wrong with the data.
+    OTLP exporters retry only 429, 502, 503 and 504, so this must be a 503, not a 500.
+    Retrying is safe: traces already written are upserted again, not duplicated."""
+    if isinstance(error, PoolTimeout):
+        return True
+    if isinstance(error, DBAPIError) and error.connection_invalidated:
+        return True
+    if isinstance(error, OperationalError):
+        code = getattr(error.orig, "sqlstate", None)  # None: no server answered at all
+        return not isinstance(code, str) or code.startswith(UNAVAILABLE_SQLSTATE_CLASSES)
+    return False
 
 
 def _ingest(
@@ -72,11 +84,11 @@ def _ingest(
             run, spans = map_trace(trace)
             with session_scope(engine) as session:
                 record_run(session, run, spans, redactor=redactor)
-        except TRACE_ERRORS as error:  # pydantic's ValidationError is a ValueError
+        except Exception as error:  # one trace's problem: a value, a check, an overflow...
+            if _database_unavailable(error):
+                return _unavailable(error)
             rejected += len(trace.spans)
             reasons.append(f"trace {trace.trace_id or '?'}: {_reason(error)}")
-        except UNAVAILABLE as error:
-            return _unavailable(error)
     return Response(otlp.response_body(kind, rejected, "; ".join(reasons)[:1000]), media_type=kind)
 
 
@@ -101,7 +113,10 @@ def _ingest_claude_code(engine: Engine, redactor: Redactor, body: bytes) -> Resp
 
     def fired_at(event: dict[str, Any]) -> float:
         value = event.get("received_at")
-        return float(value) if isinstance(value, int | float) else 0.0
+        try:
+            return float(value) if isinstance(value, int | float) else 0.0
+        except OverflowError:  # an int too big for a float: out of range, so unknown
+            return 0.0
 
     valid = [cast("dict[str, Any]", e) for e in events if isinstance(e, dict)]
     ordered = sorted(valid, key=fired_at)
@@ -111,10 +126,10 @@ def _ingest_claude_code(engine: Engine, redactor: Redactor, body: bytes) -> Resp
             with session_scope(engine) as session:
                 apply_event(session, redactor, event)
             accepted += 1
-        except TRACE_ERRORS as error:
+        except Exception as error:  # one event's problem; the others are still applied
+            if _database_unavailable(error):  # the hook keeps the events and sends them again
+                return _unavailable(error)
             reasons.append(str(error) if isinstance(error, EventError) else _reason(error))
-        except UNAVAILABLE as error:  # the hook keeps the events and sends them again
-            return _unavailable(error)
     rejected = len(events) - accepted
     return JSONResponse({"accepted": accepted, "rejected": rejected, "errors": reasons[:20]})
 
