@@ -222,3 +222,26 @@ def test_child_arriving_before_its_parent_is_linked_later(session: Session) -> N
     root = session.scalars(select(Span).where(Span.external_id == "root")).one()
     child = session.scalars(select(Span).where(Span.external_id == "child")).one()
     assert child.parent_id == root.id
+
+
+def test_run_totals_hold_more_than_32_bits(session: Session) -> None:
+    """A Claude Code session is one run, and every response's input counts its cache reads:
+    a long session passes 2,147,483,647 input tokens."""
+    responses = [
+        span_in(f"llm-{n}", kind="llm", model="anthropic:claude-opus-5-5",
+                input_tokens=1_000_000_000, output_tokens=1_000_000_000)
+        for n in range(3)
+    ]  # fmt: skip
+
+    run_id = record_run(session, run_in(), responses, redactor=REDACTOR)
+
+    run = session.get_one(Run, run_id)
+    assert (run.input_tokens, run.output_tokens) == (3_000_000_000, 3_000_000_000)
+
+
+def test_one_span_can_hold_more_than_32_bits_of_tokens(session: Session) -> None:
+    span = span_in("big", kind="llm", input_tokens=3_000_000_000, output_tokens=1)
+
+    run_id = record_run(session, run_in(), [span], redactor=REDACTOR)
+
+    assert session.get_one(Run, run_id).input_tokens == 3_000_000_000

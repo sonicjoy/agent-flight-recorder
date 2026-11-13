@@ -170,9 +170,9 @@ def bad_for_postgres(attributes: dict[str, Any]) -> Callable[[Tracer], None]:
     [
         {"note": "nul \x00 char"},
         {"score": float("nan")},
-        {"gen_ai.operation.name": "chat", "gen_ai.usage.input_tokens": 2**40},
+        {"gen_ai.operation.name": "chat", "gen_ai.usage.input_tokens": "9" * 25},
     ],
-    ids=["nul-in-jsonb", "nan-in-jsonb", "tokens-over-int4"],
+    ids=["nul-in-jsonb", "nan-in-jsonb", "tokens-over-int8"],
 )
 def test_a_trace_postgres_refuses_is_rejected_and_the_rest_are_stored(
     client: TestClient, store: Engine, attributes: dict[str, Any]
