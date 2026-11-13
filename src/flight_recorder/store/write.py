@@ -237,7 +237,9 @@ def _link_parents(session: Session, run_id: uuid.UUID) -> None:
 
 
 def _total(session: Session, run_id: uuid.UUID) -> None:
-    """Run totals from all its spans. Cost is NULL if any span with tokens has no price."""
+    """Run totals from its model calls (llm spans). Cost is NULL if any with tokens has no
+    price. Other spans keep their own counts but aren't added: the GenAI conventions put an
+    agent's total on its invoke_agent span, which its model calls would then count twice."""
     session.execute(
         text("""
             UPDATE runs SET input_tokens = t.input_tokens, output_tokens = t.output_tokens,
@@ -247,7 +249,7 @@ def _total(session: Session, run_id: uuid.UUID) -> None:
                        CASE WHEN bool_or(cost_usd IS NULL AND (input_tokens IS NOT NULL
                                                                OR output_tokens IS NOT NULL))
                             THEN NULL ELSE sum(cost_usd) END AS cost_usd
-                FROM spans WHERE run_id = :run_id
+                FROM spans WHERE run_id = :run_id AND kind = 'llm'
             ) AS t
             WHERE runs.id = :run_id
         """),

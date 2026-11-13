@@ -424,3 +424,28 @@ def test_deeply_nested_json_text_is_kept_as_text(client: TestClient, store: Engi
 @pytest.mark.parametrize("body", [b"null", b"123", b"true"])
 def test_an_otlp_json_body_that_is_not_an_object_is_a_400(client: TestClient, body: bytes) -> None:
     assert post(client, body, JSON).status_code == 400
+
+
+def usage_on_the_agent_too(tracer: Tracer) -> None:
+    """The GenAI conventions recommend usage on invoke_agent spans, as the agent's total."""
+    usage = {"gen_ai.usage.input_tokens": 1000, "gen_ai.usage.output_tokens": 100}
+    agent = {"gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "helper"}
+    chat = {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-5.4-mini",
+    }
+    with (
+        tracer.start_as_current_span("invoke_agent helper", attributes=agent | usage),
+        tracer.start_as_current_span("chat gpt-5.4-mini", attributes=chat | usage),
+    ):
+        pass
+
+
+def test_usage_on_an_agent_span_is_not_counted_twice(client: TestClient, store: Engine) -> None:
+    post(client, protobuf(record(usage_on_the_agent_too)))
+
+    [run], spans = rows(store)
+    [chat] = [s for s in spans if s.kind == "llm"]
+    assert (run.input_tokens, run.output_tokens) == (1000, 100)
+    assert chat.cost_usd is not None and run.cost_usd == chat.cost_usd
