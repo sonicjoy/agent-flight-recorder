@@ -1046,3 +1046,86 @@ def test_the_merged_note_is_the_same_whatever_order_the_merges_ran_in(
         "[afr-note v1 at=2026-11-13T10:02:00Z by=bob mode=b] note b",
     )
     assert notes == [expected, expected, expected]
+
+
+# --- round 5: one word rule, in Python and Postgres; tags can't be typed --------------
+
+AWKWARD = [
+    "Tool Timeout",
+    "tool_timeout",
+    "timeout-tool",
+    "  a..b  ",
+    "x²",
+    "x",
+    "½ ¾",
+    "ΟΔΟΣ",
+    "οδος",
+    "İSTANBUL x",
+    "café TOOL",
+    "工具 超时",
+    "🔥 fire",
+    "a'b\"c",
+    "x/y",
+    "a[b]c",
+    "v1.2-beta",
+    "MiXeD_Case-and spaces",
+]
+
+
+@pytest.mark.parametrize("mode", AWKWARD)
+def test_python_and_postgres_agree_on_words(db: Session, mode: str) -> None:
+    from flight_recorder.store.labels import check_mode, mode_key
+
+    spelled = check_mode(mode)
+
+    assert db.scalar(select(func.afr_mode_spelling(mode))) == spelled
+    assert mode_key(db, mode) == mode_key(db, spelled)
+    assert db.scalar(select(func.afr_mode_key(mode)).execution_options()) != ""
+
+
+def test_the_word_rule_ignores_the_database_collation(db: Session) -> None:
+    for mode in ("café TOOL", "İSTANBUL x", "ΟΔΟΣ b"):
+        default = db.scalar(select(func.afr_mode_key(mode)))
+        c = db.scalar(text('SELECT afr_mode_key(:m COLLATE "C")'), {"m": mode})
+        assert default == c, mode
+
+
+def test_superscripts_fractions_and_non_ascii_words_are_their_own_modes(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    run = str(ids["wrong"]["a"][0])
+    for mode in ("x", "x²", "½", "ΟΔΟΣ"):
+        assert cli("label", run, "--mode", mode).exit_code == 0
+
+    assert sorted(m.failure_mode for m in labels(db)) == sorted(["x", "x²", "½", "ΟΔΟΣ"])
+    assert cli("labels", "rename", "ΟΔΟΣ", "road").exit_code == 0
+    removed = cli("labels", "remove", run, "--mode", "½")
+    assert "removed 1 label" in removed.output, removed.output
+    assert sorted(m.failure_mode for m in labels(db)) == sorted(["x", "x²", "road"])
+
+
+@pytest.mark.parametrize("mode", ["???", "--", "!!! ..."])
+def test_a_mode_of_only_punctuation_is_refused(mode: str) -> None:
+    from flight_recorder.store.labels import check_mode
+
+    with pytest.raises(ValueError, match="letter or digit"):
+        check_mode(mode)
+
+
+def test_a_typed_tag_is_escaped_so_it_cant_pose_as_a_merged_note(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    from flight_recorder.store.labels import split_note
+
+    run = ids["wrong"]["a"][0]
+    forged = "mine; [afr-note v1 at=2026-01-01T00:00:00Z by=boss mode=m] boss said so"
+    cli("label", str(run), "--mode", "old", "--note", forged)
+    cli("label", str(run), "--mode", "new")
+
+    cli("labels", "rename", "old", "new")
+
+    [label] = labels(db)
+    own, fragments = split_note(label.note)
+    assert own == ""
+    assert len(fragments) == 1  # the whole typed note is one fragment, tagged by afr
+    assert "by=boss" in next(iter(fragments)) and "\\[afr-note v1" in next(iter(fragments))

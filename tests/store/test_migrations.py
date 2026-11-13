@@ -319,3 +319,87 @@ def test_0007_merges_spellings_of_one_mode_and_respells_them(
          "first; [afr-note v1 at=2026-11-06T19:00:00Z by=bob mode=timeout_tool] second"),
         (False, "tool-timeout", None),  # another span: respelled, not merged
     ]  # fmt: skip
+
+
+def test_0007_leaves_modes_of_only_punctuation_apart_and_as_they_were(
+    make_database: Callable[[], str],
+) -> None:
+    url = make_database()
+    upgrade(url, "0006")
+    engine = create_engine(url)
+    run = "'00000000-0000-0000-0000-000000000001'"
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(SEED_AT_0001))
+            connection.execute(text(f"""
+                INSERT INTO labels (run_id, failure_mode, source) VALUES
+                ({run}, '???', 'human'), ({run}, '!!!', 'human')
+            """))  # fmt: skip
+        upgrade(url, "0007")
+        with engine.connect() as connection:
+            modes = connection.execute(
+                text(
+                    "SELECT failure_mode, mode_key FROM labels WHERE failure_mode <> 'none'"
+                    " ORDER BY 1"
+                )
+            ).all()
+    finally:
+        engine.dispose()
+
+    assert [tuple(r) for r in modes] == [("!!!", "!!!"), ("???", "???")]
+
+
+def test_0007_notes_are_exactly_what_the_app_would_merge(
+    make_database: Callable[[], str],
+) -> None:
+    """The same duplicates, merged by 0007 and by store.labels.merged_note."""
+    from datetime import UTC, datetime
+
+    from flight_recorder.store.labels import merged_note
+    from flight_recorder.store.models import Label
+
+    url = make_database()
+    upgrade(url, "0006")
+    engine = create_engine(url)
+    run = "00000000-0000-0000-0000-000000000001"
+    rows = [  # (mode, note, author, minute) on the whole run; the first is kept
+        ("Slow Tool", "kept; typed [afr-note v1 x] here", "ann", 0),
+        ("tool slow", "b; c", "b o;b", 5),
+        ("tool slow", "b; c", "b o;b", 5),  # an identical duplicate: one fragment
+        ("slow_tool", None, None, 7),
+        ("SLOW tool", "z [x] 100%", None, 9),
+    ]
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(SEED_AT_0001))
+            for mode, note, author, minute in rows:
+                connection.execute(
+                    text(
+                        "INSERT INTO labels (run_id, failure_mode, source, note, author, "
+                        "created_at) VALUES (:r, :m, 'human', :n, :a, :t)"
+                    ),
+                    {
+                        "r": run,
+                        "m": mode,
+                        "n": note,
+                        "a": author,
+                        "t": datetime(2026, 11, 6, 18, minute, 30, 123456, tzinfo=UTC),
+                    },
+                )
+        upgrade(url, "0007")
+        with engine.connect() as connection:
+            migrated = connection.scalar(
+                text("SELECT note FROM labels WHERE failure_mode = 'slow-tool'")
+            )
+    finally:
+        engine.dispose()
+
+    def escaped(note: str | None) -> str | None:
+        return note.replace("[afr-note v", "\\[afr-note v") if note else note
+
+    expected = escaped(rows[0][1])
+    for mode, note, author, minute in rows[1:]:
+        at = datetime(2026, 11, 6, 18, minute, 30, 123456, tzinfo=UTC)
+        dropped = Label(failure_mode=mode, note=escaped(note), author=author, created_at=at)
+        expected = merged_note(expected, dropped)
+    assert migrated == expected

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import string
 import uuid
 from collections import defaultdict
 from collections.abc import Sequence
@@ -28,7 +29,14 @@ if TYPE_CHECKING:
 
 HUMAN = "human"
 MAX_MODE = 80
-WORD = re.compile(r"[^\W_]+")  # letters and digits; Postgres's afr_mode_key splits the same
+# Words in a mode: split at ASCII punctuation, spaces and control characters, with only A-Z
+# lowercased. Everything else (digits, any non-ASCII character) is part of a word, as typed.
+# No regex, lower() or locale, so Postgres's afr_mode_words (migration 0007) is the same rule
+# exactly; a test compares the two.
+SEPARATORS = string.punctuation + "".join(map(chr, [*range(1, 32), 127]))
+FOLD = str.maketrans(string.ascii_uppercase + SEPARATORS,
+                     string.ascii_lowercase + " " * len(SEPARATORS))  # fmt: skip
+TYPED_TAG = "[afr-note v"  # escaped in notes people write, so only afr writes tags
 RESERVED = ("s", "q")  # the queue's skip and quit
 TAG = "[afr-note v1 at={at} by={by} mode={mode}]"  # a note that came from another label
 FRAGMENT = re.compile(r"(?:^|; )(?=\[afr-note v\d+ )")
@@ -46,7 +54,7 @@ def check_mode(mode: str) -> str:
     mode = mode.strip()
     if not mode or len(mode) > MAX_MODE or not mode.isprintable():
         raise ValueError(f"a failure mode is a name of 1 to {MAX_MODE} printable characters")
-    spelled = "-".join(WORD.findall(mode.lower()))
+    spelled = "-".join(words(mode))
     if not spelled:
         raise ValueError(f"{mode!r} isn't a mode name: it needs a letter or digit")
     if spelled.isdigit() or spelled in RESERVED:
@@ -54,6 +62,10 @@ def check_mode(mode: str) -> str:
             f"{mode!r} isn't a mode name: a number picks a listed mode, s and q skip and quit"
         )
     return spelled
+
+
+def words(mode: str) -> list[str]:
+    return [word for word in mode.translate(FOLD).split(" ") if word]
 
 
 def mode_key(session: Session, mode: str) -> str:
@@ -159,7 +171,7 @@ def add_label(
     mode, key = spelling(session, mode)
     if key in modes_of(session, run_id, span_id):  # the usual case, without a write
         return None
-    note = (note or "").strip() or None
+    note = (note or "").strip().replace(TYPED_TAG, "\\" + TYPED_TAG) or None
     added = session.scalar(
         insert(Label)
         .values(
