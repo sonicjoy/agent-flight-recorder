@@ -41,12 +41,6 @@ def flat_text(value: Any, limit: int) -> str:
     return cut(" ".join(flat(s) for s in _strings(value) if s.strip()), limit)
 
 
-def tool_calls(output: Any) -> list[Any]:
-    """The tool calls a LangChain model call made (empty if none, or not LangChain)."""
-    kwargs = ai(output)
-    return (as_list(kwargs.get("tool_calls")) or []) if kwargs is not None else []
-
-
 def as_dict(value: Any) -> dict[str, Any] | None:
     return cast("dict[str, Any]", value) if isinstance(value, dict) else None
 
@@ -118,13 +112,29 @@ def call_line(tool_call: Any) -> str:
     return cut(f"{flat(str(found.get('name') or '?'))}({shown})", CALL_CHARS)
 
 
-def model_answer(output: Any) -> str:
+def tool_calls(output: Any) -> list[Any]:
+    """The tool calls a LangChain model call made (empty if none, or not LangChain)."""
     kwargs = ai(output)
-    if kwargs is not None:
-        calls = as_list(kwargs.get("tool_calls")) or []
-        if calls:
-            return ", ".join(call_line(c) for c in calls)
-        said = flat(message_text(kwargs.get("content")))
-        if said:
-            return f'"{cut(said, ANSWER_CHARS)}"'
-    return flat_text(output, ANSWER_CHARS) or cut(plain(output), ANSWER_CHARS)
+    return (as_list(kwargs.get("tool_calls")) or []) if kwargs is not None else []
+
+
+def langchain_answer(output: Any) -> str | None:
+    """A LangChain model call's answer: its tool calls, else its text quoted; None if the
+    output isn't LangChain's or says nothing (a failed call)."""
+    kwargs = ai(output)
+    if kwargs is None:
+        return None
+    calls = tool_calls(output)
+    if calls:
+        return ", ".join(call_line(c) for c in calls)
+    said = flat(message_text(kwargs.get("content")))
+    return f'"{cut(said, ANSWER_CHARS)}"' if said else None
+
+
+def model_answer(output: Any) -> str:
+    """Any model call's answer, for a reader: LangChain's, or else the output as text."""
+    return (
+        langchain_answer(output)
+        or flat_text(output, ANSWER_CHARS)
+        or cut(plain(output), ANSWER_CHARS)
+    )

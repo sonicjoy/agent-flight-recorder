@@ -15,7 +15,14 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from flight_recorder.payloads import call_line, flat_text, human, model_answer, tool_calls
+from flight_recorder.payloads import (
+    as_dict,
+    call_line,
+    flat_text,
+    human,
+    langchain_answer,
+    tool_calls,
+)
 from flight_recorder.store.models import Run
 from flight_recorder.store.read import SpanNode, span_content, span_tree
 
@@ -74,8 +81,8 @@ def _conversation(session: Session, run: Run, roots: list[SpanNode]) -> tuple[An
     if run.source != "claude_code":
         if asked and answered:
             return asked, answered
-        from_models = _from_model_calls(session, roots)
-        return asked or from_models[0], answered or from_models[1]
+        model_asked, model_answered = _from_model_calls(session, roots)
+        return asked or model_asked, answered or model_answered
     turns = sorted(
         (c for c in entry.children if c.name == TURN), key=lambda n: (n.started_at, n.external_id)
     )
@@ -98,15 +105,18 @@ def _from_model_calls(session: Session, roots: list[SpanNode]) -> tuple[Any, Any
     if not models:
         return None, None
     tools = {n.name for n in nodes if n.kind == "tool"}
-    outputs = [span_content(session, m.id).output for m in models]
-    structured = [
-        call_line(call)
-        for output in outputs
-        for call in tool_calls(output)
-        if isinstance(call, dict) and call.get("name") not in tools  # pyright: ignore[reportUnknownMemberType]
-    ]
     asked = human(span_content(session, models[0].id).input)
-    return asked, structured[-1] if structured else model_answer(outputs[-1]) or None
+    answered: str | None = None
+    for node in reversed(models):  # newest first: stop at the structured output
+        if node.status == "error":  # a failed call answered nothing
+            continue
+        output = span_content(session, node.id).output
+        for call in reversed(tool_calls(output)):
+            found = as_dict(call)
+            if found is not None and found.get("name") not in tools:
+                return asked, call_line(found)
+        answered = answered or langchain_answer(output)
+    return asked, answered
 
 
 def _failure_line(node: SpanNode) -> str:

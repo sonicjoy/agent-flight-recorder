@@ -144,3 +144,73 @@ def test_the_label_screen_and_search_share_one_parser() -> None:
 
     assert story.human is payloads.human
     assert story.model_answer is payloads.model_answer
+
+
+# --- review round 1 ------------------------------------------------------------------
+
+
+def test_a_failed_last_model_call_isnt_the_answer(db: Session, fake: FakeEmbedder) -> None:
+    from flight_recorder.search.index import embed_runs
+
+    failed = {"type": "LLMResult", "generations": [], "llm_output": {"id": "req-123"}}
+    record(db, "lg-5", [
+        span("root", None, 0, kind="agent", name="agent"),
+        span("llm1", "root", 1, kind="llm", name="m", input=prompt(message("human", "Fix it")),
+             output=answer("Looking into it")),
+        span("llm2", "root", 2, kind="llm", name="m", status="error", error="rate limited",
+             input=prompt(message("human", "Fix it")), output=failed),
+    ])  # fmt: skip
+    embed_runs(db, fake)
+
+    text = summary(db)
+    assert 'answered: "Looking into it"' in text  # the last call that answered
+    assert "req-123" not in text
+
+
+def test_runs_that_arent_langchain_get_no_guessed_answer(db: Session, fake: FakeEmbedder) -> None:
+    from flight_recorder.search.index import embed_runs
+
+    raw = {"id": "resp_abc", "output": [{"type": "message", "text": "final_answer completed"}]}
+    record(db, "oa-1", [
+        span("root", None, 0, kind="agent", name="agent"),
+        span("llm1", "root", 1, kind="llm", name="openai", input={"input": "hi"}, output=raw),
+    ])  # fmt: skip
+    embed_runs(db, fake)
+
+    text = summary(db)
+    assert "answered:" not in text and "resp_abc" not in text
+
+
+def test_the_last_of_several_structured_outputs_wins(db: Session, fake: FakeEmbedder) -> None:
+    from flight_recorder.search.index import embed_runs
+
+    first = call("TriageDecision", labels=["evals"], rationale="first try")
+    second = call("TriageDecision", labels=["recorder"], rationale="after feedback")
+    record(db, "lg-6", [
+        span("root", None, 0, kind="agent", name="agent"),
+        span("llm1", "root", 1, kind="llm", name="m", input=prompt(message("human", "Triage")),
+             output=answer(calls=[first])),
+        span("llm2", "root", 2, kind="llm", name="m", input=prompt(message("human", "Again")),
+             output=answer(calls=[second])),
+    ])  # fmt: skip
+    embed_runs(db, fake)
+
+    text = summary(db)
+    assert "rationale: after feedback" in text and "first try" not in text
+
+
+def test_an_entry_with_input_but_no_output_gets_its_answer_from_the_model(
+    db: Session, fake: FakeEmbedder
+) -> None:
+    from flight_recorder.search.index import embed_runs
+
+    record(db, "lg-7", [
+        span("root", None, 0, kind="agent", name="agent", input={"q": "entry question"}),
+        span("llm1", "root", 1, kind="llm", name="m", input=prompt(message("human", "model q")),
+             output=answer(calls=[DECISION])),
+    ])  # fmt: skip
+    embed_runs(db, fake)
+
+    text = summary(db)
+    assert "asked: entry question" in text and "model q" not in text
+    assert "answered: TriageDecision(" in text
