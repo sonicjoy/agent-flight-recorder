@@ -77,7 +77,8 @@ uv run afr labels list                        # modes, most common first, with a
 Shows the run's header, its attributes, its problem spans (with their parents) and its labels so far, then asks for a **failure mode** and a **note**.
 
 - **Decision next to truth.** An attribute `<prefix>.decided.<field>` that has a matching `<prefix>.expected.<field>` is shown as one row: `triager labels: infra  ≠  infra, recorder`. Any agent can use the convention; the triager records both on its root span. SDK attributes (`telemetry.*`, `service.instance.*`, `openinference.*`) are left out.
-- **The mode:** type a number to reuse a mode (they're listed most used first, with how many runs have each), or type a new name: up to 80 printable characters, not a number and not `s` or `q`. Answer `q` to stop without labelling.
+- **The mode:** type a number to reuse a mode (they're listed most used first, with how many runs have each), or type a new name: up to 80 printable characters, with a letter or digit, not a number and not `s` or `q`. Answer `q` to stop without labelling.
+- **One mode, whatever its spelling:** a mode is stored as its words, lowercased and joined with `-`, so `Tool Timeout` and `tool_timeout` are `tool-timeout`. Word order doesn't count either: `timeout-tool` is the same mode, and takes the spelling the mode already has.
 - **The note** is optional, and redacted before it's stored, like everything else a person or model may copy from a run.
 - **Several modes:** after each mode and note it asks for another; press Enter when there are no more. Each is saved as it's answered, so `q` (or the end of piped input) here keeps those already given, and stops `--next`. A mode the run already has is refused and asked again: a run (or one span) has each mode once, which the database enforces even with two people labelling at once ([schema.md](schema.md#labels)).
 
@@ -112,8 +113,16 @@ uv run afr label --next --attr triager.grade=wrong \
 | Command | |
 |---|---|
 | `afr labels list` | Each mode with its runs, labels and first labelled run. `--source judge` or `analyst` for model labels (#17, #22) |
-| `afr labels rename OLD NEW` | Renames a mode on human labels, or merges it into an existing one; a run (or span) that had both keeps one label, and the merged label's note is appended to it as `[before merge, was OLD] …`, so no note is lost. For open coding: name freely at first, then settle the names |
-| `afr labels remove <run>` | Deletes the run's human labels; `--mode` only those with that mode |
+| `afr labels rename OLD NEW` | Renames a mode on human labels (OLD in any spelling), or merges it into an existing one. A run (or span) that had both keeps one label, and the merged label's note joins it, tagged (below), so no note is lost. NEW with the same words as OLD respells it. For open coding: name freely at first, then settle the names |
+| `afr labels remove <run>` | Deletes the run's human labels; `--mode` only those with that mode, in any spelling |
+
+**Merged notes.** A note that came from another label is tagged with that label's time, author and mode, from the label alone:
+
+```
+kept note; [afr-note v1 at=2026-11-13T10:01:00Z by=ann mode=a] note a; [afr-note v1 at=2026-11-13T10:02:00Z by=bob mode=b] note b
+```
+
+The tagged fragments are always kept sorted (by time first), so merging in any order, or in a chain (`a` into `b`, then `b` into `c`), gives the same note. `v1` is the tag's format version; values are percent-encoded for `%`, space, `;`, `[` and `]`.
 
 ## Choosing a run
 
