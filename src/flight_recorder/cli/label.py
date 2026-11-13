@@ -7,6 +7,7 @@ and removes modes. Only the `labels` table is written.
 
 from __future__ import annotations
 
+import functools
 import getpass
 import re
 import uuid
@@ -71,19 +72,39 @@ def _mode(value: str) -> str:
 
 
 def show_run(out: Console, session: Session, summary: RunSummary) -> None:
-    """The run, its attributes (decision next to truth), its problem spans and its labels."""
+    """The run, read top to bottom: the agent's decision next to the truth (and where the
+    truth came from), what it was asked, its model and tool calls, its problem spans, its
+    other attributes and its labels."""
+    from flight_recorder.cli import story
     from flight_recorder.store.labels import labels_of
-    from flight_recorder.store.read import span_tree
+    from flight_recorder.store.read import span_content, span_tree
 
     roots = span_tree(session, summary.run.id)
+    attributes = summary.run.attributes or {}
+    content = functools.cache(functools.partial(span_content, session))  # each span read once
+
+    def section(title: str, body: Text | None) -> None:
+        if body:
+            out.print(Text(title, style="bold"))
+            out.print(body)
+
     out.print(render.run_header(summary, roots))
-    if summary.run.attributes:
-        out.print(Text("attributes", style="bold"))
-        out.print(render.run_attributes(summary.run.attributes))
+    rows = render.decision_rows(attributes)
+    if rows:
+        heading = Text("agent vs truth", style="bold")
+        source = render.truth_source(attributes)
+        if source is not None:
+            heading.append(" · ")
+            heading.append_text(source)
+        out.print(heading)
+        out.print(rows)
+    section("task", story.task(roots, content))
+    section("steps", story.steps(roots, content))
     problems = render.keep(roots, None, problems_only=True)
     if problems:
         out.print(Text("problems", style="bold"))
         out.print(render.span_tree(roots, shown=problems))
+    section("attributes", render.other_attributes(attributes))
     existing = labels_of(session, summary.run.id)
     if existing:
         out.print(Text("labels", style="bold"))

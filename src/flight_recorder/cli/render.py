@@ -91,12 +91,21 @@ def text(value: object, style: str = "") -> Text:
     return Text(clean(str(value)), style=style)
 
 
+def cut(value: str, width: int) -> str:
+    """`value` shortened to `width` characters, ending in … when it was longer."""
+    return value if len(value) <= width else value[: width - 1] + "…"
+
+
 def one_line(value: str | None, width: int) -> str:
     """The first line, cleaned and shortened to `width` characters."""
     if not value:
         return ""
-    first = clean(value.strip().split("\n", 1)[0])
-    return first if len(first) <= width else first[: width - 1] + "…"
+    return cut(clean(value.strip().split("\n", 1)[0]), width)
+
+
+def flat(value: str) -> str:
+    """All of `value` on one line: every run of whitespace, newlines too, is one space."""
+    return " ".join(value.split())
 
 
 def tokens(count: int | None) -> str:
@@ -491,30 +500,64 @@ def _attribute(value: object) -> str:
     return str(value)
 
 
-def run_attributes(attributes: dict[str, Any]) -> Text:
-    """A run's attributes for a reader. Any `<p>.decided.<f>` with a `<p>.expected.<f>` is
-    one row, the decision next to the truth (`≠` when they differ); SDK noise is left out."""
-    lines = Text()
-    paired: set[str] = set()
+def _pairs(attributes: dict[str, Any]) -> list[tuple[str, str, str, str]]:
+    """(prefix, field, decided key, expected key) for each `<p>.decided.<f>` that has a
+    `<p>.expected.<f>`, in key order."""
+    found: list[tuple[str, str, str, str]] = []
     for key in sorted(attributes):
         match = PAIRED.fullmatch(key)
-        expected_key = f"{match['prefix']}.expected.{match['field']}" if match else ""
-        if not match or expected_key not in attributes:
-            continue
-        decided, expected = _attribute(attributes[key]), _attribute(attributes[expected_key])
+        if match:
+            expected_key = f"{match['prefix']}.expected.{match['field']}"
+            if expected_key in attributes:
+                found.append((match["prefix"], match["field"], key, expected_key))
+    return found
+
+
+def decision_rows(attributes: dict[str, Any]) -> Text:
+    """One row per decided/expected pair, both sides named: `agent X  ≠  truth Y`."""
+    lines = Text()
+    for prefix, field, decided_key, expected_key in _pairs(attributes):
+        decided = _attribute(attributes[decided_key])
+        expected = _attribute(attributes[expected_key])
         same = decided == expected
-        name = f"{one_line(match['prefix'], 60)} {one_line(match['field'], 40)}: "
-        lines.append_text(text(name, "dim"))
-        lines.append_text(text(decided, "" if same else "bold red"))
+        lines.append_text(text(f"{one_line(prefix, 60)} {one_line(field, 40)}: ", "dim"))
+        lines.append("agent ", style="dim")
+        lines.append_text(text(one_line(flat(decided), 160), "" if same else "bold red"))
         lines.append("  =  " if same else "  ≠  ", style="dim" if same else "red")
-        lines.append_text(text(expected))
-        lines.append(" (decided · expected)\n" if not paired else "\n", style="dim")
-        paired |= {key, expected_key}
+        lines.append("truth ", style="dim")
+        lines.append_text(text(one_line(flat(expected), 160)))
+        lines.append("\n")
+    lines.rstrip()
+    return lines
+
+
+def truth_source(attributes: dict[str, Any]) -> Text | None:
+    """Where the truth came from, for the `agent vs truth` heading: `truth from a synthetic
+    case (s65)`, from `<p>.case_source` and `<p>.case`. A synthetic case stands out."""
+    for prefix, *_ in _pairs(attributes):
+        source = attributes.get(f"{prefix}.case_source")
+        if source is None:
+            continue
+        line = Text("truth from a ")
+        style = "bold yellow" if str(source) == "synthetic" else ""
+        line.append_text(text(one_line(str(source), 40), style))
+        line.append(" case")
+        case = attributes.get(f"{prefix}.case")
+        if case is not None:
+            line.append_text(text(f" ({one_line(str(case), 40)})"))
+        return line
+    return None
+
+
+def other_attributes(attributes: dict[str, Any]) -> Text:
+    """Every attribute that isn't a decided/expected pair or SDK noise."""
+    paired = {key for _, _, *keys in _pairs(attributes) for key in keys}
+    lines = Text()
     for key in sorted(attributes):
         if key in paired or key.startswith(NOISE_PREFIXES):
             continue
         lines.append(f"{one_line(key, 60)}: ", style="dim")
-        lines.append_text(text(one_line(_attribute(attributes[key]), 160)))
+        lines.append_text(text(one_line(_attribute(attributes[key]), 160), "dim"))
         lines.append("\n")
     lines.rstrip()
     return lines
