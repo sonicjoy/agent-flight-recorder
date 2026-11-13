@@ -60,7 +60,6 @@ def _reason(error: Exception) -> str:
 # 40002 (a deferred constraint broken at commit): retrying would fail the same way for ever.
 TRANSIENT_SQLSTATE_CLASSES = ("08", "40", "53", "57", "58")
 TRANSIENT_SQLSTATES = frozenset({"55P03", "55006", "25006", "25P03", "72000"})
-NOT_TRANSIENT_SQLSTATES = frozenset({"40002"})
 RETRY_AFTER_SECONDS = "5"
 # What one item can legitimately get wrong, so it alone is rejected: an invalid value
 # (pydantic's ValidationError, MappingError and EventError are ValueErrors), a number out
@@ -69,8 +68,13 @@ RETRY_AFTER_SECONDS = "5"
 # constraint violation 23, program limit exceeded 54, a deferred constraint at commit).
 ITEM_ERRORS = (ValueError, ArithmeticError, RecursionError, DataError, IntegrityError)
 ITEM_SQLSTATE_CLASSES = ("22", "23", "54")
-ITEM_SQLSTATES = frozenset({"40002"})
+ITEM_SQLSTATES = frozenset({"40002"})  # in transient class 40, but about the item
 log = logging.getLogger(__name__)
+
+
+def _sqlstate(error: Exception) -> str | None:
+    code = getattr(getattr(error, "orig", None), "sqlstate", None)
+    return code if isinstance(code, str) else None
 
 
 def _database_unavailable(error: Exception) -> bool:
@@ -84,17 +88,12 @@ def _database_unavailable(error: Exception) -> bool:
         return False
     if error.connection_invalidated:
         return True
-    code = getattr(error.orig, "sqlstate", None)
-    if not isinstance(code, str):  # no server answered at all
+    code = _sqlstate(error)
+    if code is None:  # no server answered at all
         return isinstance(error, OperationalError)
-    if code in NOT_TRANSIENT_SQLSTATES:
+    if code in ITEM_SQLSTATES:
         return False
     return code in TRANSIENT_SQLSTATES or code.startswith(TRANSIENT_SQLSTATE_CLASSES)
-
-
-def _sqlstate(error: Exception) -> str | None:
-    code = getattr(getattr(error, "orig", None), "sqlstate", None)
-    return code if isinstance(code, str) else None
 
 
 def _items_fault(error: Exception) -> bool:
@@ -109,7 +108,7 @@ def _retry_or_reject(error: Exception, what: str) -> Response | None:
     """A 503 for an error about the moment or one nobody expected (logged); None if the
     item alone is to be rejected."""
     if _database_unavailable(error):
-        return _unavailable(error)
+        return _retry_later(f"database unavailable ({type(error).__name__}); retry later")
     if _items_fault(error):
         return None
     # Type, SQLSTATE and where it was raised, never the message: SQLAlchemy's carries the
@@ -120,10 +119,12 @@ def _retry_or_reject(error: Exception, what: str) -> Response | None:
         "unexpected %s (SQLSTATE %s) writing a %s; kept for a retry. Raised at %s",
         type(error).__name__, _sqlstate(error) or "none", what, where or "?",
     )  # fmt: skip
+    return _retry_later(f"unexpected error ({type(error).__name__}); see the recorder's log")
+
+
+def _retry_later(message: str) -> Response:
     return JSONResponse(
-        {"error": f"unexpected error ({type(error).__name__}); see the recorder's log"},
-        status_code=503,
-        headers={"Retry-After": RETRY_AFTER_SECONDS},
+        {"error": message}, status_code=503, headers={"Retry-After": RETRY_AFTER_SECONDS}
     )
 
 
@@ -151,14 +152,6 @@ def _ingest(
             rejected += len(trace.spans)
             reasons.append(f"trace {trace.trace_id or '?'}: {_reason(error)}")
     return Response(otlp.response_body(kind, rejected, "; ".join(reasons)[:1000]), media_type=kind)
-
-
-def _unavailable(error: Exception) -> Response:
-    return JSONResponse(
-        {"error": f"database unavailable ({type(error).__name__}); retry later"},
-        status_code=503,
-        headers={"Retry-After": RETRY_AFTER_SECONDS},
-    )
 
 
 def _ingest_claude_code(engine: Engine, redactor: Redactor, body: bytes) -> Response:
