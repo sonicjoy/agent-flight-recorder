@@ -132,7 +132,7 @@ def build_events(
         return [event | {"client_redactions": dict(head.counts)}], None
     sidechain = key == "agent_transcript_path"
     if name in SYNC_EVENTS:  # its own event alone: it must be quick
-        _leave_rest(config.home, path, sidechain, event)
+        _note_rest(config.home, path, sidechain, event)
         return [event | _empty() | {"client_redactions": dict(head.counts)}], None
     read = None
     try:
@@ -141,7 +141,7 @@ def build_events(
         _log(config.home, f"could not read the transcript ({type(error).__name__}): {name}")
     parts = _parts(config.home, event, head.counts, read, redactor)
     if read is not None and read.more:
-        _leave_rest(config.home, path, sidechain, event)
+        _note_rest(config.home, path, sidechain, event)
         read_items = sum(_items(p) for p in parts)
         _log(config.home, f"read {read_items} transcript items ({name}); later hooks read on")
     return parts, read
@@ -190,6 +190,14 @@ def _leave_rest(home: Path, path: str, sidechain: bool, event: dict[str, Any]) -
     record = {"transcript": path, "sidechain": sidechain, "event": event}
     partial.write_text(json.dumps(record), encoding="utf-8")
     os.replace(partial, note)  # the newest turn end of a transcript wins
+
+
+def _note_rest(home: Path, path: str, sidechain: bool, event: dict[str, Any]) -> None:
+    """_leave_rest for a turn end: a note that can't be written mustn't stop the event."""
+    try:
+        _leave_rest(home, path, sidechain, event)
+    except Exception as error:
+        _log(home, f"could not note the rest of a transcript: {type(error).__name__}")
 
 
 @dataclass

@@ -6,8 +6,9 @@ kept; running install again replaces only ours, and uninstall removes only ours.
 
 Every event but SessionEnd is async: Claude Code doesn't wait. SessionEnd runs
 synchronously, once, at exit (with a short send timeout): under `claude -p`, async hooks
-still running at exit are cancelled, and SessionEnd also picks up any token usage a
-cancelled Stop missed. Nothing blocks: the hook always exits 0.
+still running at exit are cancelled. SessionEnd sends only its own event; the token usage
+a cancelled Stop missed is read by the next hooks, whenever Claude Code next runs. Nothing
+blocks: the hook always exits 0.
 """
 
 from __future__ import annotations

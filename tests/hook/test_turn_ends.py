@@ -263,6 +263,24 @@ def test_session_end_sends_only_its_own_event_and_later_hooks_read_the_last_turn
     assert pending(tmp_path) == []
 
 
+@pytest.mark.parametrize("name", ["Stop", "SessionEnd"])
+def test_a_turn_end_whose_note_cannot_be_written_is_still_sent(
+    tmp_path: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    def full_disk(*args: Any) -> None:
+        raise OSError("no space left")
+
+    monkeypatch.setattr(client, "_leave_rest", full_disk)
+    path = tmp_path / "t.jsonl"
+    transcript(path, READ_ITEMS + 10)
+
+    run(turn_end(path, name), config(tmp_path, recorder.url))
+
+    assert {e["hook"]["hook_event_name"] for e in recorder.events()} == {name}
+    assert "skipped event" not in log(tmp_path)
+    assert "could not note the rest of a transcript" in log(tmp_path)
+
+
 def test_a_later_read_with_the_recorder_down_is_spooled_and_not_read_again(
     tmp_path: Path, recorder: Recorder
 ) -> None:
