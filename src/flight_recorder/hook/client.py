@@ -14,11 +14,12 @@ It must never get in Claude Code's way:
   items; later async hooks read the rest, a page each, as more parts of the same turn end.
 - If the recorder is down, the event is kept in <AFR_HOME>/spool.jsonl. Later async events
   send the backlog first, oldest first, in chunks that are estimated to finish well within
-  the timeout (EVENT_SECONDS per event, ITEM_SECONDS per item) and are under the server's
-  size limit. A chunk the server refuses outright (a 4xx) is dropped and logged rather than
-  retried for ever. The spool keeps at most MAX_SPOOL_BYTES, dropping the oldest events.
-  A hook killed mid-send leaves its claimed batch behind; the next hook picks it up once
-  it's stale. Whatever is dropped, by the hook or the recorder, is logged.
+  the timeout (EVENT_SECONDS per event, ITEM_SECONDS per item, MB_SECONDS per MB) and are
+  under the server's size limit. A chunk the server refuses outright (a 4xx) is dropped
+  and logged rather than retried for ever. The spool keeps at most MAX_SPOOL_BYTES,
+  dropping the oldest events. A hook killed mid-send leaves its claimed batch behind; the
+  next hook picks it up once it's stale. Whatever is dropped, by the hook or the recorder,
+  is logged.
 
 Before sending or spooling, it redacts (the first pass; the server redacts again) and caps
 each string at MAX_FIELD_CHARS, since a tool can return a whole file. The counts of what it
@@ -58,10 +59,13 @@ MAX_SPOOL_BYTES = 20 * 1024 * 1024
 EVENT_ITEMS = 100
 EVENT_BYTES = 2 * 1024 * 1024
 READ_ITEMS = 1_000  # read from a transcript by one hook; later hooks read the rest
-# The recorder's time to apply an event, and each item in it: measured on Windows with a
-# local Postgres (an ordinary event 20 to 28 ms, a response 4 to 6 ms), rounded up.
+# The recorder's time to apply an event, each item in it, and each MB it redacts and
+# stores: measured on Windows with a local Postgres (an ordinary event 20 to 28 ms, a
+# response 4 to 6 ms, a MB 0.38 to 0.55 s), rounded up. tests/ingest/test_limits.py times
+# it. The recorder's work per event doesn't grow with the run (store.write.record_run).
 EVENT_SECONDS = 0.03
 ITEM_SECONDS = 0.008
+MB_SECONDS = 0.5
 CHUNK_SECONDS = 2.0  # a chunk's estimated time, with headroom under SEND_TIMEOUT_SECONDS
 CHUNK_EVENTS = 50
 CHUNK_BYTES = 4 * 1024 * 1024  # well under the server's 10 MB request limit
@@ -253,7 +257,11 @@ def _items(event: dict[str, Any]) -> int:
 
 def estimated_seconds(events: list[dict[str, Any]]) -> float:
     """What the recorder is expected to take to apply these events."""
-    return sum(EVENT_SECONDS + ITEM_SECONDS * _items(e) for e in events)
+    return sum(_seconds(e, _size(e)) for e in events)
+
+
+def _seconds(event: dict[str, Any], size: int) -> float:
+    return EVENT_SECONDS + ITEM_SECONDS * _items(event) + MB_SECONDS * size / 1_000_000
 
 
 def _size(value: Any) -> int:
@@ -325,7 +333,8 @@ def _chunks(events: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     chunks: list[list[dict[str, Any]]] = [[]]
     size, seconds = 0, 0.0
     for event in events:
-        length, cost = _size(event), estimated_seconds([event])
+        length = _size(event)
+        cost = _seconds(event, length)
         over = size + length > CHUNK_BYTES or seconds + cost > CHUNK_SECONDS
         if chunks[-1] and (len(chunks[-1]) >= CHUNK_EVENTS or over):
             chunks.append([])

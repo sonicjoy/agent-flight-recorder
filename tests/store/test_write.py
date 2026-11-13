@@ -255,6 +255,43 @@ def test_run_totals_hold_more_than_32_bits(session: Session) -> None:
     assert (run.input_tokens, run.output_tokens) == (3_000_000_000, 3_000_000_000)
 
 
+def test_totals_follow_a_model_call_rewritten_as_another_kind(session: Session) -> None:
+    """Totals are only summed again when a batch touches a model call: a re-sent span that
+    is no longer one still counts as touching it, and a batch of other spans keeps them."""
+    llm = span_in("a", kind="llm", input_tokens=100, output_tokens=10)
+    run_id = record_run(session, run_in(), [llm], redactor=REDACTOR)
+    record_run(session, run_in(), [span_in("b", kind="tool")], redactor=REDACTOR)
+    assert session.get_one(Run, run_id).input_tokens == 100
+
+    record_run(session, run_in(), [llm.model_copy(update={"kind": "agent"})], redactor=REDACTOR)
+    session.expire_all()
+
+    run = session.get_one(Run, run_id)
+    assert (run.input_tokens, run.output_tokens) == (None, None)
+
+
+def test_parents_are_linked_whichever_arrives_first(session: Session) -> None:
+    """Linking looks only at what a batch wrote: a child stored earlier, waiting for its
+    parent, is linked when the parent comes; a child moved to another parent follows it."""
+    run_id = record_run(
+        session, run_in(), [span_in("child", parent_external_id="p1")], redactor=REDACTOR
+    )
+    record_run(session, run_in(), [span_in("p1"), span_in("p2")], redactor=REDACTOR)
+
+    def parent_of(external_id: str) -> str | None:
+        session.expire_all()
+        return session.scalar(
+            text("""SELECT parent.external_id FROM spans child
+                    JOIN spans parent ON parent.id = child.parent_id
+                    WHERE child.run_id = :r AND child.external_id = :e"""),
+            {"r": run_id, "e": external_id},
+        )
+
+    assert parent_of("child") == "p1"
+    record_run(session, run_in(), [span_in("child", parent_external_id="p2")], redactor=REDACTOR)
+    assert parent_of("child") == "p2"
+
+
 def test_one_span_can_hold_more_than_32_bits_of_tokens(session: Session) -> None:
     span = span_in("big", kind="llm", input_tokens=3_000_000_000, output_tokens=1)
 
