@@ -4,9 +4,12 @@ POST /v1/claude-code/events takes Claude Code hook events (ingest/claude_code.py
 Each trace in a request is written in its own transaction through record_run(), which
 redacts first. A trace that can't be mapped is rejected on its own and reported in the
 response's partial_success; the others are still stored. Error messages never include
-the rejected data, which may be sensitive. If the database can't be reached, the request
-gets a 503 so the exporter sends it again; anything else one trace or event gets wrong
-rejects only that one, so a batch is never refused for one bad item.
+the rejected data, which may be sensitive. If the database can't take writes at the
+moment, the request gets a 503 so the exporter sends it again. What one trace or event
+can get wrong (a value, a broken check, a number out of range) rejects only that one, so
+a batch is never refused for one bad item. An error nobody expected (a bug, or a database
+behind on migrations) is logged, without data, and also gets a 503: the item is kept by
+the caller, not lost, until the cause is fixed.
 
 No authentication yet (#25): serve on 127.0.0.1 only. Requests must also name a loopback
 host, so a web page can't reach the API through DNS rebinding.
@@ -15,14 +18,17 @@ host, so a web page can't reach the API through DNS rebinding.
 from __future__ import annotations
 
 import json
+import logging
+import traceback
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Annotated, Any, cast
 
 from fastapi import FastAPI, Header, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import Engine
-from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.exc import DataError, DBAPIError, IntegrityError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeout
 from starlette.concurrency import run_in_threadpool
 
@@ -56,6 +62,15 @@ TRANSIENT_SQLSTATE_CLASSES = ("08", "40", "53", "57", "58")
 TRANSIENT_SQLSTATES = frozenset({"55P03", "55006", "25006", "25P03", "72000"})
 NOT_TRANSIENT_SQLSTATES = frozenset({"40002"})
 RETRY_AFTER_SECONDS = "5"
+# What one item can legitimately get wrong, so it alone is rejected: an invalid value
+# (pydantic's ValidationError, MappingError and EventError are ValueErrors), a number out
+# of range or too big to price (ArithmeticError: OverflowError, decimal.InvalidOperation),
+# nesting too deep, and values or checks Postgres refuses (data exception 22, integrity
+# constraint violation 23, program limit exceeded 54, a deferred constraint at commit).
+ITEM_ERRORS = (ValueError, ArithmeticError, RecursionError, DataError, IntegrityError)
+ITEM_SQLSTATE_CLASSES = ("22", "23", "54")
+ITEM_SQLSTATES = frozenset({"40002"})
+log = logging.getLogger(__name__)
 
 
 def _database_unavailable(error: Exception) -> bool:
@@ -77,6 +92,41 @@ def _database_unavailable(error: Exception) -> bool:
     return code in TRANSIENT_SQLSTATES or code.startswith(TRANSIENT_SQLSTATE_CLASSES)
 
 
+def _sqlstate(error: Exception) -> str | None:
+    code = getattr(getattr(error, "orig", None), "sqlstate", None)
+    return code if isinstance(code, str) else None
+
+
+def _items_fault(error: Exception) -> bool:
+    """Whether this error is about the item itself, so the same item would fail again."""
+    code = _sqlstate(error)
+    if code is not None and isinstance(error, DBAPIError):
+        return code in ITEM_SQLSTATES or code.startswith(ITEM_SQLSTATE_CLASSES)
+    return isinstance(error, ITEM_ERRORS)
+
+
+def _retry_or_reject(error: Exception, what: str) -> Response | None:
+    """A 503 for an error about the moment or one nobody expected (logged); None if the
+    item alone is to be rejected."""
+    if _database_unavailable(error):
+        return _unavailable(error)
+    if _items_fault(error):
+        return None
+    # Type, SQLSTATE and where it was raised, never the message: SQLAlchemy's carries the
+    # statement's parameters, which are recorded data.
+    frames = traceback.extract_tb(error.__traceback__)[-8:]
+    where = " <- ".join(f"{Path(f.filename).name}:{f.lineno} in {f.name}" for f in reversed(frames))
+    log.error(
+        "unexpected %s (SQLSTATE %s) writing a %s; kept for a retry. Raised at %s",
+        type(error).__name__, _sqlstate(error) or "none", what, where or "?",
+    )  # fmt: skip
+    return JSONResponse(
+        {"error": f"unexpected error ({type(error).__name__}); see the recorder's log"},
+        status_code=503,
+        headers={"Retry-After": RETRY_AFTER_SECONDS},
+    )
+
+
 def _ingest(
     engine: Engine, redactor: Redactor, body: bytes, encoding: str | None, kind: str
 ) -> Response:
@@ -95,9 +145,9 @@ def _ingest(
             run, spans = map_trace(trace)
             with session_scope(engine) as session:
                 record_run(session, run, spans, redactor=redactor)
-        except Exception as error:  # one trace's problem: a value, a check, an overflow...
-            if _database_unavailable(error):
-                return _unavailable(error)
+        except Exception as error:
+            if (retry := _retry_or_reject(error, "trace")) is not None:
+                return retry
             rejected += len(trace.spans)
             reasons.append(f"trace {trace.trace_id or '?'}: {_reason(error)}")
     return Response(otlp.response_body(kind, rejected, "; ".join(reasons)[:1000]), media_type=kind)
@@ -138,9 +188,9 @@ def _ingest_claude_code(engine: Engine, redactor: Redactor, body: bytes) -> Resp
                 apply_event(session, redactor, event)
             accepted += 1
             dropped += items_over_limit(event)
-        except Exception as error:  # one event's problem; the others are still applied
-            if _database_unavailable(error):  # the hook keeps the events and sends them again
-                return _unavailable(error)
+        except Exception as error:
+            if (retry := _retry_or_reject(error, "hook event")) is not None:
+                return retry  # the hook keeps the events and sends them again
             reasons.append(str(error) if isinstance(error, EventError) else _reason(error))
     reply: dict[str, Any] = {
         "accepted": accepted,
