@@ -79,7 +79,7 @@ Shows the run's header, its attributes, its problem spans (with their parents) a
 - **Decision next to truth.** An attribute `<prefix>.decided.<field>` that has a matching `<prefix>.expected.<field>` is shown as one row: `triager labels: infra  ≠  infra, recorder`. Any agent can use the convention; the triager records both on its root span. SDK attributes (`telemetry.*`, `service.instance.*`, `openinference.*`) are left out.
 - **The mode:** type a number to reuse a mode (they're listed most used first, with how many runs have each), or type a new name: up to 80 printable characters, not a number and not `s` or `q`. Answer `q` to stop without labelling.
 - **The note** is optional, and redacted before it's stored, like everything else a person or model may copy from a run.
-- **Several modes:** after each mode and note it asks for another; press Enter when there are no more. Each is saved as it's answered, so `q` here keeps those already given. A mode the run already has is refused and asked again: a run (or one span) has each mode once.
+- **Several modes:** after each mode and note it asks for another; press Enter when there are no more. Each is saved as it's answered, so `q` (or the end of piped input) here keeps those already given, and stops `--next`. A mode the run already has is refused and asked again: a run (or one span) has each mode once.
 
 | Option | |
 |---|---|
@@ -112,7 +112,7 @@ uv run afr label --next --attr triager.grade=wrong \
 | Command | |
 |---|---|
 | `afr labels list` | Each mode with its runs, labels and first labelled run. `--source judge` or `analyst` for model labels (#17, #22) |
-| `afr labels rename OLD NEW` | Renames a mode on human labels, or merges it into an existing one; a run that had both keeps one label. For open coding: name freely at first, then settle the names |
+| `afr labels rename OLD NEW` | Renames a mode on human labels, or merges it into an existing one; a run (or span) that had both keeps one label, and the merged label's note is dropped (it says how many). For open coding: name freely at first, then settle the names |
 | `afr labels remove <run>` | Deletes the run's human labels; `--mode` only those with that mode |
 
 ## Choosing a run

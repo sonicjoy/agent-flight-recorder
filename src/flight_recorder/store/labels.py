@@ -177,9 +177,10 @@ def labelled_count(session: Session, source: str = HUMAN) -> int:
     )
 
 
-def rename_mode(session: Session, old: str, new: str) -> int:
-    """Renames (or merges) a mode on human labels; returns how many labels changed. Where a
-    run (or span) has both modes, the old label is dropped rather than doubling the new."""
+def rename_mode(session: Session, old: str, new: str) -> tuple[int, int]:
+    """Renames (or merges) a mode on human labels. Where a run (or span) has both modes,
+    the old label is dropped (with its note) rather than doubling the new. Returns how many
+    labels were renamed and how many dropped."""
     old, new = old.strip(), check_mode(new)
     if old == new:  # every label would match itself as "has both" and be dropped
         raise ValueError("the new name is the same as the old")
@@ -193,13 +194,15 @@ def rename_mode(session: Session, old: str, new: str) -> int:
     dropped = session.execute(
         delete(Label).where(Label.failure_mode == old, Label.source == HUMAN, both)
     )
-    result = session.execute(
+    renamed = session.execute(
         update(Label)
         .where(Label.failure_mode == old, Label.source == HUMAN)
         .values(failure_mode=new)
     )
-    rowcount = typed("CursorResult[Any]", dropped).rowcount
-    return rowcount + typed("CursorResult[Any]", result).rowcount
+    return (
+        typed("CursorResult[Any]", renamed).rowcount,
+        typed("CursorResult[Any]", dropped).rowcount,
+    )
 
 
 def remove_labels(session: Session, run_id: uuid.UUID, mode: str | None = None) -> int:

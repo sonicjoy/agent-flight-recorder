@@ -288,8 +288,8 @@ def test_label_asks_for_the_mode_offering_existing_ones(
     cli("label", second, "--mode", "over-labelling")
     cli("label", second, "--mode", "false-duplicate")
 
-    picked = cli("label", third, input="1\nsame as the others\n\n")
-    typed = cli("label", third, input="missed-priority\n\n\n")
+    picked = cli("label", third, input="1\nsame as the others\n")
+    typed = cli("label", third, input="missed-priority\n\n")
 
     assert picked.exit_code == 0 and typed.exit_code == 0, picked.output + typed.output
     assert "1) over-labelling (2)" in picked.output  # most used first, with counts
@@ -363,7 +363,7 @@ def test_next_can_skip_a_run_and_says_when_the_sample_is_done(
     queue = ["label", "--next", "--attr", "triager.batch.group=c"]  # one run, no --sample: all
 
     skipped = cli(*queue, input="s\n")
-    done = cli(*queue, input="mode\n\n\n")
+    done = cli(*queue, input="mode\n\n")
     again = cli(*queue)
 
     assert skipped.exit_code == 0 and labels(db)[0].run_id == ids["wrong"]["c"][0]
@@ -487,7 +487,7 @@ def test_modes_refuse_control_characters_and_reserved_answers(mode: str) -> None
 def test_a_note_given_without_a_mode_is_kept(
     cli: Callable[..., Any], db: Session, ids: dict[str, Any]
 ) -> None:
-    result = cli("label", str(ids["wrong"]["a"][0]), "--note", "from the flag", input="m\n\n")
+    result = cli("label", str(ids["wrong"]["a"][0]), "--note", "from the flag", input="m\n")
 
     assert result.exit_code == 0, result.output
     assert labels(db)[0].note == "from the flag"
@@ -500,7 +500,7 @@ def test_a_number_not_on_the_list_asks_again(
     run = str(ids["wrong"]["a"][0])
     cli("label", run, "--mode", "existing")
 
-    result = cli("label", run, input=f"{wrong}\nreal-mode\n\n\n")
+    result = cli("label", run, input=f"{wrong}\nreal-mode\n\n")
 
     assert result.exit_code == 0, result.output
     assert sorted(label.failure_mode for label in labels(db)) == ["existing", "real-mode"]
@@ -525,7 +525,7 @@ def test_a_new_run_in_one_stratum_leaves_the_others_picks_alone() -> None:
     assert before == after
 
 
-# --- several modes on one run (tests written before the change) ------------------------
+# --- several modes on one run -------------------------------------------------------
 
 
 def test_label_asks_for_another_mode_until_an_empty_answer(
@@ -631,3 +631,74 @@ def test_renaming_a_mode_to_itself_is_refused_and_keeps_its_labels(
 
     assert result.exit_code == 2, result.output
     assert [label.failure_mode for label in labels(db)] == ["extra-label"]
+
+
+# --- review round 1 ------------------------------------------------------------------
+
+
+def test_input_ending_at_the_another_mode_prompt_keeps_the_label_and_exits_0(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    run = str(ids["wrong"]["a"][0])
+
+    single = cli("label", run, input="m1\nnote\n")
+    queued = cli("label", "--next", "--attr", "triager.batch.group=c", input="m2\n\n")
+
+    assert single.exit_code == 0 and queued.exit_code == 0, single.output + queued.output
+    assert "labelled" in single.output
+    assert sorted(label.failure_mode for label in labels(db)) == ["m1", "m2"]
+
+
+def test_q_at_the_another_mode_prompt_says_what_was_labelled(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    run = str(ids["wrong"]["a"][0])
+
+    result = cli("label", run, input="m1\n\nq\n")
+
+    assert result.exit_code == 0, result.output
+    assert f"labelled {run[:8]}: m1" in result.output
+
+
+def test_s_at_the_another_mode_prompt_explains_itself(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    result = cli("label", "--next", "--attr", "triager.batch.group=c", input="m1\n\ns\n\n")
+
+    assert result.exit_code == 0, result.output
+    assert "skips only before the first mode" in result.output
+    assert [label.failure_mode for label in labels(db)] == ["m1"]
+
+
+def test_a_mode_the_span_already_has_names_the_span(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    run = ids["wrong"]["a"][0]
+    tool = str(db.scalar(select(Span.id).where(Span.run_id == run, Span.kind == "tool")))[:8]
+    cli("label", str(run), "--span", tool, "--mode", "tool-timeout")
+
+    result = cli("label", str(run), "--span", tool, "--mode", "tool-timeout")
+
+    assert result.exit_code == 0, result.output
+    assert f"span {tool} already has tool-timeout" in result.output
+
+
+def test_rename_merges_only_on_the_same_span_and_says_notes_were_dropped(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any]
+) -> None:
+    a = ids["wrong"]["a"]
+    tool = str(db.scalar(select(Span.id).where(Span.run_id == a[0], Span.kind == "tool")))[:8]
+    cli("label", str(a[0]), "--span", tool, "--mode", "old")  # on a span: renamed
+    cli("label", str(a[0]), "--mode", "new")
+    cli("label", str(a[1]), "--mode", "old", "--note", "lost")  # same run and span: merged
+    cli("label", str(a[1]), "--mode", "new")
+
+    result = cli("labels", "rename", "old", "new")
+
+    assert result.exit_code == 0, result.output
+    assert "renamed 1 label" in result.output and "1 merged" in result.output
+    assert "notes" in result.output
+    assert sorted((str(m.run_id), str(m.span_id) != "None") for m in labels(db)) == sorted(
+        [(str(a[0]), True), (str(a[0]), False), (str(a[1]), False)]
+    )
+    assert {m.failure_mode for m in labels(db)} == {"new"}
