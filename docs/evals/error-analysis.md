@@ -138,7 +138,7 @@ The eval set was fixed in [issue-triage-agent#10](https://github.com/sonicjoy/is
 
 After re-grading, the corpus went from 70 correct and 130 wrong to **81 correct and 119 wrong**: 11 runs flipped, all to correct. Of the 50 sampled runs, 9 are now graded correct, and their labels say why they used to be wrong.
 
-**Still open:** one #33 run answered `infra` alone, and the labeller's note says infra "makes more sense". #33 accepts only `documentation, infra`, so whether `infra` alone should count too is still to decide.
+**Decided against:** one #33 run answered `infra` alone, and the labeller's note says infra "makes more sense". #33 still accepts only `documentation, infra`, so that run stays wrong: dropping `documentation` from a launch checklist isn't an acceptable answer.
 
 ## What it means for the evals (#15 onwards)
 
