@@ -78,7 +78,7 @@ Shows the run so it can be judged from the screen, top to bottom, then asks for 
 
 1. **`agent vs truth`.** An attribute `<prefix>.decided.<field>` that has a matching `<prefix>.expected.<field>` is one row, with both sides named: `triager labels: agent evals, recorder  ≠  truth demo-agent`. The heading says where the truth came from when the run has `<prefix>.case_source`, and a synthetic case stands out: `agent vs truth · truth from a synthetic case (s65)`. Any agent can use the convention; the triager records it on its root span.
 2. **`task`.** What the agent was asked: the first model call's last human message (LangChain's chat prompt), or else the entry span's input.
-3. **`steps`.** The model and tool calls in time order, at most 12. A model call shows its tool calls with their arguments, such as the decision and its rationale, or its text. A tool call shows its input and result; a list of records, such as search hits, is shown as `#id title (labels; milestone)`. Other shapes are shown as their text.
+3. **`steps`.** The model and tool calls in time order; a run with more than 12 shows its first 8 and last 4, so the final decision stays on screen. A model call shows its tool calls with their arguments, such as the decision and its rationale, or its text. A tool call shows its input and result; a list of records, such as search hits, is shown as `#id title (labels; milestone)`. An empty result says `(no results)`. Other shapes are shown as their text.
 4. **`problems`.** The error spans, with their parents.
 5. **`attributes`.** The rest, dimmed. SDK attributes (`telemetry.*`, `service.instance.*`, `openinference.*`) are left out.
 6. **`labels`.** The run's labels so far.

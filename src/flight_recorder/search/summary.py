@@ -54,21 +54,21 @@ def root_failures(roots: list[SpanNode]) -> list[SpanNode]:
     ]
 
 
-def strings(value: Any) -> Iterator[str]:
+def _strings(value: Any) -> Iterator[str]:
     """The text inside a recorded input or output: its strings, depth first."""
     if isinstance(value, str):
         yield value
     elif isinstance(value, dict):
         for item in cast("dict[str, Any]", value).values():
-            yield from strings(item)
+            yield from _strings(item)
     elif isinstance(value, list):
         for item in cast("list[Any]", value):
-            yield from strings(item)
+            yield from _strings(item)
 
 
-def _text(value: Any, limit: int) -> str:
+def flat_text(value: Any, limit: int) -> str:
     """A recorded value as one line of plain text, cut to `limit` characters."""
-    joined = " ".join(" ".join(s.split()) for s in strings(value) if s.strip())
+    joined = " ".join(" ".join(s.split()) for s in _strings(value) if s.strip())
     return joined if len(joined) <= limit else joined[: limit - 1] + "…"
 
 
@@ -104,11 +104,11 @@ def _conversation(session: Session, run: Run, roots: list[SpanNode]) -> tuple[An
 
 
 def _failure_line(node: SpanNode) -> str:
-    return f"{node.kind} {node.name} failed: {_text(node.error, ERROR_CHARS)}"
+    return f"{node.kind} {node.name} failed: {flat_text(node.error, ERROR_CHARS)}"
 
 
 def _refused_line(node: SpanNode) -> str:
-    why = f" ({_text(node.error, ERROR_CHARS)})" if node.error else ""
+    why = f" ({flat_text(node.error, ERROR_CHARS)})" if node.error else ""
     return f"refused: {node.kind} {node.name}{why}"
 
 
@@ -127,13 +127,13 @@ def documents(session: Session, run: Run, state: str) -> list[Document]:
     ]
     tools = Counter(n.name for n in nodes if n.kind == "tool")
     agent = run.agent or run.source
-    name = _text(run.name, NAME_CHARS)
+    name = flat_text(run.name, NAME_CHARS)
     summary = _cap(
         [
             f"{agent} run: {name}",
             f"status: {state}",
-            f"asked: {_text(asked, INPUT_CHARS)}" if asked else "",
-            f"answered: {_text(answered, OUTPUT_CHARS)}" if answered else "",
+            f"asked: {flat_text(asked, INPUT_CHARS)}" if asked else "",
+            f"answered: {flat_text(answered, OUTPUT_CHARS)}" if answered else "",
             *(_failure_line(n) for n in failures[:MAX_IN_SUMMARY]),
             *(_refused_line(n) for n in refused[:MAX_IN_SUMMARY]),
             f"tools: {', '.join(t for t, _ in tools.most_common(MAX_TOOLS))}" if tools else "",
@@ -145,7 +145,7 @@ def documents(session: Session, run: Run, state: str) -> list[Document]:
         lines = [
             _failure_line(node),
             f"in {agent} run: {name}",
-            f"input: {_text(given, INPUT_CHARS)}" if given else "",
+            f"input: {flat_text(given, INPUT_CHARS)}" if given else "",
         ]
         docs.append(Document("failed_span", node.id, _cap(lines)))
     return docs

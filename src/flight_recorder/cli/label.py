@@ -7,6 +7,7 @@ and removes modes. Only the `labels` table is written.
 
 from __future__ import annotations
 
+import functools
 import getpass
 import re
 import uuid
@@ -26,7 +27,7 @@ if TYPE_CHECKING:
 
     from flight_recorder.redact import Redactor
     from flight_recorder.store.labels import ModeCount
-    from flight_recorder.store.read import RunSummary, SpanContent
+    from flight_recorder.store.read import RunSummary
 
 labels_app = typer.Typer(
     help="Failure-mode labels: list, rename and remove them.", no_args_is_help=True
@@ -80,9 +81,12 @@ def show_run(out: Console, session: Session, summary: RunSummary) -> None:
 
     roots = span_tree(session, summary.run.id)
     attributes = summary.run.attributes or {}
+    content = functools.cache(functools.partial(span_content, session))  # each span read once
 
-    def content(span_id: uuid.UUID) -> SpanContent:
-        return span_content(session, span_id)
+    def section(title: str, body: Text | None) -> None:
+        if body:
+            out.print(Text(title, style="bold"))
+            out.print(body)
 
     out.print(render.run_header(summary, roots))
     rows = render.decision_rows(attributes)
@@ -94,19 +98,13 @@ def show_run(out: Console, session: Session, summary: RunSummary) -> None:
             heading.append_text(source)
         out.print(heading)
         out.print(rows)
-    for title, section in (("task", story.task(roots, content)),
-                           ("steps", story.steps(roots, content))):  # fmt: skip
-        if section is not None:
-            out.print(Text(title, style="bold"))
-            out.print(section)
+    section("task", story.task(roots, content))
+    section("steps", story.steps(roots, content))
     problems = render.keep(roots, None, problems_only=True)
     if problems:
         out.print(Text("problems", style="bold"))
         out.print(render.span_tree(roots, shown=problems))
-    rest = render.other_attributes(attributes)
-    if rest:
-        out.print(Text("attributes", style="bold"))
-        out.print(rest)
+    section("attributes", render.other_attributes(attributes))
     existing = labels_of(session, summary.run.id)
     if existing:
         out.print(Text("labels", style="bold"))

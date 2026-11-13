@@ -225,17 +225,6 @@ def test_steps_show_tool_calls_results_and_answers_in_order() -> None:
     assert [line.split()[0] for line in lines] == ["1", "2", "3", "4"]
 
 
-def test_many_steps_are_folded() -> None:
-    from flight_recorder.cli import story
-
-    roots, contents = spans(*[("llm", "m", None, answer(f"answer {i}")) for i in range(20)])
-
-    out = shown(story.steps(roots, lookup(contents)))
-
-    assert "answer 11" in out and "answer 12" not in out
-    assert "… 8 more" in out
-
-
 def test_unknown_shapes_fall_back_to_their_text() -> None:
     from flight_recorder.cli import story
 
@@ -401,3 +390,149 @@ def test_a_real_truth_says_so_too() -> None:
 def test_no_case_source_no_mention() -> None:
     assert render.truth_source({"triager.decided.labels": ["a"],
                                 "triager.expected.labels": ["b"]}) is None  # fmt: skip
+
+
+# --- review round 1 ------------------------------------------------------------------
+
+
+def test_a_tie_in_start_time_puts_the_earlier_ending_step_first() -> None:
+    """Windows clocks tie often: a tool result and the model call that read it."""
+    from flight_recorder.cli import story
+
+    root = node("agent", "triage", 0, None)
+    model, tool, after = (node("llm", "m", 1, root.id), node("tool", "t", 1, root.id),
+                          node("llm", "m", 1, root.id))  # fmt: skip
+    model.ended_at = T0 + timedelta(seconds=1, milliseconds=1)
+    tool.ended_at = T0 + timedelta(seconds=1, milliseconds=2)
+    after.ended_at = T0 + timedelta(seconds=1, milliseconds=3)
+    model.external_id, tool.external_id, after.external_id = "c", "b", "a"  # ids against time
+    contents = {root.id: SpanContent(None, None), model.id: SpanContent(None, answer("first")),
+                tool.id: SpanContent("q", tool_result("second")),
+                after.id: SpanContent(None, answer("third"))}  # fmt: skip
+
+    out = shown(story.steps(build_tree([root, after, tool, model]), lookup(contents)))
+
+    assert out.index("first") < out.index("second") < out.index("third")
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        ("[]", "(no results)"),
+        ([], "(no results)"),
+        ("42", "42"),
+        ("null", "(no results)"),
+        ([{"score": 3}], "score 3"),
+        ({"count": 0}, "count 0"),
+    ],
+)
+def test_a_tool_result_never_prints_as_nothing(result: Any, expected: str) -> None:
+    from flight_recorder.cli import story
+
+    roots, contents = spans(("tool", "search_issues", "q", tool_result(result)))
+
+    line = shown(story.steps(roots, lookup(contents)))
+
+    assert line.rstrip().endswith(expected), line
+
+
+def test_a_tool_output_without_content_shows_its_text() -> None:
+    from flight_recorder.cli import story
+
+    roots, contents = spans(("tool", "t", "q", {"data": {"status": "error"}}))
+
+    assert "error" in shown(story.steps(roots, lookup(contents))).split("→")[1]
+
+
+def test_deeply_nested_json_in_a_tool_result_doesnt_crash() -> None:
+    from flight_recorder.cli import story
+
+    roots, contents = spans(("tool", "t", "q", tool_result("[" * 100_000)))
+
+    assert "[[[" in shown(story.steps(roots, lookup(contents)))
+
+
+def test_none_is_never_printed_as_text() -> None:
+    from flight_recorder.cli import story
+
+    roots, contents = spans(
+        ("llm", "m", None, answer(tool_calls=[{"name": None, "args": {"a": None, "b": "x"}}])),
+        ("tool", "t", "q", tool_result([{"id": None, "title": None, "labels": ["l"]}])),
+    )  # fmt: skip
+
+    out = shown(story.steps(roots, lookup(contents)))
+
+    assert "None" not in out
+    assert "b: x" in out and "(l)" in out
+
+
+def test_a_newline_in_an_argument_doesnt_hide_the_rest() -> None:
+    from flight_recorder.cli import story
+
+    roots, contents = spans(("llm", "m", None, answer(tool_calls=[
+        call("TriageDecision", labels=["bug\nX"], rationale="still here"),
+    ])))  # fmt: skip
+
+    out = shown(story.steps(roots, lookup(contents)))
+
+    assert "labels: bug X" in out and "rationale: still here" in out
+
+
+def test_a_decision_row_with_a_newline_shows_all_of_it() -> None:
+    rows = shown(render.decision_rows({"p.decided.f": "one\ntwo", "p.expected.f": "three"}))
+
+    assert "agent one two" in rows
+
+
+def test_a_long_run_keeps_its_first_and_last_steps() -> None:
+    """The decision usually comes last: fold the middle, not the end."""
+    from flight_recorder.cli import story
+
+    roots, contents = spans(*[("llm", "m", None, answer(f"answer {i}")) for i in range(20)])
+
+    out = shown(story.steps(roots, lookup(contents)))
+
+    assert "answer 7" in out and "answer 8" not in out  # first 8
+    assert "answer 15" not in out and "answer 16" in out and "answer 19" in out  # last 4
+    assert "… 8 more" in out
+    assert out.index("answer 7") < out.index("… 8 more") < out.index("answer 16")
+    assert " 17 " in out  # steps keep their own numbers
+
+
+def test_a_cut_task_says_so() -> None:
+    from flight_recorder.cli import story
+
+    roots, contents = spans(("llm", "m", prompt(message("human", "x" * 5_000)), answer("ok")))
+
+    assert shown(story.task(roots, lookup(contents))).rstrip().endswith("…")
+
+
+def test_a_task_of_many_short_lines_stops_at_the_line_cap() -> None:
+    from flight_recorder.cli import story
+
+    many = "\n".join(f"L{i}" for i in range(30))
+    roots, contents = spans(("llm", "m", prompt(message("human", many)), answer("ok")))
+
+    task = shown(story.task(roots, lookup(contents)))
+
+    assert "L11" in task and "L12" not in task and task.rstrip().endswith("…")
+
+
+def test_the_label_screen_reads_each_spans_content_once(
+    store: tuple[str, uuid.UUID], clean_env: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    import flight_recorder.store.read as read
+
+    clean_env.setenv("AFR_DATABASE_URL", store[0])
+    clean_env.setenv("AFR_HOME", str(tmp_path))
+    seen: list[uuid.UUID] = []
+    real = read.span_content
+
+    def counting(session: Session, span_id: uuid.UUID) -> SpanContent:
+        seen.append(span_id)
+        return real(session, span_id)
+
+    clean_env.setattr(read, "span_content", counting)
+
+    assert CliRunner().invoke(app, ["label", str(store[1]), "--mode", "m2"]).exit_code == 0
+    assert len(seen) == len(set(seen))

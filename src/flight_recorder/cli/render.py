@@ -91,12 +91,21 @@ def text(value: object, style: str = "") -> Text:
     return Text(clean(str(value)), style=style)
 
 
+def cut(value: str, width: int) -> str:
+    """`value` shortened to `width` characters, ending in … when it was longer."""
+    return value if len(value) <= width else value[: width - 1] + "…"
+
+
 def one_line(value: str | None, width: int) -> str:
     """The first line, cleaned and shortened to `width` characters."""
     if not value:
         return ""
-    first = clean(value.strip().split("\n", 1)[0])
-    return first if len(first) <= width else first[: width - 1] + "…"
+    return cut(clean(value.strip().split("\n", 1)[0]), width)
+
+
+def flat(value: str) -> str:
+    """All of `value` on one line: every run of whitespace, newlines too, is one space."""
+    return " ".join(value.split())
 
 
 def tokens(count: int | None) -> str:
@@ -513,10 +522,10 @@ def decision_rows(attributes: dict[str, Any]) -> Text:
         same = decided == expected
         lines.append_text(text(f"{one_line(prefix, 60)} {one_line(field, 40)}: ", "dim"))
         lines.append("agent ", style="dim")
-        lines.append_text(text(one_line(decided, 160), "" if same else "bold red"))
+        lines.append_text(text(one_line(flat(decided), 160), "" if same else "bold red"))
         lines.append("  =  " if same else "  ≠  ", style="dim" if same else "red")
         lines.append("truth ", style="dim")
-        lines.append_text(text(one_line(expected, 160)))
+        lines.append_text(text(one_line(flat(expected), 160)))
         lines.append("\n")
     lines.rstrip()
     return lines
@@ -525,7 +534,7 @@ def decision_rows(attributes: dict[str, Any]) -> Text:
 def truth_source(attributes: dict[str, Any]) -> Text | None:
     """Where the truth came from, for the `agent vs truth` heading: `truth from a synthetic
     case (s65)`, from `<p>.case_source` and `<p>.case`. A synthetic case stands out."""
-    for prefix in dict.fromkeys(prefix for prefix, *_ in _pairs(attributes)):
+    for prefix, *_ in _pairs(attributes):
         source = attributes.get(f"{prefix}.case_source")
         if source is None:
             continue
