@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 import typer
 from fake_secrets import private_key
-from sqlalchemy import create_engine, delete, func, select
+from sqlalchemy import create_engine, delete, func, select, text
 from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
@@ -793,11 +793,101 @@ def test_two_labellers_at_once_add_the_mode_once(
 
             racer = threading.Thread(target=label_too)
             racer.start()
-            time.sleep(0.5)  # let it reach the insert and wait on the first's row
+            # wait until the second is past its check and blocked on the first's row, so
+            # the test proves the race rather than passing on the check alone
+            blocked = False
+            for _ in range(100):
+                db.commit()  # pg_stat_activity is a snapshot per transaction
+                blocked = bool(
+                    db.scalar(
+                        text(
+                            "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = "
+                            "'Lock' AND datname = current_database()"
+                        )
+                    )
+                )
+                if blocked:
+                    break
+                time.sleep(0.05)
             first.commit()
             racer.join(timeout=10)
+            assert blocked, "the second labeller never waited on the first"
     finally:
         engine.dispose()
 
     assert results == [None]
     assert [(m.failure_mode, m.note) for m in labels(db)] == [("m", "first")]
+
+
+# --- review round 3 ------------------------------------------------------------------
+
+
+def test_many_labels_on_one_connection_keep_working(
+    db: Session, ids: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """psycopg prepares a statement after 5 runs, and Postgres then may use a generic plan:
+    the ON CONFLICT predicate must still match the partial index (a bound parameter didn't)."""
+    import flight_recorder.store.labels as store
+
+    db.execute(text("SET plan_cache_mode = force_generic_plan"))
+    monkeypatch.setattr(store, "modes_of", lambda *args, **kwargs: set())  # always insert
+    run = ids["wrong"]["a"][0]
+
+    added = [store.add_label(db, run, f"m{i % 15}", None, author="a", redactor=REDACTOR)
+             for i in range(30)]  # fmt: skip
+    db.commit()
+
+    assert sum(a is not None for a in added) == 15
+    assert len(labels(db)) == 15
+
+
+def test_a_mode_another_labeller_just_added_is_reported_not_claimed(
+    cli: Callable[..., Any], db: Session, ids: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import flight_recorder.store.labels as store
+
+    run = ids["wrong"]["a"][0]
+    db.add(Label(run_id=run, failure_mode="m", source="human", note="theirs"))
+    db.commit()
+    monkeypatch.setattr(store, "modes_of", lambda *args, **kwargs: set())  # checked too early
+
+    result = cli("label", str(run), input="m\nmine\nq\n")  # nothing saved: asked again
+
+    assert result.exit_code == 0, result.output
+    assert "someone just added" in result.output
+    assert f"labelled {str(run)[:8]}: m" not in result.output
+    assert [(m.failure_mode, m.note) for m in labels(db)] == [("m", "theirs")]
+
+
+@pytest.mark.parametrize("sqlstate", ["23505", "40P01"])  # unique violation, deadlock
+def test_rename_racing_another_labeller_renames_nothing_and_says_try_again(
+    cli: Callable[..., Any],
+    db: Session,
+    ids: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    sqlstate: str,
+) -> None:
+    from sqlalchemy.exc import IntegrityError, OperationalError
+
+    import flight_recorder.store.labels as store
+
+    cli("label", str(ids["wrong"]["a"][0]), "--mode", "old")
+
+    class Raced(Exception):
+        sqlstate = ""
+
+    raced = Raced()
+    raced.sqlstate = sqlstate
+    error = (IntegrityError if sqlstate == "23505" else OperationalError)("stmt", {}, raced)
+
+    def rename_then_collide(session: Session, old: str, new: str) -> tuple[int, int]:
+        session.execute(store.update(Label).values(failure_mode=new))
+        raise error
+
+    monkeypatch.setattr(store, "rename_mode", rename_then_collide)
+
+    result = cli("labels", "rename", "old", "new")
+
+    assert result.exit_code == 1
+    assert "try again" in result.output
+    assert [m.failure_mode for m in labels(db)] == ["old"]

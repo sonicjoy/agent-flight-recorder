@@ -253,3 +253,33 @@ def test_0007_merges_duplicate_human_labels_keeping_their_notes(
         ("none", "judge", "j1"),  # model labels may repeat
         ("none", "judge", "j2"),
     ]
+
+
+def test_0007_names_who_wrote_a_merged_duplicate_and_skips_empty_notes(
+    make_database: Callable[[], str],
+) -> None:
+    url = make_database()
+    upgrade(url, "0006")
+    engine = create_engine(url)
+    run = "'00000000-0000-0000-0000-000000000001'"
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(SEED_AT_0001))
+            connection.execute(text(f"""
+                INSERT INTO labels (run_id, failure_mode, source, note, author, created_at)
+                VALUES
+                ({run}, 'x', 'human', '', 'ann', '2026-11-06 18:00+00'),
+                ({run}, 'x', 'human', '', 'bob', '2026-11-06 19:00+00'),
+                ({run}, 'x', 'human', 'said so', 'cy', '2026-11-06 20:00+00')
+            """))  # fmt: skip
+        upgrade(url, "0007")
+        with engine.connect() as connection:
+            notes = (
+                connection.execute(text("SELECT note FROM labels WHERE failure_mode = 'x'"))
+                .scalars()
+                .all()
+            )
+    finally:
+        engine.dispose()
+
+    assert notes == ["[duplicate, by cy] said so"]

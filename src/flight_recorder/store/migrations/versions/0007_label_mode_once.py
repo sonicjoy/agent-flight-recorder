@@ -20,7 +20,7 @@ depends_on: str | Sequence[str] | None = None
 
 # The same run (or span) and mode, human labels only; the earliest is the one kept.
 _RANKED = """
-    SELECT id, note, created_at,
+    SELECT id, note, author, created_at,
            row_number() OVER w AS rn,
            first_value(id) OVER w AS keep_id
     FROM labels
@@ -30,18 +30,24 @@ _RANKED = """
 
 
 def upgrade() -> None:
+    # No labeller may add a row between merging and building the index.
+    op.execute("LOCK TABLE labels IN SHARE ROW EXCLUSIVE MODE")
     # allow-data-loss: duplicate human labels (same run, span and mode) become one; their
-    # notes are appended to the one kept, marked [duplicate], so no text is lost.
+    # notes are appended to the one kept, marked [duplicate, by <author>], so no text is
+    # lost; empty notes are none.
     op.execute(f"""
         WITH ranked AS ({_RANKED}),
         extra AS (
             SELECT keep_id,
-                   string_agg('[duplicate] ' || note, '; ' ORDER BY created_at, id) AS notes
+                   string_agg(
+                       '[duplicate' || coalesce(', by ' || author, '') || '] ' || note,
+                       '; ' ORDER BY created_at, id
+                   ) AS notes
             FROM ranked
-            WHERE rn > 1 AND note IS NOT NULL
+            WHERE rn > 1 AND nullif(note, '') IS NOT NULL
             GROUP BY keep_id
         )
-        UPDATE labels SET note = concat_ws('; ', labels.note, extra.notes)
+        UPDATE labels SET note = concat_ws('; ', nullif(labels.note, ''), extra.notes)
         FROM extra
         WHERE labels.id = extra.keep_id
     """)

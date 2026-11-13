@@ -32,6 +32,8 @@ labels_app = typer.Typer(
 )
 
 SEED = 14
+# another labeller got there first: unique violation, deadlock, serialization failure
+RACED = ("23505", "40P01", "40001")
 EVERY_RUN = 100_000
 SKIP, QUIT = "s", "q"
 NUMBER = re.compile(r"[0-9]{1,6}")  # ASCII only (str.isdigit() also takes ²), and short
@@ -178,9 +180,13 @@ def _ask_and_save(
         note = first_note if not saved else None
         if note is None:
             note = typer.prompt("note (optional)", default="", show_default=False).strip()
-        _save(session, run_id, mode, note, author=author, redactor=redactor, span_id=span_id)
         have.add(mode)
-        saved.append(mode)
+        if _save(session, run_id, mode, note, author=author, redactor=redactor,
+                 span_id=span_id):  # fmt: skip
+            saved.append(mode)
+        else:  # another labeller added it since the check
+            out.print(render.text(f"someone just added {render.one_line(mode, 80)} to this "
+                                  "run; yours wasn't saved"))  # fmt: skip
 
 
 def _save(
@@ -362,7 +368,7 @@ def labels_rename(
     new: Annotated[str, typer.Argument(help="Its new name; an existing mode merges them.")],
 ) -> None:
     """Rename a failure mode on human labels, or merge it into another."""
-    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.exc import DBAPIError
 
     from flight_recorder.store.labels import rename_mode
 
@@ -373,7 +379,9 @@ def labels_rename(
             session.flush()
         except ValueError as error:
             raise typer.BadParameter(str(error), param_hint="NEW") from None
-        except IntegrityError:  # another labeller added the new mode meanwhile
+        except DBAPIError as error:
+            if getattr(error.orig, "sqlstate", None) not in RACED:
+                raise
             session.rollback()
             typer.echo("error: the labels changed while renaming; nothing renamed, try again",
                        err=True)  # fmt: skip

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from typing import cast as typed
 
-from sqlalchemy import String, and_, cast, delete, func, select, update
+from sqlalchemy import String, and_, cast, delete, func, select, text, update
 from sqlalchemy.dialects.postgresql import aggregate_order_by, insert
 from sqlalchemy.orm import Session, aliased
 
@@ -115,7 +115,9 @@ def add_label(
         )
         .on_conflict_do_nothing(
             index_elements=[Label.run_id, Label.span_id, Label.failure_mode],
-            index_where=Label.source == HUMAN,
+            # literal, not a bound parameter: under a generic plan (psycopg prepares
+            # after 5 runs) Postgres can't match `source = $1` to the partial index
+            index_where=text("source = 'human'"),
         )
         .returning(Label.id)
     )
@@ -206,7 +208,9 @@ def rename_mode(session: Session, old: str, new: str) -> tuple[int, int]:
             ),
         )
         .where(Label.failure_mode == old, Label.source == HUMAN)
+        .order_by(Label.id)  # the same lock order in every rename: fewer deadlocks
         .with_for_update()
+        .execution_options(populate_existing=True)  # the kept notes as they are now
     ).all()
     for _, note, label in pairs:
         if note:
