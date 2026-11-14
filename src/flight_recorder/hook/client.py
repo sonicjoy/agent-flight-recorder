@@ -62,8 +62,10 @@ READ_ITEMS = 1_000  # read from a transcript by one hook; later hooks read the r
 # The recorder's time to apply an event, each item in it, and each MB it redacts and
 # stores: measured on Windows with a local Postgres (an ordinary event 20 to 28 ms, a
 # response 4 to 6 ms, a MB of prose 0.38 to 0.55 s and of source code 0.64 s), rounded
-# up. tests/ingest/test_limits.py times it. An event's work doesn't grow with the run:
-# writes touch only its spans (store.write.record_run), and lookups use indexes.
+# up. tests/ingest/test_limits.py times it. Most of an event's work doesn't grow with the
+# run: writes and links touch only its spans (store.write.record_run), and tool and
+# permission lookups use indexes. Two parts still do: an event with model responses
+# re-sums the run's totals, and compaction lookups read the whole session.
 EVENT_SECONDS = 0.03
 ITEM_SECONDS = 0.008
 MB_SECONDS = 0.75

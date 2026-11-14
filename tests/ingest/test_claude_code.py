@@ -505,8 +505,8 @@ def test_a_turn_claude_code_starts_itself_is_ended_whatever_its_stop_carries(
     assert second.ended_at is not None and second.ended_at >= datetime.fromtimestamp(T0 + 8, UTC)
     assert second.status == "ok"
     assert second.started_at <= spans["llm:msg_2"].started_at  # no prompt said when it began
-    if stop_carries != "none":  # without a prompt_id, nothing says the reply is this turn's
-        assert second.output == "the job finished"
+    # Without a prompt_id the reply goes to the turn the read says just ended: the likeliest.
+    assert second.output == "the job finished"
 
 
 def test_a_turn_whose_stop_is_lost_still_ends_with_its_last_response(
