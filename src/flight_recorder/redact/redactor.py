@@ -28,6 +28,7 @@ from flight_recorder.redact.patterns import (
 FINGERPRINT_CHARS = 8  # 32 bits: collisions are unlikely among one install's secrets
 KEY_PATTERN = "secret_assignment"  # a value under a secret's key: the same kind of secret
 NAME_FIELDS = ("name", "key")  # {"name": "DB_PASSWORD", "value": ...}: Kubernetes, ECS
+TOKEN_COUNT = re.compile(r"(?i)tokens?+(?:_?+\d{1,3}+)?+\W*+$")  # a key ending in token
 
 
 @dataclass
@@ -96,6 +97,8 @@ class Redactor:
             sequence: list[Any] | tuple[Any, ...] = value  # pyright: ignore[reportUnknownVariableType]
             return [self._under(key, v, counts) for v in sequence]
         if isinstance(value, int | float) and not isinstance(value, bool):  # a PIN, a number
+            if TOKEN_COUNT.search(key):  # max_token: 4096, token_1: 5: a count or an id
+                return value
             value = str(value)
         if (
             isinstance(value, str)

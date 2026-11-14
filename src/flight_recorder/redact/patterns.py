@@ -76,12 +76,16 @@ NOT_A_VALUE = frozenset(
 # Anything else makes it part of a value: `Str@ng123x`, `None!Shall9`, `None.x`.
 _CLOSING = r"[),:|\];]*+"
 _FIRST_NAME = re.compile(rf"(\w++){_CLOSING}")
+# Code, not a value: a call or lookup (get_password(), Field(default=None), os.environ[)
+# with no digit after its bracket. A value such as Hunter(22) has one.
+_CALL = r"[A-Za-z_][A-Za-z_.]{2,}+[(\[][^\s0-9]*+"
+_A_CALL = re.compile(_CALL)
 
 
 def is_a_value(text: str) -> bool:
     """Whether text after a secret's name could be the secret."""
     words = text.split()
-    if not words:
+    if not words or _A_CALL.fullmatch(words[0]):
         return False
     first = _FIRST_NAME.fullmatch(words[0])
     return not (first and first.group(1).lower() in NOT_A_VALUE)
@@ -91,7 +95,14 @@ def _assigned_value(match: re.Match[str]) -> bool:
     """A value, and not the kind name inside a placeholder: [REDACTED:github_token:1a2b3c4d]
     ends in a secret's name followed by `:` and eight characters."""
     before = match.string[max(0, match.start() - 60) : match.start()]
-    return is_a_value(match.group("secret")) and not _IN_PLACEHOLDER.search(before)
+    secret = match.group("secret")
+    if _A_COUNT.fullmatch(secret) and _PASS.match(match.group(0)):  # TEST_PASS=42
+        return False
+    return is_a_value(secret) and not _IN_PLACEHOLDER.search(before)
+
+
+_A_COUNT = re.compile(r"\d{1,3}")  # the whole value under a `pass` name: a count
+_PASS = re.compile(r"(?i)pass(?![a-z])")
 
 
 _TOKEN = r"A-Za-z0-9+/_=-"  # characters of base64 and URL-safe tokens
@@ -100,13 +111,14 @@ _TOKEN = r"A-Za-z0-9+/_=-"  # characters of base64 and URL-safe tokens
 # DBPassword, spring.datasource.password, --db-password, PASSWORD1. The name starts where a
 # word starts (not after a letter or digit) or at a camelCase hump, and ends at a word
 # boundary, so PASSWORD_FILE, secret_name and max_tokens are not names of a secret. `pass`
-# alone is a word ("first pass: ..."), so it is a name only after a prefix: DB_PASS, dbPass.
+# alone is a word ("first pass: ..."), so it is a name only after a prefix: DB_PASS, dbPass,
+# not after a hyphen (first-pass, two-pass).
 # The lookbehinds outside the name are case-sensitive; only the name itself ignores case.
 SECRET_NAME = (
     r"(?:(?<![A-Za-z0-9])|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z]))"
     r"(?i:api[_-]?keys?+|secret[_-]?key|client[_-]?secret|private[_-]?key|secret|passwords?+"
     r"|passphrase|passwd|pwd|pgpassword|access[_-]?token|auth[_-]?token|token"
-    r"|(?<=[A-Za-z0-9][_.-])pass|(?<=[a-z0-9])pass)"
+    r"|(?<=[A-Za-z0-9][_.])pass|(?<=[a-z0-9])pass)"
     r"(?:_?+\d{1,3}+)?+\b"
 )
 SECRET_KEY = re.compile(SECRET_NAME + r"\W*+$")  # a key or flag that ends in a secret's name
@@ -122,14 +134,16 @@ _ASSIGN = r"(?::=|=>|=(?![=>]))"  # = (not ==), Go's :=, and Ruby's and PHP's =>
 # A value's word: not starting with = (`token == x` is code). It stops at whitespace, a
 # quote or a backslash; a , ; { or } is part of it only when more of the word follows, as in
 # generated passwords (Tr0ub;&4dor{x}), not where it ends a value: `{password: x, user: y}`.
+# A ; followed by `Name=` starts a connection string's next setting (Password=x;User Id=sa).
 _PLAIN = r"[^\s\"'\\,;{}]"
-_WORD = rf"[^\s\"'\\,;{{}}=](?:{_PLAIN}|[,;{{}}](?={_PLAIN}))*+"
+_NEXT_SETTING = r"(?![A-Za-z][A-Za-z0-9 _.]{0,30}+=)"
+_WORD = rf"[^\s\"'\\,;{{}}=](?:{_PLAIN}|[,{{}}](?={_PLAIN})|;(?={_PLAIN}){_NEXT_SETTING})*+"
 # What the words after `name:` must not start with, or the match would be skipped whole and
 # hide a secret later on the line: a placeholder, the inside of one ([REDACTED:github_token:
 # 1a2b3c4d] holds `token:1a2b3c4d]`), or a word that says there is no value (as is_a_value
 # reads it). Checked in the regex, so the search goes on from the next position instead.
 _NOT_A_VALUE_WORD = "|".join(sorted(NOT_A_VALUE))
-_SKIPPED = rf"\[REDACTED:|[0-9a-f]{{8}}\]|(?i:{_NOT_A_VALUE_WORD}){_CLOSING}(?!\S)"
+_SKIPPED = rf"\[REDACTED:|[0-9a-f]{{8}}\]|(?:(?i:{_NOT_A_VALUE_WORD}){_CLOSING}|{_CALL})(?!\S)"
 SECRET_VALUES = (
     # password: "two words" / api_key='...' / \"token\": \"...\" (a JSON string): to the
     # closing quote or the end of the line; the quotes stay. Inside plain quotes an escape
@@ -146,9 +160,55 @@ SECRET_VALUES = (
 )
 
 
+# Words that follow a flag's name in prose: "the --password flag", "--token or --key"
+FLAG_PROSE = frozenset(
+    [
+        "flag",
+        "flags",
+        "option",
+        "options",
+        "argument",
+        "arguments",
+        "arg",
+        "args",
+        "parameter",
+        "param",
+        "switch",
+        "and",
+        "or",
+        "is",
+        "was",
+        "to",
+        "with",
+        "when",
+        "the",
+        "a",
+        "an",
+        "if",
+        "for",
+        "in",
+        "on",
+        "of",
+        "as",
+        "by",
+        "will",
+        "must",
+        "should",
+        "can",
+        "only",
+        "instead",
+    ]
+)
+
+
 def _secret_flag(match: re.Match[str]) -> bool:
     """--password VALUE, --db-password VALUE: a flag named for a secret, then its value."""
-    return bool(SECRET_KEY.search(match.group("flag"))) and is_a_value(match.group("secret"))
+    secret = match.group("secret")
+    return (
+        bool(SECRET_KEY.search(match.group("flag")))
+        and secret.lower() not in FLAG_PROSE
+        and is_a_value(secret)
+    )
 
 
 def _secret_pair(match: re.Match[str]) -> bool:
@@ -159,15 +219,18 @@ def _secret_pair(match: re.Match[str]) -> bool:
 _Q = r"\\?[\"']"  # a quote, or an escaped one inside a JSON string
 SECRET_ELSEWHERE = (
     # docker login --password VALUE: a flag, a space and its value, unless that is another
-    # flag or a variable (--password $DB_PASSWORD). A quoted value goes whole, quotes too.
+    # flag, a variable (--password $DB_PASSWORD), a redirection (--with-token < file) or a
+    # word of prose (the --password flag). A quoted value goes whole, quotes too.
     # Only a flag that ends in a secret's name matches, so another flag's quoted value
     # (--command "mysql --password x") isn't consumed unchecked. The lazy run can't pass
     # the flag's end, so it stays linear.
     rf"(?<![\w-])--(?P<flag>[A-Za-z0-9_.-]*?{SECRET_NAME})[ \t]++"
-    r"(?P<secret>\"[^\"\n]*+\"|'[^'\n]*+'|[^\s\"'\\$-]\S*+)",
+    r"(?P<secret>\"[^\"\n]*+\"|'[^'\n]*+'|[^\s\"'\\$<>|&;-]\S*+)",
     # mysql -uroot -pVALUE: the password joined to -p. -p alone asks for it. Up to 30
-    # arguments are looked at, so a line of `mysql` words stays linear.
-    r"(?<![\w-])mysql(?:dump|admin|sh)?+(?:[ \t]++(?!-p)\S++){0,30}+[ \t]++-p(?P<secret>\S++)",
+    # arguments are looked at, so a line of `mysql` words stays linear. The search stops at
+    # ; & or |, where the next command (psql -p5432) begins.
+    r"(?<![\w-])mysql(?:dump|admin|sh)?+(?:[ \t]++(?!-p)[^\s;&|]++){0,30}+[ \t]++-p"
+    r"(?P<secret>\S++)",
     # Kubernetes and ECS env entries: name: DB_PASSWORD, then value: ... on the same or the
     # next line, as YAML or JSON (escaped too, inside a JSON string). The value is read as
     # above: quoted, to its closing quote; unquoted, the words to the end of the line.

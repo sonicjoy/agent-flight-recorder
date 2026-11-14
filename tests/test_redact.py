@@ -78,6 +78,21 @@ NEAR_MISSES = {
     "names that only start with a keyword": "PASSWORD_FILE=/run/secrets/db_password_file "
     "secret_name=prod-database-credentials tokenizer=cl100k_base_tokenizer",
     "counts named like a keyword": "num_tokens=12345678 maxTokens=40960000",
+    # code and prose after a secret's name: a call or lookup, not a value
+    "a typed field": "api_key: str = Field(default=None)",
+    "Go's := with a call": "password := get()",
+    "a call": "password = get_password()",
+    "a lookup": "token = os.environ['TOKEN']",
+    "a call after a colon": "password: getpass.getpass()",
+    # a flag named in prose, or followed by a redirection
+    "a flag in prose": "use the --password flag to set it, or the --token option",
+    "a flag then a redirection": "gh auth login --with-token < token.txt",
+    # pass as a count or a word, not a password
+    "a count named pass": "TEST_PASS=42 MAX_PASS=3",
+    "a hyphenated word ending in pass": "first-pass: done; two-pass: no",
+    # a later command on the line has its own -p
+    "psql after mysql": "mysql -uroot app; psql -p5432 db",
+    "psql after mysql and &&": "mysql app && psql -p5432 db",
 }
 
 
@@ -330,6 +345,51 @@ def test_a_value_under_a_secret_key_that_starts_like_a_type_name_is_redacted(
     assert result.value == {"password": redactor.placeholder("secret_assignment", "Str@ng123x")}
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Server=db;Password={};User Id=sa",
+        "Password={};Encrypt=true;User Id=sa;",
+        "Data Source=x;Pwd={};Initial Catalog=app",
+    ],
+)
+def test_a_connection_strings_other_settings_are_kept(redactor: Redactor, text: str) -> None:
+    """ADO.NET and ODBC: `;Name=` starts the next setting, so the password ends there."""
+    result, _ = redact(redactor, text.format("x9Yz"))
+
+    assert result == text.format(redactor.placeholder("secret_assignment", "x9Yz"))
+
+
+@pytest.mark.parametrize(
+    ("text", "secret"),
+    [
+        ("login --password hunter2xyz", "hunter2xyz"),  # a flag's real value
+        ("DB_PASS=123456 ./run", "123456"),  # a PIN under a pass name
+        ("password = Hunter(22)", "Hunter(22)"),  # a value with digits isn't a call
+        ("password: Tr0ub;&4dor", "Tr0ub;&4dor"),  # ; not followed by a setting's name
+    ],
+)
+def test_values_close_to_the_near_misses_are_still_redacted(
+    redactor: Redactor, text: str, secret: str
+) -> None:
+    result, _ = redact(redactor, text)
+
+    assert result == text.replace(secret, redactor.placeholder("secret_assignment", secret))
+
+
+def test_numbers_under_a_token_count_key_are_kept(redactor: Redactor) -> None:
+    """A token key holding a number is a count or an id: max_token, token_1."""
+    counts: Counter[str] = Counter()
+    value = {"max_token": 4096, "token_1": 5, "pin_password": 1234, "api_key": 12345678901}
+
+    result = redactor.value(value, counts)
+
+    assert result["max_token"] == 4096
+    assert result["token_1"] == 5
+    assert result["pin_password"] == redactor.placeholder("secret_assignment", "1234")
+    assert result["api_key"] == redactor.placeholder("secret_assignment", "12345678901")
+
+
 GITHUB_TOKEN = "ghp_" + "a1B2c3D4" * 5
 # A secret's name whose value is skipped (a placeholder, a type, "none"), then a real one
 # later on the same line: the skipped text must not hide the secret after it.
@@ -426,6 +486,8 @@ ADVERSARIAL = {
     "many flags": "--password " * 40_000,
     "many kebab flags": "--a-b-c-" * 40_000 + "password x",
     "one long flag": "--" + "apass-" * 30_000 + " x",
+    "many settings after a value": "password=a" + ";Abcdefghij klmnop" * 10_000,
+    "many calls after names": "token: get( " * 20_000,
     "many mysql words": "mysql " * 60_000,
     "mysql with many arguments": "mysql" + " -u" * 100_000,
     "many env names": "- name: DB_PASSWORD\n  " * 30_000,
