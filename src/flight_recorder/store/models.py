@@ -218,6 +218,15 @@ class Span(Base):
         Index(None, "run_id", "started_at"),
         Index(None, "run_id", "parent_id"),
         Index("ix_spans_errors", "run_id", postgresql_where=text("status = 'error'")),
+        # Claude Code finds a running tool, and a permission wait, by what it is rather than
+        # by id: without these, each lookup scans the session (ingest/claude_code.py).
+        Index("ix_spans_tool_ends", "run_id", "ended_at", postgresql_where=text("kind = 'tool'")),
+        Index(
+            "ix_spans_permission_waits",
+            "run_id",
+            "parent_external_id",
+            postgresql_where=text("external_id LIKE 'permission:%'"),
+        ),
     )
 
 

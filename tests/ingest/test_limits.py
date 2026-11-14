@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import Engine, create_engine, event, text
 
 from flight_recorder.hook import client
 from flight_recorder.hook.install import SYNC_TIMEOUT_SECONDS
@@ -137,3 +137,98 @@ def test_a_chunk_takes_no_longer_late_in_a_long_session(store: Engine) -> None:
 
     estimate = client.estimated_seconds(chunk)
     assert took <= estimate, f"{len(chunk)} events took {took:.2f}s, estimated {estimate:.2f}s"
+
+
+def tool_event(name: str, n: int, order: int) -> dict[str, Any]:
+    hook = {
+        "session_id": "s",
+        "prompt_id": "p0",
+        "hook_event_name": name,
+        "tool_name": "Bash",
+        "tool_use_id": f"t{n}",
+        "tool_input": {"command": f"ls {n}"},
+    }
+    if name == "PostToolUse":
+        hook |= {"tool_response": {"stdout": "ok"}, "duration_ms": 10}
+    if name == "PermissionDenied":
+        hook |= {"reason": "not allowed"}
+    return {"received_at": 1_794_300_100 + order, "hook": hook}  # fmt: skip
+
+
+def spans_read(plan: dict[str, Any]) -> float:
+    """Rows of spans a plan node and its children read, kept or filtered out."""
+    own = 0.0
+    if plan.get("Relation Name") == "spans":
+        kept = plan["Actual Rows"] + plan.get("Rows Removed by Filter", 0)
+        own = (kept + plan.get("Rows Removed by Index Recheck", 0)) * plan["Actual Loops"]
+    return own + sum(spans_read(child) for child in plan.get("Plans", []))
+
+
+@pytest.mark.db
+def test_no_tool_or_permission_event_reads_the_whole_session(store: Engine) -> None:
+    """Deterministic where timing is noisy: each statement an event runs, run again under
+    EXPLAIN ANALYZE, reads a few rows of a 60,000-span session, not all of them. A
+    PermissionRequest finds its tool, and a tool's end or a refusal its permission wait,
+    by what they are rather than by id: those lookups scanned the session."""
+    app = TestClient(create_app(store, Redactor(b"k" * 32)), base_url="http://127.0.0.1:4318")
+    hook = {"session_id": "s", "prompt_id": "p0"}
+    timed(
+        app,
+        [{"received_at": 1_794_300_000, "hook": hook | {"hook_event_name": "UserPromptSubmit"}}],
+    )
+    with store.begin() as connection:  # 50,000 finished tool calls, 10,000 of them waited
+        connection.execute(
+            text("""
+                INSERT INTO spans (run_id, external_id, parent_external_id, parent_id, kind, name,
+                                   input, started_at, ended_at)
+                SELECT turn.run_id, 'tool:old_' || g, 'turn:p0', turn.id, 'tool', 'Bash',
+                       jsonb_build_object('command', 'ls ' || g % 100),
+                       to_timestamp(1794200000 + g), to_timestamp(1794200000 + g)
+                FROM spans AS turn, generate_series(1, 50000) AS g
+                WHERE turn.external_id = 'turn:p0'
+            """)
+        )
+        connection.execute(
+            text("""
+                INSERT INTO spans (run_id, external_id, parent_external_id, parent_id, kind, name,
+                                   input, started_at, ended_at)
+                SELECT run_id, 'permission:old_' || external_id, external_id, id, 'step',
+                       'permission: Bash', input, started_at, ended_at
+                FROM spans WHERE external_id LIKE 'tool:old_%' AND random() < 0.2
+            """)
+        )
+        connection.execute(text("ANALYZE spans"))
+    events: list[dict[str, Any]] = []
+    for n in range(3):  # a tool that asks first, and one whose request arrives first
+        for name in ("PreToolUse", "PermissionRequest", "PostToolUse"):
+            events.append(tool_event(name, n, len(events)))
+    for name in ("PermissionRequest", "PreToolUse", "PermissionDenied"):
+        events.append(tool_event(name, 9, len(events)))
+    refused = {"tool_use_id": "t0", "decision": "reject", "source": "user", "at": None}
+    events.append(
+        {"received_at": 1_794_300_200, "hook": hook | {"hook_event_name": "Stop"},
+         "usage": [], "permissions": [refused]}
+    )  # fmt: skip
+    statements: list[tuple[str, Any]] = []
+
+    def record(*args: Any) -> None:
+        statement, parameters = args[2], args[3]
+        if "spans" in statement:
+            statements.append((statement, parameters))
+
+    event.listen(store, "before_cursor_execute", record)
+    try:
+        timed(app, events)
+    finally:
+        event.remove(store, "before_cursor_execute", record)
+
+    assert len(statements) > 20
+    with store.connect() as connection:
+        for statement, parameters in statements:
+            with connection.begin() as transaction:  # run it again, then undo it
+                [[plans]] = connection.exec_driver_sql(
+                    f"EXPLAIN (ANALYZE, FORMAT JSON) {statement}", parameters
+                ).all()
+                transaction.rollback()
+            read = spans_read(plans[0]["Plan"])
+            assert read < 1_000, f"read {read:.0f} spans: {statement}"

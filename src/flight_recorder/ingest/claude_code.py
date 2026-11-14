@@ -307,6 +307,15 @@ def _same_call(hook: Mapping[str, Any], prefix: str = "") -> Any:
     )
 
 
+def _run_id(session_id: str) -> Any:
+    """The session's run id, as a subquery: the planner then knows it before reading spans,
+    so the partial indexes (ix_spans_tool_ends, ix_spans_permission_waits) serve an OR. A
+    join hides it, and the whole session was scanned."""
+    return (
+        select(Run.id).where(Run.source == SOURCE, Run.external_id == session_id).scalar_subquery()
+    )
+
+
 def _waiting_tool(
     session: Session, session_id: str, hook: Mapping[str, Any], at: datetime
 ) -> Span | None:
@@ -315,10 +324,8 @@ def _waiting_tool(
     or ended after it (its PostToolUse arrived first)."""
     return session.scalars(
         select(Span)
-        .join(Run, Run.id == Span.run_id)
         .where(
-            Run.source == SOURCE,
-            Run.external_id == session_id,
+            Span.run_id == _run_id(session_id),
             Span.kind == "tool",
             _same_call(hook),
             Span.ended_at.is_(None) | (Span.ended_at >= at),
@@ -335,10 +342,8 @@ def _open_wait(
     request arrived before the tool's start, waiting under the turn with the same call."""
     found = session.scalar(
         select(Span.external_id)
-        .join(Run, Run.id == Span.run_id)
         .where(
-            Run.source == SOURCE,
-            Run.external_id == session_id,
+            Span.run_id == _run_id(session_id),
             Span.external_id.like("permission:%"),
             Span.ended_at.is_(None),
             (Span.parent_external_id == tool_id)
@@ -493,11 +498,8 @@ def _decision(
 def _waits_of(session: Session, session_id: str, tool_id: str) -> list[SpanIn]:
     """The permission waits already under a tool call."""
     ids = session.scalars(
-        select(Span.external_id)
-        .join(Run, Run.id == Span.run_id)
-        .where(
-            Run.source == SOURCE,
-            Run.external_id == session_id,
+        select(Span.external_id).where(
+            Span.run_id == _run_id(session_id),
             Span.external_id.like("permission:%"),
             Span.parent_external_id == tool_id,
         )
