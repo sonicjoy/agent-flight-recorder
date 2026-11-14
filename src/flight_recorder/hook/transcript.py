@@ -29,6 +29,11 @@ What it relies on, checked against Claude Code's transcripts on 11 Nov 2026:
   prompt_id (checked with Claude Code 2.1.321 on 13 Nov 2026). The responses after one
   belong to that turn, so each response carries it: a read can span two turns, since later
   hooks read on in a long turn's transcript. The latest one is kept with the read position.
+  A turn Claude Code starts itself (a background task's result) begins with an "isMeta"
+  user line carrying a new promptId, and its last response, like any turn's, stops with
+  "end_turn". The recorder ends turns from that (seen in this machine's transcripts on
+  14 Nov 2026: 781 of 782 turns ending in end_turn had one "stop_hook_summary" line).
+  Whether Stop's prompt_id names such a turn is unverified.
 
 Where reading stopped is kept per transcript in <AFR_HOME>/hook-state/, so each turn reads
 only new lines. The position is saved only once the events carrying the usage have been

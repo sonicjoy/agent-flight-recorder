@@ -247,6 +247,75 @@ def _responses(
     return spans
 
 
+def _turn_ends(usage: Any) -> dict[str, datetime]:
+    """The turns the transcript says ended: each turn's last response stops with end_turn,
+    and carries the turn it was written in (its prompt_id). The latest end per turn."""
+    ends: dict[str, datetime] = {}
+    for item in _items(usage):
+        turn, ended = _turn(item), _time(item.get("timestamp"))
+        if turn and ended and item.get("stop_reason") == "end_turn":
+            ends[turn] = max(ended, ends.get(turn, ended))
+    return ends
+
+
+def _stopped_turn(
+    session: Session, session_id: str, turn: str | None, ends: dict[str, datetime]
+) -> str | None:
+    """The turn a Stop ended. Usually the one its prompt_id names. But a turn Claude Code
+    starts itself (a background task's result, say) has no UserPromptSubmit, and whether
+    its Stop carries its own prompt_id is unverified: if the Stop names none, or a turn
+    already ended, and its read holds a later turn's last response, the Stop is that turn's,
+    as long as no prompt or Stop has filled that turn in yet (a re-sent Stop whose read
+    reached into the next typed turn keeps its own)."""
+    if not ends:
+        return turn
+    latest, ended = max(ends.items(), key=lambda end: end[1])
+    if latest == turn:
+        return turn
+    own = _stored(session, session_id, turn) if turn else None
+    if turn and not (own and own.ended_at and own.ended_at < ended):
+        return turn
+    target = _stored(session, session_id, latest)
+    if target is not None and (target.input is not None or target.output is not None):
+        return turn
+    return latest
+
+
+def _began(turn: str, spans: list[SpanIn], at: datetime) -> datetime:
+    """When a turn began, at the latest: by its first response here, for a turn no
+    UserPromptSubmit started."""
+    return min((s.started_at for s in spans if s.parent_external_id == turn), default=at)
+
+
+def _ended_turns(
+    session: Session, session_id: str, ends: dict[str, datetime], spans: list[SpanIn]
+) -> list[SpanIn]:
+    """End each turn the transcript says ended, unless this event already writes it: a turn
+    whose Stop was lost, or named another turn, ends with its last response."""
+    written = {span.external_id for span in spans}
+    ended: list[SpanIn] = []
+    for turn, at in ends.items():
+        if turn in written:
+            continue
+        stored = _stored(session, session_id, turn)
+        began = _began(turn, spans, at)
+        ended.append(
+            _merge(
+                session,
+                session_id,
+                began,
+                external_id=turn,
+                parent_external_id=ROOT,
+                kind="step",
+                name=None if stored else "turn",
+                started_at=began,
+                ended_at=at,
+                status="ok" if stored is None or stored.status == "unset" else None,
+            )
+        )
+    return ended
+
+
 def _session_attributes(hook: Mapping[str, Any]) -> dict[str, Any]:
     keys = ("cwd", "permission_mode", "source", "model", "reason")
     return {f"claude_code.{k}": hook[k] for k in keys if hook.get(k) not in (None, "")}
@@ -576,6 +645,8 @@ def apply_event(session: Session, redactor: Redactor, event: Mapping[str, Any]) 
         under = f"agent:{subagent}" if subagent else turn or ROOT
         spans += _responses(session, session_id, event.get("usage"), under, at)
         spans += _decisions(session, session_id, event.get("permissions"))
+        if not subagent:
+            spans += _ended_turns(session, session_id, _turn_ends(event.get("usage")), spans)
         run = {"started_at": at}
     elif name == "UserPromptSubmit" and turn:
         prompt = _str(hook, "prompt") or ""
@@ -642,19 +713,23 @@ def apply_event(session: Session, redactor: Redactor, event: Mapping[str, Any]) 
             spans += _decisions(session, session_id, event.get("permissions"))
     elif name in ("Stop", "StopFailure"):
         failed = name == "StopFailure"
-        if turn:
+        ends = _turn_ends(event.get("usage"))
+        responses = _responses(session, session_id, event.get("usage"), turn or ROOT, at)
+        if stopped := _stopped_turn(session, session_id, turn, ends):
             error = (_str(hook, "error") or "the turn ended with an API error") if failed else None
             spans.append(
                 merge(
-                    **turn_fields,
+                    **turn_fields | {"external_id": stopped},
+                    started_at=_began(stopped, responses, at),
                     output=hook.get("last_assistant_message"),
                     ended_at=at,
                     status="error" if failed else "ok",
                     error=error,
                 )
             )
-        spans += _responses(session, session_id, event.get("usage"), turn or ROOT, at)
+        spans += responses
         spans += _decisions(session, session_id, event.get("permissions"))
+        spans += _ended_turns(session, session_id, ends, spans)
         stored_root = _stored(session, session_id, ROOT)
         latest = _time(stored_root.attributes.get("latest_reply_at")) if stored_root else None
         reply = hook.get("last_assistant_message")

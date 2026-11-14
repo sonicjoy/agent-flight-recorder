@@ -453,6 +453,110 @@ def test_a_response_goes_under_the_turn_it_was_written_in_whichever_event_carrie
     assert spans["llm:msg_3"].parent_id == spans["turn:p2"].id
 
 
+def at(seconds: float) -> str:
+    """A transcript timestamp, seconds after T0."""
+    return datetime.fromtimestamp(T0 + seconds, UTC).isoformat().replace("+00:00", "Z")
+
+
+def last_response(message_id: str, prompt_id: str, seconds: float) -> dict[str, Any]:
+    """The response that ends a turn, written in turn prompt_id."""
+    return usage(message_id) | {
+        "prompt_id": prompt_id,
+        "stop_reason": "end_turn",
+        "timestamp": at(seconds),
+    }
+
+
+# A turn Claude Code starts itself (a background task's result, say) has no
+# UserPromptSubmit: its first transcript line is an isMeta user line with a new promptId.
+# Which prompt_id its Stop carries isn't known; each case must end that turn.
+@pytest.mark.parametrize("stop_carries", ["its own", "the previous turn's", "none"])
+def test_a_turn_claude_code_starts_itself_is_ended_whatever_its_stop_carries(
+    client: TestClient, store: Engine, stop_carries: str
+) -> None:
+    prompt_id = {"its own": {"prompt_id": "p2"}, "the previous turn's": {"prompt_id": "p1"}}
+    client.post(
+        URL,
+        json={
+            "events": [
+                ev("UserPromptSubmit", 1, prompt_id="p1", prompt="start a background job"),
+                ev(
+                    "Stop",
+                    4,
+                    prompt_id="p1",
+                    last_assistant_message="started",
+                    usage=[last_response("msg_1", "p1", 3)],
+                ),
+                ev(
+                    "Stop",
+                    9,
+                    **prompt_id.get(stop_carries, {}),
+                    last_assistant_message="the job finished",
+                    usage=[last_response("msg_2", "p2", 8)],
+                ),
+            ]
+        },
+    )
+
+    spans = stored(store)[1]
+    first, second = spans["turn:p1"], spans["turn:p2"]
+    assert spans["llm:msg_2"].parent_id == second.id
+    assert (first.output, first.ended_at) == ("started", datetime.fromtimestamp(T0 + 4, UTC))
+    assert second.ended_at is not None and second.ended_at >= datetime.fromtimestamp(T0 + 8, UTC)
+    assert second.status == "ok"
+    assert second.started_at <= spans["llm:msg_2"].started_at  # no prompt said when it began
+    if stop_carries != "none":  # without a prompt_id, nothing says the reply is this turn's
+        assert second.output == "the job finished"
+
+
+def test_a_turn_whose_stop_is_lost_still_ends_with_its_last_response(
+    client: TestClient, store: Engine
+) -> None:
+    """A later read can carry the end of a turn whose own Stop never arrived."""
+    client.post(
+        URL,
+        json={
+            "events": [
+                ev("UserPromptSubmit", 1, prompt_id="p1", prompt="first"),
+                ev("UserPromptSubmit", 6, prompt_id="p2", prompt="second"),
+                ev(
+                    "Stop",
+                    9,
+                    prompt_id="p2",
+                    last_assistant_message="two",
+                    usage=[last_response("msg_1", "p1", 3), last_response("msg_2", "p2", 8)],
+                ),
+            ]
+        },
+    )
+
+    spans = stored(store)[1]
+    assert spans["turn:p1"].ended_at == datetime.fromtimestamp(T0 + 3, UTC)
+    assert spans["turn:p1"].status == "ok"
+    assert spans["turn:p1"].output is None  # its reply was in the lost Stop
+    assert spans["turn:p2"].output == "two"
+
+
+def test_a_resent_stop_does_not_hand_its_reply_to_the_next_typed_turn(
+    client: TestClient, store: Engine
+) -> None:
+    """A Stop applied twice (a retry) whose read reached into the next turn: the next turn
+    was typed, so the Stop is still its own turn's."""
+    stop = ev("Stop", 4, prompt_id="p1", last_assistant_message="one",
+              usage=[last_response("msg_1", "p1", 3), last_response("msg_2", "p2", 7)])  # fmt: skip
+    events = [
+        ev("UserPromptSubmit", 1, prompt_id="p1", prompt="first"),
+        ev("UserPromptSubmit", 5, prompt_id="p2", prompt="second"),
+        stop,
+    ]
+    client.post(URL, json={"events": events})
+    client.post(URL, json={"events": [stop]})
+
+    spans = stored(store)[1]
+    assert spans["turn:p1"].output == "one"
+    assert spans["turn:p2"].output is None
+
+
 def test_the_rest_of_an_old_turn_end_adds_only_its_items(client: TestClient, store: Engine) -> None:
     """The rest of a long turn, read by later hooks, comes as more parts of its turn end
     (marked rest): it must not take the run back to that turn's permission mode."""
