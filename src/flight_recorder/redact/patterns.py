@@ -76,20 +76,46 @@ NOT_A_VALUE = frozenset(
 # Anything else makes it part of a value: `Str@ng123x`, `None!Shall9`, `None.x`.
 _CLOSING = r"[),:|\];]*+"
 _FIRST_NAME = re.compile(rf"(\w++){_CLOSING}")
-# Code, not a value: a call or lookup (get_password(), Field(default=None), os.environ[)
-# with no digit or password punctuation after its bracket. A value such as Hunter(22) or
-# Summer(Fun)! has one. Bounded, so looking for one after every name stays linear.
-_CALL = r"[A-Za-z_][A-Za-z_.]{2,100}+[(\[][^\s0-9!@#$%^&*~?]{0,100}+"
+# Code, not a value: a call or lookup in a strict shape. Names and arguments are letters,
+# dots and underscores, with no digit (Hunter(22) and Tr0ub(x) are values), and nothing
+# may follow the closing bracket (Summer(Fun)! and Open(Sesame). are values). Bounded, so
+# looking for one after every name stays linear.
+_IDENT = r"[A-Za-z_][A-Za-z_.]{0,60}+"
+_ARGS = rf"(?:{_IDENT}(?:={_IDENT})?+(?:,[ \t]*+{_IDENT}(?:={_IDENT})?+){{0,5}}+)?+"
+_NAME = r"[A-Za-z_][A-Za-z_.]{2,100}+"
+_CALL = rf"{_NAME}(?:\({_ARGS}\)|\[{_ARGS}\])"  # get_password(), Field(default=None)
 _A_CALL = re.compile(_CALL)
+# A call the value's word stops inside, at a quote or a comma: os.environ[, Field(a=None,
+# cases()["key"]
+_OPEN_CALL = re.compile(rf"{_NAME}(?:\({_ARGS}\))?+[(\[]{_ARGS}")
+# The rest of the line must then close it, with nothing after but a , ; or a comment, or
+# leave it open for the next line: os.environ['TOKEN'], os.environ.get('TOKEN', 'none'),
+# Field(a=None, b="x"), Field(
+_CLOSES_CALL = re.compile(
+    rf"(?:[ \t]*+(?:\"[^\"\n]{{0,100}}+\"|'[^'\n]{{0,100}}+'|{_IDENT}|[=,]))*+"
+    r"(?:[ \t]*+[)\]]{1,3}+[ \t]*+[,;]?+)?+[ \t]*+(?:(?:#|//).*+)?+"
+)
+_REST = 300  # characters of the rest of the line looked at
 
 
-def is_a_value(text: str) -> bool:
-    """Whether text after a secret's name could be the secret."""
+def is_a_value(text: str, rest: str | None = None) -> bool:
+    """Whether text after a secret's name could be the secret. `rest` is the rest of the
+    line after it, when the text was cut from one."""
     words = text.split()
-    if not words or (len(words) == 1 and _A_CALL.fullmatch(words[0])):  # the whole value
+    if not words:
         return False
+    if len(words) == 1 and (
+        _A_CALL.fullmatch(words[0])
+        or (rest is not None and _OPEN_CALL.fullmatch(words[0]) and _CLOSES_CALL.fullmatch(rest))
+    ):
+        return False  # the whole value is code
     first = _FIRST_NAME.fullmatch(words[0])
     return not (first and first.group(1).lower() in NOT_A_VALUE)
+
+
+def _rest_of_line(match: re.Match[str]) -> str:
+    end = match.end()
+    return match.string[end : end + _REST].split("\n", 1)[0].split("\\n", 1)[0]
 
 
 def _assigned_value(match: re.Match[str]) -> bool:
@@ -99,7 +125,7 @@ def _assigned_value(match: re.Match[str]) -> bool:
     secret = match.group("secret")
     if _A_COUNT.fullmatch(secret) and _PASS.match(match.group(0)):  # TEST_PASS=42
         return False
-    return is_a_value(secret) and not _IN_PLACEHOLDER.search(before)
+    return is_a_value(secret, _rest_of_line(match)) and not _IN_PLACEHOLDER.search(before)
 
 
 _A_COUNT = re.compile(r"\d{1,2}")  # the whole value under a `pass` name: a count
@@ -150,7 +176,7 @@ _WORD = rf"[^\s\"'\\,;{{}}=](?:{_PLAIN}|[,{{}}](?={_PLAIN})|;(?={_PLAIN}){_NEXT_
 _NOT_A_VALUE_WORD = "|".join(sorted(NOT_A_VALUE))
 _SKIPPED = (
     rf"\[REDACTED:|[0-9a-f]{{8}}\]|(?i:{_NOT_A_VALUE_WORD}){_CLOSING}(?!\S)"
-    rf"|{_CALL}[ \t]*+(?=[\r\n#]|\\[rn]|\Z)"
+    rf"|{_CALL}[ \t]*+(?=[\r\n#]|//|\\[rn]|\Z)"
 )
 SECRET_VALUES = (
     # password: "two words" / api_key='...' / \"token\": \"...\" (a JSON string): to the
@@ -215,7 +241,7 @@ def _secret_flag(match: re.Match[str]) -> bool:
     return (
         bool(SECRET_KEY.search(match.group("flag")))
         and secret.lower() not in FLAG_PROSE
-        and is_a_value(secret)
+        and is_a_value(secret, _rest_of_line(match))
     )
 
 
@@ -239,7 +265,7 @@ SECRET_ELSEWHERE = (
     # arguments are looked at, so a line of `mysql` words stays linear. The search stops at
     # ; & or | outside quotes, where the next command (psql -p5432) begins.
     r"(?<![\w-])mysql(?:dump|admin|sh)?+(?:[ \t]++(?!-p)(?:\"[^\"\n]{0,500}+\"|'[^'\n]{0,500}+'"
-    r"|[^\s;&|\"']++)++){0,30}+[ \t]++-p"
+    r"|[^\s;&|\"']++|[\"'])++){0,30}+[ \t]++-p"  # an unbalanced quote is one character
     r"(?P<secret>\S++)",
     # Kubernetes and ECS env entries: name: DB_PASSWORD, then value: ... on the same or the
     # next line, as YAML or JSON (escaped too, inside a JSON string). The value is read as

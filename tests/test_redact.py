@@ -84,6 +84,9 @@ NEAR_MISSES = {
     "a call": "password = get_password()",
     "a lookup": "token = os.environ['TOKEN']",
     "a call after a colon": "password: getpass.getpass()",
+    "a call then a // comment": "password: getPassword() // from the vault",
+    "a call with quoted arguments": "token = os.environ.get('TOKEN', 'none')",
+    "a call ending a list": "api_key=key.get_secret_value(),",
     # a flag named in prose, or followed by a redirection
     "a flag in prose": "use the --password flag to set it, or the --token option",
     "a flag then a redirection": "gh auth login --with-token < token.txt",
@@ -375,6 +378,12 @@ def test_a_connection_strings_other_settings_are_kept(redactor: Redactor, text: 
         ("password: Tro(ub 4dor99 battery", "Tro(ub 4dor99 battery"),  # more than a call
         ('mysql -e "SELECT 1;" -pX9secret', "X9secret"),  # a ; inside a quoted argument
         ("DB_PASS=123 ./run", "123"),  # three digits: a PIN, not a count
+        ("password=Summer(Fun)-", "Summer(Fun)-"),  # anything after the call's close
+        ("password=Abc(def)==", "Abc(def)=="),
+        ("password=Open(Sesame).", "Open(Sesame)."),
+        ("password=Correct(Horse)-Battery", "Correct(Horse)-Battery"),
+        ("password=Tr(0)ub", "Tr(0)ub"),
+        ("mysql -u o'neil -pX9secret", "X9secret"),  # an unbalanced quote before -p
     ],
 )
 def test_values_close_to_the_near_misses_are_still_redacted(
@@ -413,6 +422,23 @@ def test_values_under_a_secret_key_that_start_like_code_are_redacted(
     result = redactor.redact({key: value})
 
     assert result.value == {key: redactor.placeholder("secret_assignment", value)}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'password: abc("x") Hunter22',
+        "password: Tro('ub') 4dor99 battery",
+        'password = abc("x")Hunter22',
+        "token = Open('x') + rest",
+    ],
+)
+def test_a_value_cut_at_a_quote_is_code_only_if_the_line_closes_the_call(
+    redactor: Redactor, text: str
+) -> None:
+    result, counts = redact(redactor, text)
+
+    assert counts["secret_assignment"] >= 1, result
 
 
 GITHUB_TOKEN = "ghp_" + "a1B2c3D4" * 5
@@ -527,6 +553,9 @@ ADVERSARIAL = {
     "dotted flag runs naming a secret": "--x.password." * 15_000,
     "many calls after a colon, no spaces": "password:abc(" * 15_000,
     "many lookups after a colon": "token:os.environ[" * 12_000,
+    "many open calls cut at a quote": "password=os.get('" * 12_000,
+    "open calls with long argument runs": ("token=Field(a=None" + ", b" * 50 + " ") * 2_000,
+    "an open call then a long line": "password=get(" + " a=b," * 40_000,
 }
 
 
