@@ -112,7 +112,9 @@ SECRET_NAME = (
 SECRET_KEY = re.compile(SECRET_NAME + r"\W*+$")  # a key or flag that ends in a secret's name
 # The value after a secret's name, of any length, in one of three forms, each a pattern of
 # its own (one regex can't name the secret in each branch); quoted runs first.
-_NAMED = SECRET_NAME + r"(?:\\?[\"'])?[ \t]*+"  # password, "password", \"password\"
+# password, "password", \"password\"; not the end of a placeholder ([REDACTED:github_token:
+# deadbeef]), whose colon would read as a type and swallow an assignment after it
+_NAMED = SECRET_NAME + r"(?!:[0-9a-f]{8}\])(?:\\?[\"'])?[ \t]*+"
 # A type between the name and its value: `password: str = "..."`, `token: Optional[str] =`
 _ANNOTATION = r"(?::[ \t]*+[A-Za-z_][\w.\[\]|, \t]*+)?"
 _NEWLINE = r"(?:\r?\n|(?:\\r)?+\\n)"  # a line break, or one escaped inside a JSON string
@@ -158,16 +160,21 @@ _Q = r"\\?[\"']"  # a quote, or an escaped one inside a JSON string
 SECRET_ELSEWHERE = (
     # docker login --password VALUE: a flag, a space and its value, unless that is another
     # flag or a variable (--password $DB_PASSWORD). A quoted value goes whole, quotes too.
-    r"(?<![\w-])--(?P<flag>[A-Za-z0-9][A-Za-z0-9_.-]*+)[ \t]++"
+    # Only a flag that ends in a secret's name matches, so another flag's quoted value
+    # (--command "mysql --password x") isn't consumed unchecked. The lazy run can't pass
+    # the flag's end, so it stays linear.
+    rf"(?<![\w-])--(?P<flag>[A-Za-z0-9_.-]*?{SECRET_NAME})[ \t]++"
     r"(?P<secret>\"[^\"\n]*+\"|'[^'\n]*+'|[^\s\"'\\$-]\S*+)",
     # mysql -uroot -pVALUE: the password joined to -p. -p alone asks for it. Up to 30
     # arguments are looked at, so a line of `mysql` words stays linear.
     r"(?<![\w-])mysql(?:dump|admin|sh)?+(?:[ \t]++(?!-p)\S++){0,30}+[ \t]++-p(?P<secret>\S++)",
     # Kubernetes and ECS env entries: name: DB_PASSWORD, then value: ... on the same or the
-    # next line, as YAML or JSON (escaped too, inside a JSON string).
+    # next line, as YAML or JSON (escaped too, inside a JSON string). The value is read as
+    # above: quoted, to its closing quote; unquoted, the words to the end of the line.
     rf"(?<![\w-])(?:{_Q})?+(?:name|key)(?:{_Q})?+:[ \t]*+(?:{_Q})?+(?P<name>[A-Za-z0-9_.-]++)"
     rf"(?:{_Q})?+[ \t]*+,?+[ \t]*+(?:{_NEWLINE}[ \t]*+)?+(?:{_Q})?+value(?:{_Q})?+:[ \t]*+"
-    rf"(?:{_Q})?+(?P<secret>[^\s\"'\\,}}][^\"'\\\n,}}]*+)",
+    r"(?:(?P<esc>\\)?+(?P<q>[\"']))?+(?P<secret>(?(q)(?(esc)(?:(?!(?P=q))[^\\\n])++"
+    rf"|(?:\\.|(?!(?P=q))[^\\\n])++)|{_WORD}(?:[ \t]++{_WORD})*+))",
 )
 
 PATTERNS: tuple[Pattern, ...] = (

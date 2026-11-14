@@ -351,6 +351,35 @@ def test_a_secret_after_a_skipped_value_on_the_same_line_is_redacted(
     assert result.endswith("password: " + redactor.placeholder("secret_assignment", "Hunter22xyz"))
 
 
+# A placeholder ends in a secret's name, a colon and a fingerprint ("...github_token:deadbeef]").
+# When the fingerprint starts with a letter, that colon must not read as a type annotation
+# that swallows the assignment after it.
+@pytest.mark.parametrize("operator", ["=", ":=", "=>", " = "])
+@pytest.mark.parametrize("kind", ["github_token", "bearer_token", "aws_secret_key"])
+def test_a_secret_after_a_placeholder_ending_in_a_letter_is_redacted(
+    redactor: Redactor, kind: str, operator: str
+) -> None:
+    text = f"GH=[REDACTED:{kind}:deadbeef] DB_PASSWORD{operator}Hunter22xyz ./deploy.sh"
+
+    result, _ = redact(redactor, text)
+
+    secret = redactor.placeholder("secret_assignment", "Hunter22xyz")
+    assert result == f"GH=[REDACTED:{kind}:deadbeef] DB_PASSWORD{operator}{secret} ./deploy.sh"
+
+
+def test_a_real_token_does_not_hide_a_password_after_it(redactor: Redactor) -> None:
+    # A token whose fingerprint under the test key starts with a letter, end to end
+    token = next(
+        t
+        for t in ("ghp_" + f"{n:04d}" + "a1B2c3D4" * 4 + "abcd" for n in range(100))
+        if redactor.fingerprint(t)[0].isalpha()
+    )
+
+    result, _ = redact(redactor, f"GH={token} DB_PASSWORD=Hunter22xyz ./deploy.sh")
+
+    assert "Hunter22xyz" not in result
+
+
 # (text, the value that must go): quoted values with escapes, and long ones
 QUOTED = {
     "an escaped backslash in JSON": ('{"password": "Abcdefgh1\\\\xyz"}', "Abcdefgh1\\\\xyz"),
@@ -396,6 +425,7 @@ ADVERSARIAL = {
     "many names with an indented next line": "password:\n  " * 40_000,
     "many flags": "--password " * 40_000,
     "many kebab flags": "--a-b-c-" * 40_000 + "password x",
+    "one long flag": "--" + "apass-" * 30_000 + " x",
     "many mysql words": "mysql " * 60_000,
     "mysql with many arguments": "mysql" + " -u" * 100_000,
     "many env names": "- name: DB_PASSWORD\n  " * 30_000,

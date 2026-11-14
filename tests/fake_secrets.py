@@ -87,6 +87,8 @@ def prefixed_assignments() -> dict[str, tuple[str, str]]:
         # near-misses: a flag and its value, other assignment operators, more names
         "flag then a space": "docker login --password {} registry",
         "kebab flag then a space": "tool --db-password {} --verbose",
+        "camelCase flag": "tool --dbPassword {} --verbose",
+        "flag inside another flag's value": 'ssh vm --command "mysql --password {} app"',
         "mysql -p": "mysql -uroot -h db -p{} app",
         "Go :=": 'password := "{}"',
         "Ruby and PHP =>": "'password' => '{}'",
@@ -108,6 +110,15 @@ def prefixed_assignments() -> dict[str, tuple[str, str]]:
     cases["; and braces after ="] = (f"DB_PASSWORD={semicolon}", semicolon)
     comma = "P@ss,word;" + random_text(6)
     cases[", and ; after a colon"] = (f"password: {comma}", comma)
+    # a name/value entry's value holding what ends an unquoted word; the YAML entry starts on
+    # a line of its own, as it would in a manifest
+    braced = "P@ss,w}r" + random_text(6)
+    cases["k8s env, YAML, comma inside"] = (f"\n- name: DB_PASSWORD\n  value: {braced}", braced)
+    braced = "P@ss,w}r" + random_text(6)
+    cases["k8s env, JSON, comma and brace inside"] = (
+        f'{{"name": "DB_PASSWORD", "value": "{braced}"}}',
+        braced,
+    )
     return cases
 
 
