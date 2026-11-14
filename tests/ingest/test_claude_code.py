@@ -428,6 +428,157 @@ def test_a_response_moves_to_its_turn_even_when_session_end_came_first(
     assert spans["llm:msg_1"].parent_id == spans["turn:p1"].id
 
 
+def test_a_response_goes_under_the_turn_it_was_written_in_whichever_event_carries_it(
+    client: TestClient, store: Engine
+) -> None:
+    """Later hooks read a long turn's rest and send it with that turn's end, so the next
+    turn's responses can come with it, and the next Stop can carry the old turn's rest. The
+    transcript says which turn each response belongs to (its prompt_id)."""
+    client.post(
+        URL,
+        json={
+            "events": [
+                ev("UserPromptSubmit", 1, prompt_id="p1", prompt="first"),
+                ev("UserPromptSubmit", 5, prompt_id="p2", prompt="second"),
+                ev("Stop", 4, prompt_id="p1", usage=[usage("msg_2") | {"prompt_id": "p2"}]),
+                ev("Stop", 8, prompt_id="p2", usage=[usage("msg_1") | {"prompt_id": "p1"}]),
+                ev("Stop", 9, prompt_id="p2", usage=[usage("msg_3")]),  # an older hook's
+            ]
+        },
+    )
+
+    spans = stored(store)[1]
+    assert spans["llm:msg_1"].parent_id == spans["turn:p1"].id
+    assert spans["llm:msg_2"].parent_id == spans["turn:p2"].id
+    assert spans["llm:msg_3"].parent_id == spans["turn:p2"].id
+
+
+def at(seconds: float) -> str:
+    """A transcript timestamp, seconds after T0."""
+    return datetime.fromtimestamp(T0 + seconds, UTC).isoformat().replace("+00:00", "Z")
+
+
+def last_response(message_id: str, prompt_id: str, seconds: float) -> dict[str, Any]:
+    """The response that ends a turn, written in turn prompt_id."""
+    return usage(message_id) | {
+        "prompt_id": prompt_id,
+        "stop_reason": "end_turn",
+        "timestamp": at(seconds),
+    }
+
+
+# A turn Claude Code starts itself (a background task's result, say) has no
+# UserPromptSubmit: its first transcript line is an isMeta user line with a new promptId.
+# Which prompt_id its Stop carries isn't known; each case must end that turn.
+@pytest.mark.parametrize("stop_carries", ["its own", "the previous turn's", "none"])
+def test_a_turn_claude_code_starts_itself_is_ended_whatever_its_stop_carries(
+    client: TestClient, store: Engine, stop_carries: str
+) -> None:
+    prompt_id = {"its own": {"prompt_id": "p2"}, "the previous turn's": {"prompt_id": "p1"}}
+    client.post(
+        URL,
+        json={
+            "events": [
+                ev("UserPromptSubmit", 1, prompt_id="p1", prompt="start a background job"),
+                ev(
+                    "Stop",
+                    4,
+                    prompt_id="p1",
+                    last_assistant_message="started",
+                    usage=[last_response("msg_1", "p1", 3)],
+                ),
+                ev(
+                    "Stop",
+                    9,
+                    **prompt_id.get(stop_carries, {}),
+                    last_assistant_message="the job finished",
+                    usage=[last_response("msg_2", "p2", 8)],
+                ),
+            ]
+        },
+    )
+
+    spans = stored(store)[1]
+    first, second = spans["turn:p1"], spans["turn:p2"]
+    assert spans["llm:msg_2"].parent_id == second.id
+    assert (first.output, first.ended_at) == ("started", datetime.fromtimestamp(T0 + 4, UTC))
+    assert second.ended_at is not None and second.ended_at >= datetime.fromtimestamp(T0 + 8, UTC)
+    assert second.status == "ok"
+    assert second.started_at <= spans["llm:msg_2"].started_at  # no prompt said when it began
+    if stop_carries != "none":  # without a prompt_id, nothing says the reply is this turn's
+        assert second.output == "the job finished"
+
+
+def test_a_turn_whose_stop_is_lost_still_ends_with_its_last_response(
+    client: TestClient, store: Engine
+) -> None:
+    """A later read can carry the end of a turn whose own Stop never arrived."""
+    client.post(
+        URL,
+        json={
+            "events": [
+                ev("UserPromptSubmit", 1, prompt_id="p1", prompt="first"),
+                ev("UserPromptSubmit", 6, prompt_id="p2", prompt="second"),
+                ev(
+                    "Stop",
+                    9,
+                    prompt_id="p2",
+                    last_assistant_message="two",
+                    usage=[last_response("msg_1", "p1", 3), last_response("msg_2", "p2", 8)],
+                ),
+            ]
+        },
+    )
+
+    spans = stored(store)[1]
+    assert spans["turn:p1"].ended_at == datetime.fromtimestamp(T0 + 3, UTC)
+    assert spans["turn:p1"].status == "ok"
+    assert spans["turn:p1"].output is None  # its reply was in the lost Stop
+    assert spans["turn:p2"].output == "two"
+
+
+def test_a_resent_stop_does_not_hand_its_reply_to_the_next_typed_turn(
+    client: TestClient, store: Engine
+) -> None:
+    """A Stop applied twice (a retry) whose read reached into the next turn: the next turn
+    was typed, so the Stop is still its own turn's."""
+    stop = ev("Stop", 4, prompt_id="p1", last_assistant_message="one",
+              usage=[last_response("msg_1", "p1", 3), last_response("msg_2", "p2", 7)])  # fmt: skip
+    events = [
+        ev("UserPromptSubmit", 1, prompt_id="p1", prompt="first"),
+        ev("UserPromptSubmit", 5, prompt_id="p2", prompt="second"),
+        stop,
+    ]
+    client.post(URL, json={"events": events})
+    client.post(URL, json={"events": [stop]})
+
+    spans = stored(store)[1]
+    assert spans["turn:p1"].output == "one"
+    assert spans["turn:p2"].output is None
+
+
+def test_the_rest_of_an_old_turn_end_adds_only_its_items(client: TestClient, store: Engine) -> None:
+    """The rest of a long turn, read by later hooks, comes as more parts of its turn end
+    (marked rest): it must not take the run back to that turn's permission mode."""
+    turn = {"prompt_id": "p1", "permission_mode": "default"}
+    client.post(
+        URL,
+        json={
+            "events": [
+                ev("UserPromptSubmit", 1, **turn, prompt="hi"),
+                ev("Stop", 4, **turn, last_assistant_message="done"),
+                ev("UserPromptSubmit", 6, prompt_id="p2", permission_mode="plan", prompt="go"),
+            ]
+        },
+    )
+    rest = ev("Stop", 4, **turn, last_assistant_message="done", usage=[usage("msg_9")])
+    client.post(URL, json={"events": [rest | {"rest": True}]})
+
+    [run], spans = stored(store)
+    assert run.attributes["claude_code.permission_mode"] == "plan"
+    assert spans["llm:msg_9"].parent_id == spans["turn:p1"].id
+
+
 def test_a_response_runs_from_its_request_and_says_what_it_did(
     client: TestClient, store: Engine
 ) -> None:
@@ -562,6 +713,29 @@ def test_a_permission_wait_ends_under_its_tool_whatever_the_arrival_order(
         [wait] = waits(spans)  # one wait, not a duplicate
         assert (wait.parent_id, wait.status, seconds(wait)) == (spans["tool:t1"].id, "ok", 6.5)
         client.post(URL, json={"events": [events["PermissionRequest"]]})
+
+
+@pytest.mark.parametrize("tool_input", ["rm -r build", 3, True, None], ids=str)
+def test_a_tool_input_that_is_not_an_object_is_stored_not_retried_for_ever(
+    client: TestClient, store: Engine, tool_input: Any
+) -> None:
+    """Postgres can't compare jsonb with text, a number or a bool (42883). That was an
+    unexpected error, so a 503 for every retry, stalling the hook's backlog behind it."""
+    call = {"prompt_id": "p1", "tool_name": "Bash", "tool_input": tool_input}
+    events = [
+        ev("PreToolUse", 1, tool_use_id="t1", **call),
+        ev("PermissionRequest", 2, **call),
+        ev("PermissionDenied", 3, tool_use_id="t1", **call),
+        ev("PostToolUse", 4, tool_use_id="t1", **call),
+    ]
+
+    response = client.post(URL, json={"events": events})
+
+    assert response.status_code == 200
+    assert response.json()["rejected"] == 0
+    spans = stored(store)[1]
+    assert spans["tool:t1"].input == tool_input
+    assert waits(spans)[0].parent_id == spans["tool:t1"].id
 
 
 def test_a_fast_approval_never_ends_before_it_began(client: TestClient, store: Engine) -> None:
@@ -890,3 +1064,75 @@ def test_who_allowed_a_call_is_kept(
         "decision": "accept", "by": who, "source": source, "reason_type": reason_type,
         "reason_code": None,
     }  # fmt: skip
+
+
+# ---- Two clocks: hook stamps and transcript times -------------------------------------
+
+
+def test_a_call_refused_before_its_hook_stamped_it_keeps_its_turn_end(
+    client: TestClient, store: Engine
+) -> None:
+    """A deny rule refuses at once: the transcript's time comes before PreToolUse's own stamp,
+    which its hook process takes ~100 ms late. The turn end must still be stored whole."""
+    stop = ev(
+        "Stop",
+        5,
+        prompt_id="p1",
+        last_assistant_message="I was refused.",
+        usage=[usage("msg_1", input_tokens=1000, output_tokens=50)],
+        permissions=[decision("t1", "reject", "config", "rule", at=0.9)],
+    )
+    one_by_one(client, ev("PreToolUse", 1, tool_use_id="t1", **BASH), stop)
+
+    spans = stored(store)[1]
+    tool = spans["tool:t1"]
+    assert (tool.status, tool.error) == ("rejected", "rejected by a permission rule")
+    assert tool.ended_at == tool.started_at  # never before it
+    assert "llm:msg_1" in spans and spans["turn:p1"].ended_at is not None
+
+
+def test_a_tools_end_stamped_before_its_start_is_kept(client: TestClient, store: Engine) -> None:
+    """Pre- and PostToolUse are stamped by two hook processes: a fast tool's end can carry the
+    earlier time."""
+    read = {"prompt_id": "p1", "tool_name": "Read", "tool_input": {}}
+    one_by_one(
+        client,
+        ev("PreToolUse", 1.0, tool_use_id="t1", **read),
+        ev("PostToolUse", 0.99, tool_use_id="t1", tool_response="text", **read),
+    )
+
+    tool = stored(store)[1]["tool:t1"]
+    assert (tool.status, tool.output) == ("ok", "text")
+    assert tool.ended_at is not None and tool.ended_at >= tool.started_at
+
+
+@pytest.mark.parametrize("received_at", [1e20, -1e20, 10**400])
+def test_a_time_out_of_range_does_not_sink_the_batch(
+    client: TestClient, store: Engine, received_at: float
+) -> None:
+    odd = {"received_at": received_at, "hook": {"session_id": "s2", "hook_event_name": "Stop"}}
+
+    response = client.post(URL, json={"events": [odd, ev("SessionStart", 0)]})
+
+    assert response.status_code == 200  # the hook retries a 500 for ever
+    assert {r.external_id for r in stored(store)[0]} >= {"sess-1"}
+
+
+def test_an_out_of_range_time_in_the_transcript_is_unknown(
+    client: TestClient, store: Engine
+) -> None:
+    stop = ev("Stop", 5, prompt_id="p1", usage=[usage("msg_1") | {"timestamp": 1e20}])
+
+    assert client.post(URL, json={"events": [stop]}).json()["rejected"] == 0
+    assert "llm:msg_1" in stored(store)[1]
+
+
+def test_items_past_the_limit_are_reported_not_dropped_silently(
+    client: TestClient, store: Engine
+) -> None:
+    many = [usage(f"msg_{n}") for n in range(1_500)]
+
+    reply = client.post(URL, json={"events": [ev("Stop", 5, prompt_id="p1", usage=many)]}).json()
+
+    assert reply["dropped_items"] == 500
+    assert sum(1 for s in stored(store)[1] if s.startswith("llm:")) == 1_000

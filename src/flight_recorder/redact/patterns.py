@@ -62,7 +62,183 @@ def _looks_random(match: re.Match[str]) -> bool:
     return classes == 3 and _entropy(token) >= 4.0
 
 
+_IN_PLACEHOLDER = re.compile(r"\[REDACTED:[a-z_]{0,40}+$")
+
+
+# Words after a secret's name that say there is no secret, or name a type in code
+# (`password: str`), not a value.
+NOT_A_VALUE = frozenset(
+    {"null", "none", "nil", "undefined", "true", "false", "str", "string", "bytes", "secretstr"}
+)
+
+
+# Punctuation that may close such a word in code: `str):`, `None)`, `null,`, `bytes]`.
+# Anything else makes it part of a value: `Str@ng123x`, `None!Shall9`, `None.x`.
+_CLOSING = r"[),:|\];]*+"
+_FIRST_NAME = re.compile(rf"(\w++){_CLOSING}")
+# Code, not a value: a call or lookup (get_password(), Field(default=None), os.environ[)
+# with no digit after its bracket. A value such as Hunter(22) has one.
+_CALL = r"[A-Za-z_][A-Za-z_.]{2,}+[(\[][^\s0-9]*+"
+_A_CALL = re.compile(_CALL)
+
+
+def is_a_value(text: str) -> bool:
+    """Whether text after a secret's name could be the secret."""
+    words = text.split()
+    if not words or _A_CALL.fullmatch(words[0]):
+        return False
+    first = _FIRST_NAME.fullmatch(words[0])
+    return not (first and first.group(1).lower() in NOT_A_VALUE)
+
+
+def _assigned_value(match: re.Match[str]) -> bool:
+    """A value, and not the kind name inside a placeholder: [REDACTED:github_token:1a2b3c4d]
+    ends in a secret's name followed by `:` and eight characters."""
+    before = match.string[max(0, match.start() - 60) : match.start()]
+    secret = match.group("secret")
+    if _A_COUNT.fullmatch(secret) and _PASS.match(match.group(0)):  # TEST_PASS=42
+        return False
+    return is_a_value(secret) and not _IN_PLACEHOLDER.search(before)
+
+
+_A_COUNT = re.compile(r"\d{1,3}")  # the whole value under a `pass` name: a count
+_PASS = re.compile(r"(?i)pass(?![a-z])")
+
+
 _TOKEN = r"A-Za-z0-9+/_=-"  # characters of base64 and URL-safe tokens
+
+# Names of a secret, anywhere a key name may end in one: password, DB_PASSWORD, dbPassword,
+# DBPassword, spring.datasource.password, --db-password, PASSWORD1. The name starts where a
+# word starts (not after a letter or digit) or at a camelCase hump, and ends at a word
+# boundary, so PASSWORD_FILE, secret_name and max_tokens are not names of a secret. `pass`
+# alone is a word ("first pass: ..."), so it is a name only after a prefix: DB_PASS, dbPass,
+# not after a hyphen (first-pass, two-pass).
+# The lookbehinds outside the name are case-sensitive; only the name itself ignores case.
+SECRET_NAME = (
+    r"(?:(?<![A-Za-z0-9])|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z]))"
+    r"(?i:api[_-]?keys?+|secret[_-]?key|client[_-]?secret|private[_-]?key|secret|passwords?+"
+    r"|passphrase|passwd|pwd|pgpassword|access[_-]?token|auth[_-]?token|token"
+    r"|(?<=[A-Za-z0-9][_.])pass|(?<=[a-z0-9])pass)"
+    r"(?:_?+\d{1,3}+)?+\b"
+)
+SECRET_KEY = re.compile(SECRET_NAME + r"\W*+$")  # a key or flag that ends in a secret's name
+# The value after a secret's name, of any length, in one of three forms, each a pattern of
+# its own (one regex can't name the secret in each branch); quoted runs first.
+# password, "password", \"password\"; not the end of a placeholder ([REDACTED:github_token:
+# deadbeef]), whose colon would read as a type and swallow an assignment after it
+_NAMED = SECRET_NAME + r"(?!:[0-9a-f]{8}\])(?:\\?[\"'])?[ \t]*+"
+# A type between the name and its value: `password: str = "..."`, `token: Optional[str] =`
+_ANNOTATION = r"(?::[ \t]*+[A-Za-z_][\w.\[\]|, \t]*+)?"
+_NEWLINE = r"(?:\r?\n|(?:\\r)?+\\n)"  # a line break, or one escaped inside a JSON string
+_ASSIGN = r"(?::=|=>|=(?![=>]))"  # = (not ==), Go's :=, and Ruby's and PHP's =>
+# A value's word: not starting with = (`token == x` is code). It stops at whitespace, a
+# quote or a backslash; a , ; { or } is part of it only when more of the word follows, as in
+# generated passwords (Tr0ub;&4dor{x}), not where it ends a value: `{password: x, user: y}`.
+# A ; followed by `Name=` starts a connection string's next setting (Password=x;User Id=sa).
+_PLAIN = r"[^\s\"'\\,;{}]"
+_NEXT_SETTING = r"(?![A-Za-z][A-Za-z0-9 _.]{0,30}+=)"
+_WORD = rf"[^\s\"'\\,;{{}}=](?:{_PLAIN}|[,{{}}](?={_PLAIN})|;(?={_PLAIN}){_NEXT_SETTING})*+"
+# What the words after `name:` must not start with, or the match would be skipped whole and
+# hide a secret later on the line: a placeholder, the inside of one ([REDACTED:github_token:
+# 1a2b3c4d] holds `token:1a2b3c4d]`), or a word that says there is no value (as is_a_value
+# reads it). Checked in the regex, so the search goes on from the next position instead.
+_NOT_A_VALUE_WORD = "|".join(sorted(NOT_A_VALUE))
+_SKIPPED = rf"\[REDACTED:|[0-9a-f]{{8}}\]|(?:(?i:{_NOT_A_VALUE_WORD}){_CLOSING}|{_CALL})(?!\S)"
+SECRET_VALUES = (
+    # password: "two words" / api_key='...' / \"token\": \"...\" (a JSON string): to the
+    # closing quote or the end of the line; the quotes stay. Inside plain quotes an escape
+    # (\\ or \") is part of the value; inside escaped quotes (JSON in a JSON string) the
+    # value stops at the next backslash, so the closing \" stays and the text still parses.
+    _NAMED + _ANNOTATION + rf"(?:{_ASSIGN}|:)[ \t]*+(?P<esc>\\)?(?P<q>[\"'])(?P<secret>"
+    r"(?(esc)(?:(?!(?P=q))[^\\\n])++|(?:\\.|(?!(?P=q))[^\\\n])++))",
+    # password: correct horse battery staple (YAML, prose): the words to the end of the line,
+    # or of the next line when it is indented under the name (`password:\n  hunter2`)
+    _NAMED
+    + rf":[ \t]*+(?:{_NEWLINE}[ \t]++)?(?!{_SKIPPED})(?P<secret>{_WORD}(?:[ \t]++{_WORD})*+)",
+    # PGPASSWORD=abc123 psql (shell, .env): one word
+    _NAMED + _ANNOTATION + rf"{_ASSIGN}[ \t]*+(?P<secret>{_WORD})",
+)
+
+
+# Words that follow a flag's name in prose: "the --password flag", "--token or --key"
+FLAG_PROSE = frozenset(
+    [
+        "flag",
+        "flags",
+        "option",
+        "options",
+        "argument",
+        "arguments",
+        "arg",
+        "args",
+        "parameter",
+        "param",
+        "switch",
+        "and",
+        "or",
+        "is",
+        "was",
+        "to",
+        "with",
+        "when",
+        "the",
+        "a",
+        "an",
+        "if",
+        "for",
+        "in",
+        "on",
+        "of",
+        "as",
+        "by",
+        "will",
+        "must",
+        "should",
+        "can",
+        "only",
+        "instead",
+    ]
+)
+
+
+def _secret_flag(match: re.Match[str]) -> bool:
+    """--password VALUE, --db-password VALUE: a flag named for a secret, then its value."""
+    secret = match.group("secret")
+    return (
+        bool(SECRET_KEY.search(match.group("flag")))
+        and secret.lower() not in FLAG_PROSE
+        and is_a_value(secret)
+    )
+
+
+def _secret_pair(match: re.Match[str]) -> bool:
+    """{name: DB_PASSWORD, value: ...}: a name field naming a secret, then its value."""
+    return bool(SECRET_KEY.search(match.group("name"))) and _assigned_value(match)
+
+
+_Q = r"\\?[\"']"  # a quote, or an escaped one inside a JSON string
+SECRET_ELSEWHERE = (
+    # docker login --password VALUE: a flag, a space and its value, unless that is another
+    # flag, a variable (--password $DB_PASSWORD), a redirection (--with-token < file) or a
+    # word of prose (the --password flag). A quoted value goes whole, quotes too.
+    # Only a flag that ends in a secret's name matches, so another flag's quoted value
+    # (--command "mysql --password x") isn't consumed unchecked. The lazy run can't pass
+    # the flag's end, so it stays linear.
+    rf"(?<![\w-])--(?P<flag>[A-Za-z0-9_.-]*?{SECRET_NAME})[ \t]++"
+    r"(?P<secret>\"[^\"\n]*+\"|'[^'\n]*+'|[^\s\"'\\$<>|&;-]\S*+)",
+    # mysql -uroot -pVALUE: the password joined to -p. -p alone asks for it. Up to 30
+    # arguments are looked at, so a line of `mysql` words stays linear. The search stops at
+    # ; & or |, where the next command (psql -p5432) begins.
+    r"(?<![\w-])mysql(?:dump|admin|sh)?+(?:[ \t]++(?!-p)[^\s;&|]++){0,30}+[ \t]++-p"
+    r"(?P<secret>\S++)",
+    # Kubernetes and ECS env entries: name: DB_PASSWORD, then value: ... on the same or the
+    # next line, as YAML or JSON (escaped too, inside a JSON string). The value is read as
+    # above: quoted, to its closing quote; unquoted, the words to the end of the line.
+    rf"(?<![\w-])(?:{_Q})?+(?:name|key)(?:{_Q})?+:[ \t]*+(?:{_Q})?+(?P<name>[A-Za-z0-9_.-]++)"
+    rf"(?:{_Q})?+[ \t]*+,?+[ \t]*+(?:{_NEWLINE}[ \t]*+)?+(?:{_Q})?+value(?:{_Q})?+:[ \t]*+"
+    r"(?:(?P<esc>\\)?+(?P<q>[\"']))?+(?P<secret>(?(q)(?(esc)(?:(?!(?P=q))[^\\\n])++"
+    rf"|(?:\\.|(?!(?P=q))[^\\\n])++)|{_WORD}(?:[ \t]++{_WORD})*+))",
+)
 
 PATTERNS: tuple[Pattern, ...] = (
     # Unterminated keys (a truncated prompt) are redacted to the end of the text.
@@ -111,15 +287,18 @@ PATTERNS: tuple[Pattern, ...] = (
             r"(?P<secret>[^\s\"'\\]{1,128})@(?=[^\s@/?#\"'\\])"
         ),
     ),
-    Pattern(
-        "secret_assignment",  # password=..., "api_key": "...", and the same inside a JSON string
-        # (\"api_key\": \"...\"), which is how OTel sends gen_ai.input.messages. The backslash
-        # stays outside the secret so the JSON string remains valid after replacement.
-        re.compile(
-            r"(?i)\b(?:api[_-]?key|secret[_-]?key|client[_-]?secret|secret|password|passwd|pwd"
-            r"|access[_-]?token|auth[_-]?token|token)\b(?:\\?[\"'])?\s*[:=]\s*(?:\\?[\"'])?"
-            r"(?P<secret>[^\s\"'\\,;{}]{8,}+)"
-        ),
+    # password=..., "api_key": "...", and the same inside a JSON string (\"api_key\": \"...\"),
+    # which is how OTel sends gen_ai.input.messages. The backslash stays outside the secret so
+    # the JSON string remains valid after replacement. Any length: password=hunter2 too.
+    *(
+        Pattern("secret_assignment", re.compile(value), check=_assigned_value)
+        for value in SECRET_VALUES
+    ),
+    *(
+        Pattern("secret_assignment", re.compile(regex), check=check)
+        for regex, check in zip(
+            SECRET_ELSEWHERE, (_secret_flag, _assigned_value, _secret_pair), strict=True
+        )
     ),
     Pattern(
         "email",

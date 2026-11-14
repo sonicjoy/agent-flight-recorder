@@ -13,7 +13,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from fake_secrets import in_context, private_key, random_text, secrets_by_kind
+from fake_secrets import (
+    in_context,
+    in_dicts,
+    prefixed_assignments,
+    private_key,
+    random_text,
+    secrets_by_kind,
+)
 from pydantic import SecretStr, ValidationError
 
 from flight_recorder.redact import PATTERNS, RedactionKeyError, Redactor, load_key
@@ -68,6 +75,24 @@ NEAR_MISSES = {
     "prose": "The agent searched three times, then decided the issue was a duplicate.",
     "port and scoped package": "npm install from http://localhost:4873/@types/node",
     "URL with no password": "https://github.com/sonicjoy/agent-flight-recorder/pull/43",
+    "names that only start with a keyword": "PASSWORD_FILE=/run/secrets/db_password_file "
+    "secret_name=prod-database-credentials tokenizer=cl100k_base_tokenizer",
+    "counts named like a keyword": "num_tokens=12345678 maxTokens=40960000",
+    # code and prose after a secret's name: a call or lookup, not a value
+    "a typed field": "api_key: str = Field(default=None)",
+    "Go's := with a call": "password := get()",
+    "a call": "password = get_password()",
+    "a lookup": "token = os.environ['TOKEN']",
+    "a call after a colon": "password: getpass.getpass()",
+    # a flag named in prose, or followed by a redirection
+    "a flag in prose": "use the --password flag to set it, or the --token option",
+    "a flag then a redirection": "gh auth login --with-token < token.txt",
+    # pass as a count or a word, not a password
+    "a count named pass": "TEST_PASS=42 MAX_PASS=3",
+    "a hyphenated word ending in pass": "first-pass: done; two-pass: no",
+    # a later command on the line has its own -p
+    "psql after mysql": "mysql -uroot app; psql -p5432 db",
+    "psql after mysql and &&": "mysql app && psql -p5432 db",
 }
 
 
@@ -155,6 +180,287 @@ def test_structured_values_are_redacted_at_any_depth(redactor: Redactor) -> None
     assert result.counts == Counter({"openai_key": 1, "email": 1, "github_token": 1})
 
 
+@pytest.mark.parametrize("label", sorted(prefixed_assignments()))
+def test_a_key_name_with_a_prefix_is_still_a_key_name(redactor: Redactor, label: str) -> None:
+    """DB_PASSWORD=, JWT_SECRET=, dbPassword=: how .env files and code name secrets."""
+    text, secret = prefixed_assignments()[label]
+
+    result, counts = redact(redactor, f"before {text}\nafter")  # `key: value` runs to the end
+
+    # the whole value, not cut short at its punctuation, and nothing else
+    placeholder = redactor.placeholder("secret_assignment", secret)
+    assert result == f"before {text.replace(secret, placeholder)}\nafter"
+    assert counts == Counter({"secret_assignment": 1})
+
+
+@pytest.mark.parametrize("label", sorted(prefixed_assignments()))
+def test_a_key_name_with_a_prefix_is_still_a_key_name_inside_a_json_string(
+    redactor: Redactor, label: str
+) -> None:
+    """OTel sends messages as a JSON string: quotes arrive escaped and a line break as \\n."""
+    text, secret = prefixed_assignments()[label]
+    encoded = json.dumps([{"content": f"before {text}\nafter"}])
+
+    result, counts = redact(redactor, encoded)
+
+    assert secret not in result
+    assert counts == Counter({"secret_assignment": 1})
+    assert json.loads(result)[0]["content"].startswith("before ")  # still valid JSON
+
+
+@pytest.mark.parametrize("key", sorted(in_dicts()))
+def test_a_value_under_a_secret_key_is_redacted_whole(redactor: Redactor, key: str) -> None:
+    """Tool inputs and outputs are dicts: the key that names the secret isn't in the value's
+    string, so no pattern sees `password=` and the value has no shape of its own."""
+    value, secret = in_dicts()[key]
+
+    result = redactor.redact({"tool_input": value, "list": [value]})
+
+    dumped = json.dumps(result.value)
+    assert secret not in dumped
+    assert result.value["tool_input"]["user"] == "app"  # other values kept
+    assert result.counts == Counter({"secret_assignment": 2})
+    assert redactor.redact(result.value).counts == Counter()  # idempotent
+
+
+def test_values_under_keys_that_only_look_like_secrets_are_kept(redactor: Redactor) -> None:
+    value = {
+        "max_tokens": 4096,
+        "input_tokens": "12345678",
+        "token_count": "12345678",
+        "secret_name": "prod-database-credentials",
+        "password": "",
+        "auth_token": "null",  # says there is none
+        "token": None,
+        "api_key": True,  # a setting, not a secret
+        "env": [{"name": "DB_USER", "value": "app"}, {"name": "PASSWORD_FILE", "value": "/run/x"}],
+    }
+
+    assert redactor.redact(value).value == value
+
+
+def test_numbers_lists_and_name_value_pairs_under_a_secret_are_redacted(
+    redactor: Redactor,
+) -> None:
+    """A numeric PIN, a list of keys, and Kubernetes or ECS env entries, where the name and
+    the value are separate fields."""
+    value = {
+        "password": 12345678,
+        "api_keys": ["Corr3ctHorse9", "Battery5taple"],
+        "env": [
+            {"name": "DB_PASSWORD", "value": "Tr0ub4dor3x"},
+            {"name": "DB_USER", "value": "app"},
+            {"key": "apiToken", "value": "Wr0ngHorse7"},
+        ],
+    }
+
+    result = redactor.redact(value)
+
+    secret = redactor.placeholder
+    assert result.value == {
+        "password": secret("secret_assignment", "12345678"),
+        "api_keys": [
+            secret("secret_assignment", "Corr3ctHorse9"),
+            secret("secret_assignment", "Battery5taple"),
+        ],
+        "env": [
+            {"name": "DB_PASSWORD", "value": secret("secret_assignment", "Tr0ub4dor3x")},
+            {"name": "DB_USER", "value": "app"},
+            {"key": "apiToken", "value": secret("secret_assignment", "Wr0ngHorse7")},
+        ],
+    }
+    assert result.counts == Counter({"secret_assignment": 5})
+    assert redactor.redact(result.value).counts == Counter()  # idempotent
+
+
+# (text, the value that must go): short values, and values with spaces, after a secret's name
+SHORT_OR_SPACED = {
+    "short after =": ("password=hunter2", "hunter2"),
+    "short env var before a command": ("PGPASSWORD=abc123 psql -h db", "abc123"),
+    "phrase after a colon": ("password: correct horse battery", "correct horse battery"),
+    "phrase in double quotes": ('"password": "correct horse battery"', "correct horse battery"),
+    "phrase in single quotes": ("api_key = 'my key here'", "my key here"),
+    "phrase after = in quotes": ('DB_PASSWORD="two words"', "two words"),
+    "on the next line, indented (YAML)": ("password:\n  Hunter22xyz", "Hunter22xyz"),
+    "on the next line, in a JSON string": ("password:\\n  Hunter22xyz", "Hunter22xyz"),
+    "starting like a type name": ("password: Str@ng123x", "Str@ng123x"),
+    "starting like none": ("PASSWORD=None!Shall9", "None!Shall9"),
+    "starting like true, in quotes": ('password: "True$Love99"', "True$Love99"),
+    "short in a JSON string": ('\\"token\\": \\"ab12\\"', "ab12"),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("label", SHORT_OR_SPACED)
+def test_short_and_spaced_values_after_a_secrets_name_are_redacted(
+    redactor: Redactor, label: str
+) -> None:
+    text, secret = SHORT_OR_SPACED[label]
+
+    result, counts = redact(redactor, f"{text}\nnext line")
+
+    expected = text.replace(secret, redactor.placeholder("secret_assignment", secret), 1)
+    assert result == f"{expected}\nnext line"
+    assert counts == Counter({"secret_assignment": 1})
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "password: null",
+        "token = none",
+        '"password": ""',
+        "password=",
+        "TOKEN=false",
+        "def connect(secret: str):",
+        "connect(password=None)",
+        "fields = [token: bytes]",
+        "def connect(password: str = None):",
+        "mysql -uroot -p app",  # -p alone: mysql asks for it
+        "deploy --password-file /run/secrets/db",
+        "login --password $DB_PASSWORD",  # a variable, not its value
+        "login --password --stdin",
+        "- name: PASSWORD_FILE\n  value: /run/secrets/db",
+        "First pass: read the files",
+        "bypass=1 passthrough=yes",
+    ],
+)
+def test_a_secrets_name_with_no_value_is_left_alone(redactor: Redactor, text: str) -> None:
+    assert redact(redactor, text) == (text, Counter())
+
+
+def test_a_short_value_under_a_secret_key_is_redacted(redactor: Redactor) -> None:
+    result = redactor.redact({"password": "hunter2", "token": "two words"})
+
+    assert result.value == {
+        "password": redactor.placeholder("secret_assignment", "hunter2"),
+        "token": redactor.placeholder("secret_assignment", "two words"),
+    }
+
+
+def test_a_value_under_a_secret_key_that_starts_like_a_type_name_is_redacted(
+    redactor: Redactor,
+) -> None:
+    result = redactor.redact({"password": "Str@ng123x"})
+
+    assert result.value == {"password": redactor.placeholder("secret_assignment", "Str@ng123x")}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Server=db;Password={};User Id=sa",
+        "Password={};Encrypt=true;User Id=sa;",
+        "Data Source=x;Pwd={};Initial Catalog=app",
+    ],
+)
+def test_a_connection_strings_other_settings_are_kept(redactor: Redactor, text: str) -> None:
+    """ADO.NET and ODBC: `;Name=` starts the next setting, so the password ends there."""
+    result, _ = redact(redactor, text.format("x9Yz"))
+
+    assert result == text.format(redactor.placeholder("secret_assignment", "x9Yz"))
+
+
+@pytest.mark.parametrize(
+    ("text", "secret"),
+    [
+        ("login --password hunter2xyz", "hunter2xyz"),  # a flag's real value
+        ("DB_PASS=123456 ./run", "123456"),  # a PIN under a pass name
+        ("password = Hunter(22)", "Hunter(22)"),  # a value with digits isn't a call
+        ("password: Tr0ub;&4dor", "Tr0ub;&4dor"),  # ; not followed by a setting's name
+    ],
+)
+def test_values_close_to_the_near_misses_are_still_redacted(
+    redactor: Redactor, text: str, secret: str
+) -> None:
+    result, _ = redact(redactor, text)
+
+    assert result == text.replace(secret, redactor.placeholder("secret_assignment", secret))
+
+
+def test_numbers_under_a_token_count_key_are_kept(redactor: Redactor) -> None:
+    """A token key holding a number is a count or an id: max_token, token_1."""
+    counts: Counter[str] = Counter()
+    value = {"max_token": 4096, "token_1": 5, "pin_password": 1234, "api_key": 12345678901}
+
+    result = redactor.value(value, counts)
+
+    assert result["max_token"] == 4096
+    assert result["token_1"] == 5
+    assert result["pin_password"] == redactor.placeholder("secret_assignment", "1234")
+    assert result["api_key"] == redactor.placeholder("secret_assignment", "12345678901")
+
+
+GITHUB_TOKEN = "ghp_" + "a1B2c3D4" * 5
+# A secret's name whose value is skipped (a placeholder, a type, "none"), then a real one
+# later on the same line: the skipped text must not hide the secret after it.
+AFTER_A_SKIPPED_VALUE = {
+    "after a token another pattern replaced": f"github token: {GITHUB_TOKEN} password: Hunter22xyz",
+    "after a placeholder": "token: [REDACTED:x:12345678] password: Hunter22xyz",
+    "after a type name": "password: str  # set later: password: Hunter22xyz",
+    "after none": "password: none here, then password: Hunter22xyz",
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("text", AFTER_A_SKIPPED_VALUE.values(), ids=AFTER_A_SKIPPED_VALUE.keys())
+def test_a_secret_after_a_skipped_value_on_the_same_line_is_redacted(
+    redactor: Redactor, text: str
+) -> None:
+    result, _ = redact(redactor, text)
+
+    assert "Hunter22xyz" not in result
+    assert result.endswith("password: " + redactor.placeholder("secret_assignment", "Hunter22xyz"))
+
+
+# A placeholder ends in a secret's name, a colon and a fingerprint ("...github_token:deadbeef]").
+# When the fingerprint starts with a letter, that colon must not read as a type annotation
+# that swallows the assignment after it.
+@pytest.mark.parametrize("operator", ["=", ":=", "=>", " = "])
+@pytest.mark.parametrize("kind", ["github_token", "bearer_token", "aws_secret_key"])
+def test_a_secret_after_a_placeholder_ending_in_a_letter_is_redacted(
+    redactor: Redactor, kind: str, operator: str
+) -> None:
+    text = f"GH=[REDACTED:{kind}:deadbeef] DB_PASSWORD{operator}Hunter22xyz ./deploy.sh"
+
+    result, _ = redact(redactor, text)
+
+    secret = redactor.placeholder("secret_assignment", "Hunter22xyz")
+    assert result == f"GH=[REDACTED:{kind}:deadbeef] DB_PASSWORD{operator}{secret} ./deploy.sh"
+
+
+def test_a_real_token_does_not_hide_a_password_after_it(redactor: Redactor) -> None:
+    # A token whose fingerprint under the test key starts with a letter, end to end
+    token = next(
+        t
+        for t in ("ghp_" + f"{n:04d}" + "a1B2c3D4" * 4 + "abcd" for n in range(100))
+        if redactor.fingerprint(t)[0].isalpha()
+    )
+
+    result, _ = redact(redactor, f"GH={token} DB_PASSWORD=Hunter22xyz ./deploy.sh")
+
+    assert "Hunter22xyz" not in result
+
+
+# (text, the value that must go): quoted values with escapes, and long ones
+QUOTED = {
+    "an escaped backslash in JSON": ('{"password": "Abcdefgh1\\\\xyz"}', "Abcdefgh1\\\\xyz"),
+    "an escaped quote in a JSON string": ('{"password": "Abc\\"defgh1"}', 'Abc\\"defgh1'),
+    "longer than 256 characters": ('token = "' + "x" * 300 + '"', "x" * 300),
+    "a long secret with dots": (json.dumps({"client_secret": "Ab1." * 70}), "Ab1." * 70),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("label", QUOTED)
+def test_a_quoted_value_with_escapes_or_over_256_characters_is_redacted_whole(
+    redactor: Redactor, label: str
+) -> None:
+    text, secret = QUOTED[label]
+
+    result, counts = redact(redactor, text)
+
+    assert result == text.replace(secret, redactor.placeholder("secret_assignment", secret), 1)
+    assert counts == Counter({"secret_assignment": 1})
+
+
 ADVERSARIAL = {
     "long word": "a" * 200_000,
     "many at signs": "a@" * 100_000,
@@ -165,6 +471,32 @@ ADVERSARIAL = {
     "url-ish with at signs": "x://a:b@" * 30_000,
     "url then a long password": "x://a:" + "b" * 200_000,
     "assignments": "token=" * 40_000,
+    "prefixed assignments": "DB_PASSWORD=" * 30_000,
+    "long prefix": "a_" * 100_000 + "password=x",
+    "camelCase keywords": "aPassword" * 40_000,
+    "keyword then spaces": "password" + " " * 200_000,
+    "a long phrase after a colon": "password: " + "word " * 100_000,
+    "an unclosed quote": 'password: "' + "word " * 100_000,
+    "many phrases": "token: a b " * 40_000,
+    "many skipped values": "password: none " * 40_000,
+    "many placeholders after a name": "token: [REDACTED:github_token:12345678] " * 15_000,
+    "escapes in an unclosed quote": 'password="' + "\\a" * 100_000,
+    "many unclosed quotes": 'token="' * 40_000,
+    "many names with an indented next line": "password:\n  " * 40_000,
+    "many flags": "--password " * 40_000,
+    "many kebab flags": "--a-b-c-" * 40_000 + "password x",
+    "one long flag": "--" + "apass-" * 30_000 + " x",
+    "many settings after a value": "password=a" + ";Abcdefghij klmnop" * 10_000,
+    "many calls after names": "token: get( " * 20_000,
+    "many mysql words": "mysql " * 60_000,
+    "mysql with many arguments": "mysql" + " -u" * 100_000,
+    "many env names": "- name: DB_PASSWORD\n  " * 30_000,
+    "many env names, JSON": '{"name": "DB_PASSWORD", ' * 30_000,
+    "many operators": "password :=" * 20_000 + "password =>" * 20_000,
+    "acronym humps": "ABPassword" * 40_000,
+    "many escaped line breaks": "password:\\n  " * 40_000 + "name: a_token\\n" * 20_000,
+    "many annotations": "password: str" * 40_000,
+    "punctuation runs": "password=" + "a;" * 100_000,
 }
 
 
@@ -173,6 +505,15 @@ def test_matching_stays_fast_on_hostile_input(redactor: Redactor, text: str) -> 
     """Redaction runs on untrusted agent output; a slow regex would stall ingest."""
     started = time.perf_counter()
     redact(redactor, text)
+
+    assert time.perf_counter() - started < 2.0
+
+
+def test_dict_keys_stay_fast_on_hostile_input(redactor: Redactor) -> None:
+    value = {"a_" * 100_000 + "token": "x" * 10, "aPassword" * 40_000: "y" * 10}
+
+    started = time.perf_counter()
+    redactor.redact(value)
 
     assert time.perf_counter() - started < 2.0
 

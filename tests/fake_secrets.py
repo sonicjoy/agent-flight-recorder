@@ -66,3 +66,67 @@ def in_context() -> dict[str, tuple[str, str]]:
         "connection_password": (f"postgresql://app:{password}@db.internal:5432/runs", password),
         "secret_assignment": (f'{{"api_key": "{assigned}"}}', assigned),
     }
+
+
+def prefixed_assignments() -> dict[str, tuple[str, str]]:
+    """secret_assignment with the key name spelled as in .env files and code: a prefix
+    (DB_PASSWORD, STRIPE_API_KEY) or camelCase (dbPassword). Label -> (text, secret)."""
+
+    def value() -> str:
+        return "Tr0ub4dor-" + random_text(10)
+
+    names = {
+        "env prefix": "DB_PASSWORD={}",
+        "yaml prefix": "POSTGRES_PASSWORD: {}",
+        "jwt secret": "JWT_SECRET={}",
+        "api key with prefix": "STRIPE_API_KEY={}",
+        "camelCase": "dbPassword={}",
+        "camelCase token": 'authToken: "{}"',
+        "dotted": "spring.datasource.password={}",
+        "kebab": "--db-password={}",
+        # near-misses: a flag and its value, other assignment operators, more names
+        "flag then a space": "docker login --password {} registry",
+        "kebab flag then a space": "tool --db-password {} --verbose",
+        "camelCase flag": "tool --dbPassword {} --verbose",
+        "flag inside another flag's value": 'ssh vm --command "mysql --password {} app"',
+        "mysql -p": "mysql -uroot -h db -p{} app",
+        "Go :=": 'password := "{}"',
+        "Ruby and PHP =>": "'password' => '{}'",
+        "annotated default": 'password: str = "{}"',
+        "acronym prefix": "DBPassword={}",
+        "trailing digit": "PASSWORD1={}",
+        "short suffix": "DB_PASS={}",
+        "passphrase": "SSH_PASSPHRASE={}",
+        "private key": "PRIVATE_KEY={}",
+        "k8s env, YAML": "- name: DB_PASSWORD\n  value: {}",
+        "k8s env, JSON": '{{"name": "DB_PASSWORD", "value": "{}"}}',
+    }
+    cases: dict[str, tuple[str, str]] = {}
+    for label, shape in names.items():
+        secret = value()
+        cases[label] = (shape.format(secret), secret)
+    # punctuation that generated passwords hold: the value doesn't stop at it
+    semicolon = "Tr0ub;&4dor{" + random_text(6) + "}x"
+    cases["; and braces after ="] = (f"DB_PASSWORD={semicolon}", semicolon)
+    comma = "P@ss,word;" + random_text(6)
+    cases[", and ; after a colon"] = (f"password: {comma}", comma)
+    # a name/value entry's value holding what ends an unquoted word; the YAML entry starts on
+    # a line of its own, as it would in a manifest
+    braced = "P@ss,w}r" + random_text(6)
+    cases["k8s env, YAML, comma inside"] = (f"\n- name: DB_PASSWORD\n  value: {braced}", braced)
+    braced = "P@ss,w}r" + random_text(6)
+    cases["k8s env, JSON, comma and brace inside"] = (
+        f'{{"name": "DB_PASSWORD", "value": "{braced}"}}',
+        braced,
+    )
+    return cases
+
+
+def in_dicts() -> dict[str, tuple[dict[str, str], str]]:
+    """Secrets under a key that names them, as tool inputs and outputs carry them: the
+    value alone has no recognisable shape. Label -> (value, secret)."""
+    cases: dict[str, tuple[dict[str, str], str]] = {}
+    for key in ("password", "api_key", "token", "DB_PASSWORD", "clientSecret", "auth-token"):
+        secret = "Corr3ctHorse" + random_text(8)
+        cases[key] = ({"user": "app", key: secret}, secret)
+    return cases
