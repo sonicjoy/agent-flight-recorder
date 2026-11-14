@@ -91,10 +91,10 @@ def timed(app: TestClient, events: list[dict[str, Any]]) -> float:
 
 @pytest.mark.db
 def test_a_chunk_of_the_biggest_parts_finishes_within_its_estimate(store: Engine) -> None:
-    """The recorder redacts and stores every byte: 2 MB parts take longer than their items
-    alone say (two took 2.1 to 2.4 s against 1.66 s estimated)."""
+    """The recorder redacts and stores every byte: full parts take longer than their items
+    alone say (two of 2 MB took 2.1 to 2.4 s against 1.66 s estimated)."""
     app = TestClient(create_app(store, Redactor(b"k" * 32)), base_url="http://127.0.0.1:4318")
-    events = [stop(n, client.EVENT_ITEMS, chars=19_000) for n in range(4)]
+    events = [stop(n, client.EVENT_ITEMS, chars=14_000) for n in range(4)]
     assert all(len(json.dumps(e)) <= client.EVENT_BYTES for e in events)
     [first, *_] = client._chunks(events)  # pyright: ignore[reportPrivateUsage]
     timed(app, [stop(99, 1)])  # a running recorder: its first request's setup isn't counted

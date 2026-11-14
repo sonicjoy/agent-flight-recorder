@@ -57,15 +57,16 @@ MAX_SPOOL_BYTES = 20 * 1024 * 1024
 # A turn end's responses and decisions ("items") go in parts of at most this many, and an
 # event of at most this size. tests/ingest/test_limits.py checks that the limits agree.
 EVENT_ITEMS = 100
-EVENT_BYTES = 2 * 1024 * 1024
+EVENT_BYTES = 1_500_000  # so a full part, at MB_SECONDS, fits one chunk's CHUNK_SECONDS
 READ_ITEMS = 1_000  # read from a transcript by one hook; later hooks read the rest
 # The recorder's time to apply an event, each item in it, and each MB it redacts and
 # stores: measured on Windows with a local Postgres (an ordinary event 20 to 28 ms, a
-# response 4 to 6 ms, a MB 0.38 to 0.55 s), rounded up. tests/ingest/test_limits.py times
-# it. The recorder's work per event doesn't grow with the run (store.write.record_run).
+# response 4 to 6 ms, a MB of prose 0.38 to 0.55 s and of source code 0.64 s), rounded
+# up. tests/ingest/test_limits.py times it. Writing spans doesn't grow with the run
+# (store.write.record_run); PermissionRequest's lookups still do, a known gap.
 EVENT_SECONDS = 0.03
 ITEM_SECONDS = 0.008
-MB_SECONDS = 0.5
+MB_SECONDS = 0.75
 CHUNK_SECONDS = 2.0  # a chunk's estimated time, with headroom under SEND_TIMEOUT_SECONDS
 CHUNK_EVENTS = 50
 CHUNK_BYTES = 4 * 1024 * 1024  # well under the server's 10 MB request limit

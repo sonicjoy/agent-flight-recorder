@@ -124,10 +124,13 @@ def _usage(span: SpanIn) -> dict[str, Any]:
 
 
 def _upsert_span(values: dict[str, Any]) -> Any:
-    """A span is sent whole once it ends, so a re-send replaces it."""
+    """A span is sent whole once it ends, so a re-send replaces it. A span moved to another
+    parent drops its link to the old one until _link_parents finds the new one."""
     statement = insert(Span).values(**values)
     key = ("run_id", "external_id")
-    changes = {name: statement.excluded[name] for name in values if name not in key}
+    changes: dict[str, Any] = {name: statement.excluded[name] for name in values if name not in key}
+    moved = Span.parent_external_id.is_distinct_from(statement.excluded.parent_external_id)
+    changes["parent_id"] = case((moved, None), else_=Span.parent_id)
     return statement.on_conflict_do_update(index_elements=key, set_=changes)
 
 

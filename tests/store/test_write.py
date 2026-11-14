@@ -291,6 +291,12 @@ def test_parents_are_linked_whichever_arrives_first(session: Session) -> None:
     record_run(session, run_in(), [span_in("child", parent_external_id="p2")], redactor=REDACTOR)
     assert parent_of("child") == "p2"
 
+    # moved to a parent that hasn't arrived yet: it waits for that one, not the old one
+    record_run(session, run_in(), [span_in("child", parent_external_id="p3")], redactor=REDACTOR)
+    assert parent_of("child") is None
+    record_run(session, run_in(), [span_in("p3")], redactor=REDACTOR)
+    assert parent_of("child") == "p3"
+
 
 def test_one_span_can_hold_more_than_32_bits_of_tokens(session: Session) -> None:
     span = span_in("big", kind="llm", input_tokens=3_000_000_000, output_tokens=1)
