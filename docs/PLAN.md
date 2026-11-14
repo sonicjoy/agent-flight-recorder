@@ -2,6 +2,8 @@
 
 **Agent Flight Recorder** records every AI agent run, replays it as a timeline, finds failure patterns, and turns failed runs into eval cases.
 
+**It works for any agent.** Nothing in the recorder, the labels, search or the eval harness knows about one agent. The issue triager is the demo, and the analyst is the second agent evaluated the same way (#23), to show it. The aim is that recording an agent's runs gets you most of the way to its eval suite, even without a truth dataset: see [From runs to an eval suite](#from-runs-to-an-eval-suite).
+
 - **Timeline:** five weeks, Mon 2 Nov to Sun 6 Dec 2026
 - **Budget:** about 9 hours of building a week. Interview prep runs separately.
 - **Tracking:** one [GitHub milestone](https://github.com/sonicjoy/agent-flight-recorder/milestones) per week and one issue per task. Issues labelled `stretch` are the first to cut.
@@ -12,7 +14,7 @@
 
 - [ ] Public repo where `docker compose up` plus `afr seed` shows the replay UI with demo runs in under five minutes
 - [ ] Records Claude Code sessions (hooks) and OpenTelemetry agent traces, with redaction before anything is stored
-- [ ] Eval suite (own harness, golden cases, LLM judge, red-team set) that gates CI
+- [ ] Eval suite (own harness, golden cases, LLM judge, red-team set) that gates CI, for any agent; shown on the triager and the analyst
 - [ ] Analyst agent that clusters failures and drafts eval cases; MCP server that answers "why did run X fail?"
 - [ ] Deployed to Cloud Run and Cloud SQL with Terraform
 - [ ] README with architecture, design decisions and eval results; demo GIF; published write-up
@@ -58,6 +60,16 @@ flowchart LR
 ```
 
 Runs arrive from Claude Code hooks and OpenTelemetry, are normalised to one span model, redacted, then stored. Four consumers read the store. The analyst agent closes the loop: it groups failed runs by cause and drafts eval cases, and those cases then guard against regressions in CI.
+
+### From runs to an eval suite
+
+The same steps for any agent, whether or not it has a truth dataset:
+
+1. **Record.** The agent exports OpenTelemetry (or is a Claude Code session); its runs are stored, redacted.
+2. **Find failures.** Error status, `afr search`, and grades when the agent knows its truth (`<prefix>.grade.*`).
+3. **Label.** `afr label` names each failure mode and, optionally, the right answer (#59). That answer is the truth an agent without a dataset never had.
+4. **Write cases.** `afr case new --from-run` turns a labelled run into a YAML case (#59); the analyst does it in batches, one cluster at a time (#22).
+5. **Run the suite.** The harness calls the agent through a small contract (a Python function or a JSON command) and grades with generic checks and a judge rubric (#15, #17). Eval runs are recorded too, so step 1 starts again.
 
 ### Data model (draft)
 
@@ -156,17 +168,17 @@ Estimates are build hours. The learning items come from the 5-week prep plan and
 |---|---|---|
 | Generate a run corpus with real failures | #13 | 1h |
 | Labelling CLI and hand error analysis (50 runs) | #14 | 2h |
-| Eval harness from scratch | #15 | 1.5h |
+| Eval harness from scratch, for any agent | #15 | 2h |
+| `afr case`: turn a recorded run into an eval case | #59 | 1.5h |
 | Golden eval cases from labelled failures | #16 | 0.5h |
 | LLM-as-judge rubric with agreement check | #17 | 1.5h |
 | Red-team set: prompt injection and secret leaks | #18 | 1h |
 | Evals in CI | #19 | 1h |
 | Compare with promptfoo or DeepEval | #20 | 0.5h |
-| *Stretch:* provider comparison on the golden set | #21 | 0.5h |
 
 **Learning (about 1.5h):** Hamel Husain's "Your AI Product Needs Evals" and Eugene Yan's "Task-Specific LLM Evals". Read them before the error analysis; starting on the week 2 weekend works well.
 
-This is the heaviest week (about 10.5h with reading). The error analysis is the part to protect, since everything after it depends on it.
+This is the heaviest week (about 12h with reading, after adding #59 and moving #21 to week 5). The error analysis is the part to protect, since everything after it depends on it.
 
 ### Week 4 · 23–29 Nov · Analyst, MCP and deploy
 
@@ -175,12 +187,12 @@ This is the heaviest week (about 10.5h with reading). The error analysis is the 
 | Task | Issue | Est. |
 |---|---|---|
 | Analyst agent: cluster failures, draft eval cases | #22 | 3h |
-| Evaluate the analyst against your labels | #23 | 1h |
+| Evaluate the analyst as the second agent, against your labels | #23 | 1.5h |
 | MCP server | #24 | 1.5h |
 | API key auth before deploy | #25 | 0.5h |
 | Containerise the API and MCP server | #26 | 0.5h |
 | Deploy with Terraform to Cloud Run and Cloud SQL | #27 | 2.5h |
-| *Stretch:* record the recorder's own agents | #28 | 0.5h |
+| Record the recorder's own agents (needed by #23) | #28 | 0.5h |
 
 **Optional:** dbt basics on BigQuery, a weekend extra that's not part of this repo.
 
@@ -195,6 +207,7 @@ This is the heaviest week (about 10.5h with reading). The error analysis is the 
 | README, architecture diagram and decisions | #31 | 1.5h |
 | Demo GIF or 2-minute video | #32 | 0.5h |
 | Launch checklist and go public | #33 | 0.5h |
+| *Stretch:* provider comparison on the golden set | #21 | 0.5h |
 | *Stretch:* metrics dashboard | #34 | 2h |
 
 **Outside the repo:** publish the write-up (for example "What I learned from reading 500 agent runs"), add a Projects section to your CVs, and update LinkedIn.
@@ -204,13 +217,12 @@ This is the heaviest week (about 10.5h with reading). The error analysis is the 
 Cut in this order:
 
 1. Metrics dashboard (#34)
-2. Self-tracing (#28)
-3. Provider comparison (#21)
-4. Agents SDK port (#6)
-5. Terraform falls back to a documented `gcloud run deploy`, though keep Terraform if at all possible since job ads ask for it
-6. The replay UI shrinks to a run list plus a timeline, with no span detail panel
+2. Provider comparison (#21)
+3. Agents SDK port (#6)
+4. Terraform falls back to a documented `gcloud run deploy`, though keep Terraform if at all possible since job ads ask for it
+5. The replay UI shrinks to a run list plus a timeline, with no span detail panel
 
-**Never cut:** redaction, the hand error analysis, your own harness, evals in CI, and the quickstart. They're the core of the story.
+**Never cut:** redaction, the hand error analysis, your own harness, `afr case`, evals in CI, and the quickstart. They're the core of the story.
 
 ## Weekly check-in (Sundays)
 
