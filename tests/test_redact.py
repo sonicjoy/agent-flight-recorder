@@ -367,6 +367,14 @@ def test_a_connection_strings_other_settings_are_kept(redactor: Redactor, text: 
         ("DB_PASS=123456 ./run", "123456"),  # a PIN under a pass name
         ("password = Hunter(22)", "Hunter(22)"),  # a value with digits isn't a call
         ("password: Tr0ub;&4dor", "Tr0ub;&4dor"),  # ; not followed by a setting's name
+        ("occ maintenance:install --database-pass X9secret", "X9secret"),  # pass after -
+        ("db-pass: X9secret", "X9secret"),
+        ("redis-pass=X9secret", "X9secret"),
+        ("X-Api-Pass: X9secret", "X9secret"),
+        ("password=Summer(Fun)!", "Summer(Fun)!"),  # a bracket, then a password's !
+        ("password: Tro(ub 4dor99 battery", "Tro(ub 4dor99 battery"),  # more than a call
+        ('mysql -e "SELECT 1;" -pX9secret', "X9secret"),  # a ; inside a quoted argument
+        ("DB_PASS=123 ./run", "123"),  # three digits: a PIN, not a count
     ],
 )
 def test_values_close_to_the_near_misses_are_still_redacted(
@@ -378,16 +386,33 @@ def test_values_close_to_the_near_misses_are_still_redacted(
 
 
 def test_numbers_under_a_token_count_key_are_kept(redactor: Redactor) -> None:
-    """A token key holding a number is a count or an id: max_token, token_1."""
+    """A number under a count's name is a count: max_token, num_tokens_1. Under any other
+    token key it may be the token: an OTP, a numeric API token."""
     counts: Counter[str] = Counter()
-    value = {"max_token": 4096, "token_1": 5, "pin_password": 1234, "api_key": 12345678901}
+    value = {"max_token": 4096, "num_token_1": 5, "pin_password": 1234, "api_key": 12345678901}
+    value |= {"token": 482913, "mfa_token": 482193, "auth_token": 98765432109}
 
     result = redactor.value(value, counts)
 
     assert result["max_token"] == 4096
-    assert result["token_1"] == 5
+    assert result["num_token_1"] == 5
+    for key in ("token", "mfa_token", "auth_token"):
+        assert result[key] == redactor.placeholder("secret_assignment", str(value[key]))
     assert result["pin_password"] == redactor.placeholder("secret_assignment", "1234")
     assert result["api_key"] == redactor.placeholder("secret_assignment", "12345678901")
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("smtp-pass", "X9secret"), ("password", "abc(x) Hunter22"), ("db-pass", "Summer(Fun)!")],
+)
+def test_values_under_a_secret_key_that_start_like_code_are_redacted(
+    redactor: Redactor, key: str, value: str
+) -> None:
+    """Only a value that is one call or lookup, and nothing else, is code."""
+    result = redactor.redact({key: value})
+
+    assert result.value == {key: redactor.placeholder("secret_assignment", value)}
 
 
 GITHUB_TOKEN = "ghp_" + "a1B2c3D4" * 5
@@ -497,6 +522,11 @@ ADVERSARIAL = {
     "many escaped line breaks": "password:\\n  " * 40_000 + "name: a_token\\n" * 20_000,
     "many annotations": "password: str" * 40_000,
     "punctuation runs": "password=" + "a;" * 100_000,
+    "dotted flag runs": ".--." * 50_000,
+    "many flag starts in one run": "--a." * 50_000,
+    "dotted flag runs naming a secret": "--x.password." * 15_000,
+    "many calls after a colon, no spaces": "password:abc(" * 15_000,
+    "many lookups after a colon": "token:os.environ[" * 12_000,
 }
 
 

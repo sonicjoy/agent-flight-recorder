@@ -77,15 +77,16 @@ NOT_A_VALUE = frozenset(
 _CLOSING = r"[),:|\];]*+"
 _FIRST_NAME = re.compile(rf"(\w++){_CLOSING}")
 # Code, not a value: a call or lookup (get_password(), Field(default=None), os.environ[)
-# with no digit after its bracket. A value such as Hunter(22) has one.
-_CALL = r"[A-Za-z_][A-Za-z_.]{2,}+[(\[][^\s0-9]*+"
+# with no digit or password punctuation after its bracket. A value such as Hunter(22) or
+# Summer(Fun)! has one. Bounded, so looking for one after every name stays linear.
+_CALL = r"[A-Za-z_][A-Za-z_.]{2,100}+[(\[][^\s0-9!@#$%^&*~?]{0,100}+"
 _A_CALL = re.compile(_CALL)
 
 
 def is_a_value(text: str) -> bool:
     """Whether text after a secret's name could be the secret."""
     words = text.split()
-    if not words or _A_CALL.fullmatch(words[0]):
+    if not words or (len(words) == 1 and _A_CALL.fullmatch(words[0])):  # the whole value
         return False
     first = _FIRST_NAME.fullmatch(words[0])
     return not (first and first.group(1).lower() in NOT_A_VALUE)
@@ -101,24 +102,27 @@ def _assigned_value(match: re.Match[str]) -> bool:
     return is_a_value(secret) and not _IN_PLACEHOLDER.search(before)
 
 
-_A_COUNT = re.compile(r"\d{1,3}")  # the whole value under a `pass` name: a count
+_A_COUNT = re.compile(r"\d{1,2}")  # the whole value under a `pass` name: a count
 _PASS = re.compile(r"(?i)pass(?![a-z])")
 
 
 _TOKEN = r"A-Za-z0-9+/_=-"  # characters of base64 and URL-safe tokens
+# Words that make a hyphenated `pass` prose: first-pass, two-pass, high-pass.
+_PROSE_WORDS = "first second third final single multi one two three double high low band all"
+_PROSE_PASS = "".join(rf"(?<!\b{word}-)" for word in _PROSE_WORDS.split())
 
 # Names of a secret, anywhere a key name may end in one: password, DB_PASSWORD, dbPassword,
 # DBPassword, spring.datasource.password, --db-password, PASSWORD1. The name starts where a
 # word starts (not after a letter or digit) or at a camelCase hump, and ends at a word
 # boundary, so PASSWORD_FILE, secret_name and max_tokens are not names of a secret. `pass`
 # alone is a word ("first pass: ..."), so it is a name only after a prefix: DB_PASS, dbPass,
-# not after a hyphen (first-pass, two-pass).
+# db-pass, but not after a word that makes it prose (first-pass, two-pass, high-pass).
 # The lookbehinds outside the name are case-sensitive; only the name itself ignores case.
 SECRET_NAME = (
     r"(?:(?<![A-Za-z0-9])|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z]))"
     r"(?i:api[_-]?keys?+|secret[_-]?key|client[_-]?secret|private[_-]?key|secret|passwords?+"
     r"|passphrase|passwd|pwd|pgpassword|access[_-]?token|auth[_-]?token|token"
-    r"|(?<=[A-Za-z0-9][_.])pass|(?<=[a-z0-9])pass)"
+    rf"|(?<=[A-Za-z0-9][_.-]){_PROSE_PASS}pass|(?<=[a-z0-9])pass)"
     r"(?:_?+\d{1,3}+)?+\b"
 )
 SECRET_KEY = re.compile(SECRET_NAME + r"\W*+$")  # a key or flag that ends in a secret's name
@@ -140,10 +144,14 @@ _NEXT_SETTING = r"(?![A-Za-z][A-Za-z0-9 _.]{0,30}+=)"
 _WORD = rf"[^\s\"'\\,;{{}}=](?:{_PLAIN}|[,{{}}](?={_PLAIN})|;(?={_PLAIN}){_NEXT_SETTING})*+"
 # What the words after `name:` must not start with, or the match would be skipped whole and
 # hide a secret later on the line: a placeholder, the inside of one ([REDACTED:github_token:
-# 1a2b3c4d] holds `token:1a2b3c4d]`), or a word that says there is no value (as is_a_value
-# reads it). Checked in the regex, so the search goes on from the next position instead.
+# 1a2b3c4d] holds `token:1a2b3c4d]`), a word that says there is no value (as is_a_value
+# reads it), or a call that is all there is up to the end of the line or a comment.
+# Checked in the regex, so the search goes on from the next position instead.
 _NOT_A_VALUE_WORD = "|".join(sorted(NOT_A_VALUE))
-_SKIPPED = rf"\[REDACTED:|[0-9a-f]{{8}}\]|(?:(?i:{_NOT_A_VALUE_WORD}){_CLOSING}|{_CALL})(?!\S)"
+_SKIPPED = (
+    rf"\[REDACTED:|[0-9a-f]{{8}}\]|(?i:{_NOT_A_VALUE_WORD}){_CLOSING}(?!\S)"
+    rf"|{_CALL}[ \t]*+(?=[\r\n#]|\\[rn]|\Z)"
+)
 SECRET_VALUES = (
     # password: "two words" / api_key='...' / \"token\": \"...\" (a JSON string): to the
     # closing quote or the end of the line; the quotes stay. Inside plain quotes an escape
@@ -222,14 +230,16 @@ SECRET_ELSEWHERE = (
     # flag, a variable (--password $DB_PASSWORD), a redirection (--with-token < file) or a
     # word of prose (the --password flag). A quoted value goes whole, quotes too.
     # Only a flag that ends in a secret's name matches, so another flag's quoted value
-    # (--command "mysql --password x") isn't consumed unchecked. The lazy run can't pass
-    # the flag's end, so it stays linear.
-    rf"(?<![\w-])--(?P<flag>[A-Za-z0-9_.-]*?{SECRET_NAME})[ \t]++"
+    # (--command "mysql --password x") isn't consumed unchecked. The lazy run is bounded and
+    # stops at another `--`, so a run of `.--.--` that starts a match at each `--` stays
+    # linear.
+    rf"(?<![\w-])--(?P<flag>(?:[A-Za-z0-9_.]|-(?!-)){{0,100}}?{SECRET_NAME})[ \t]++"
     r"(?P<secret>\"[^\"\n]*+\"|'[^'\n]*+'|[^\s\"'\\$<>|&;-]\S*+)",
     # mysql -uroot -pVALUE: the password joined to -p. -p alone asks for it. Up to 30
     # arguments are looked at, so a line of `mysql` words stays linear. The search stops at
-    # ; & or |, where the next command (psql -p5432) begins.
-    r"(?<![\w-])mysql(?:dump|admin|sh)?+(?:[ \t]++(?!-p)[^\s;&|]++){0,30}+[ \t]++-p"
+    # ; & or | outside quotes, where the next command (psql -p5432) begins.
+    r"(?<![\w-])mysql(?:dump|admin|sh)?+(?:[ \t]++(?!-p)(?:\"[^\"\n]{0,500}+\"|'[^'\n]{0,500}+'"
+    r"|[^\s;&|\"']++)++){0,30}+[ \t]++-p"
     r"(?P<secret>\S++)",
     # Kubernetes and ECS env entries: name: DB_PASSWORD, then value: ... on the same or the
     # next line, as YAML or JSON (escaped too, inside a JSON string). The value is read as
