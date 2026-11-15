@@ -13,7 +13,7 @@ import re
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 from rich.console import Console
@@ -39,7 +39,6 @@ SEED = 14
 RACED = ("23505", "40P01", "40001")
 EVERY_RUN = 100_000
 SKIP, QUIT = "s", "q"
-NONE_TEXT = "(none)"
 NUMBER = re.compile(r"[0-9]{1,6}")  # ASCII only (str.isdigit() also takes ²), and short
 
 
@@ -78,7 +77,7 @@ def show_run(out: Console, session: Session, summary: RunSummary) -> None:
     truth came from), what it was asked, its model and tool calls, its problem spans, its
     other attributes and its labels."""
     from flight_recorder.cli import story
-    from flight_recorder.store.labels import labels_of
+    from flight_recorder.store.labels import answer_line, labels_of
     from flight_recorder.store.read import span_content, span_tree
 
     roots = span_tree(session, summary.run.id)
@@ -258,24 +257,9 @@ def _save(
     return added
 
 
-def answer_line(answer: dict[str, Any]) -> str:
-    """A stored right answer as one line: free text, or `field=value; field=value`."""
-    fields = answer.get("fields")
-    if isinstance(fields, dict):
-        items = cast("dict[str, Any]", fields).items()
-        return "; ".join(f"{key.rsplit('.', 1)[-1]}={_value(v)}" for key, v in items)
-    return str(answer.get("text", ""))
-
-
-def _value(value: Any) -> str:
-    if isinstance(value, list):
-        return ", ".join(str(v) for v in cast("list[Any]", value)) or NONE_TEXT
-    return str(value)
-
-
 def _ask_answer(out: Console, decided: dict[str, Any]) -> dict[str, Any] | None:
     """The right answer, or None when skipped (Enter or end of input); `q` stops."""
-    from flight_recorder.store.labels import parse_answer
+    from flight_recorder.store.labels import answer_line, parse_answer
 
     if decided:
         out.print(render.text(f"agent decided: {answer_line({'fields': decided})}"))
@@ -383,6 +367,7 @@ def label(
     from flight_recorder.store.labels import (
         SpanNotInRunError,
         decided_fields,
+        label_with_mode,
         parse_answer,
         set_answer,
         span_of_run,
@@ -419,7 +404,8 @@ def label(
             try:
                 parsed = parse_answer(answer, decided)
             except ValueError as error:
-                raise typer.BadParameter(str(error), param_hint="--answer") from None
+                # the message names the run's fields: recorded text
+                raise typer.BadParameter(render.clean(str(error)), param_hint="--answer") from None
         show_run(out, session, summary)
         short = str(summary.run.id)[:8]
         if mode is None:
@@ -434,9 +420,14 @@ def label(
                           span_id=span_id)  # fmt: skip
             if added is None:
                 where = f"span {span}" if span is not None else short
+                had = label_with_mode(session, summary.run.id, mode) if parsed else None
+                if had is None:
+                    out.print(render.text(f"{where} already has {render.one_line(mode, 80)}; "
+                                          "not added"))  # fmt: skip
+                    return
+                added = had  # the answer goes on the label the run already has
                 out.print(render.text(f"{where} already has {render.one_line(mode, 80)}; "
-                                      "not added"))  # fmt: skip
-                return
+                                      "storing the right answer on it"))  # fmt: skip
             if parsed is not None:
                 set_answer(session, added.id, parsed, redactor)
                 session.commit()

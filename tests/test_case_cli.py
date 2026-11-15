@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 import pytest
 import yaml
-from sqlalchemy import create_engine, delete, select
+from sqlalchemy import create_engine, delete, select, update
 from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
@@ -158,9 +158,7 @@ def test_label_asks_once_for_the_right_answer_field_by_field(
     rows = _labels(db)
     assert [r.failure_mode for r in rows] == ["extra-label", "wrong-label"]
     # on the first label only, the agent's other fields kept as decided
-    assert rows[0].expected == {
-        "fields": {"triager.labels": ["evals"], "triager.milestone": "Week 3"}
-    }
+    assert rows[0].expected == {"fields": {"labels": ["evals"], "milestone": "Week 3"}}
     assert rows[1].expected is None
 
 
@@ -173,7 +171,7 @@ def test_label_refuses_an_unknown_field_and_asks_again(
     assert result.exit_code == 0, result.output
     assert "priority" in result.output
     assert _labels(db)[0].expected == {
-        "fields": {"triager.labels": ["evals", "infra"], "triager.milestone": "Week 4"}
+        "fields": {"labels": ["evals", "infra"], "milestone": "Week 4"}
     }
 
 
@@ -209,9 +207,7 @@ def test_label_with_mode_takes_answer_from_a_flag_and_never_prompts(
     assert plain.exit_code == 0, plain.output
     assert "right answer" not in plain.output
     rows = _labels(db)
-    assert rows[0].expected == {
-        "fields": {"triager.labels": ["evals"], "triager.milestone": "Week 3"}
-    }
+    assert rows[0].expected == {"fields": {"labels": ["evals"], "milestone": "Week 3"}}
     assert rows[1].expected is None
 
 
@@ -242,7 +238,7 @@ def test_a_case_from_a_labelled_triager_run_expects_the_right_answer(
     cli("label", str(ids["triager"]), "--mode", "extra-label", "--answer", "labels=evals")
     cli("label", str(ids["triager"]), "--mode", "wrong-label")
 
-    draft = draft_case(db, ids["triager"], suite="smoke")
+    draft = draft_case(db, ids["triager"], suite="smoke", redactor=REDACTOR)
 
     case = draft.case
     assert draft.local is False
@@ -263,8 +259,8 @@ def test_a_case_from_an_unlabelled_run_expects_the_agents_output_marked_unreview
 ) -> None:
     from flight_recorder.evals.cases import draft_case
 
-    triager = draft_case(db, ids["triager"], suite="smoke").case
-    plain = draft_case(db, ids["plain"], suite="smoke").case
+    triager = draft_case(db, ids["triager"], suite="smoke", redactor=REDACTOR).case
+    plain = draft_case(db, ids["plain"], suite="smoke", redactor=REDACTOR).case
 
     assert triager["expected"] == {"labels": ["evals", "infra"], "milestone": "Week 3"}
     assert triager["unreviewed"] is True
@@ -281,7 +277,7 @@ def test_a_free_text_answer_becomes_the_expected_answer(
 
     cli("label", str(ids["plain"]), "--mode", "bad-sum", "--answer", "4")
 
-    case = draft_case(db, ids["plain"], suite="smoke").case
+    case = draft_case(db, ids["plain"], suite="smoke", redactor=REDACTOR).case
 
     assert case["expected"] == {"answer": "4"}
     assert case["checks"] == [{"type": "equals", "field": "answer", "value": "4"}]
@@ -293,7 +289,7 @@ def test_a_claude_code_session_is_routed_to_the_local_folder(
 ) -> None:
     from flight_recorder.evals.cases import draft_case
 
-    draft = draft_case(db, ids["claude"], suite="smoke")
+    draft = draft_case(db, ids["claude"], suite="smoke", redactor=REDACTOR)
 
     assert draft.local is True
     assert draft.case["input"] == {"prompt": "fix the tests"}
@@ -303,7 +299,7 @@ def test_a_run_with_no_recorded_input_has_no_case(db: Session, ids: dict[str, uu
     from flight_recorder.evals.cases import CaseError, draft_case
 
     with pytest.raises(CaseError, match="input"):
-        draft_case(db, ids["silent"], suite="smoke")
+        draft_case(db, ids["silent"], suite="smoke", redactor=REDACTOR)
 
 
 def test_drafting_checks_the_ids_before_reading_the_run(
@@ -313,7 +309,7 @@ def test_drafting_checks_the_ids_before_reading_the_run(
 
     for suite, case_id in [("../x", None), ("local", None), ("smoke", "/abs"), ("smoke", "..")]:
         with pytest.raises(CaseError):
-            draft_case(db, ids["plain"], suite=suite, case_id=case_id)
+            draft_case(db, ids["plain"], suite=suite, case_id=case_id, redactor=REDACTOR)
 
 
 # --- afr case new -----------------------------------------------------------------------
@@ -421,7 +417,9 @@ def test_case_new_refuses_bad_ids_and_never_overwrites(
 def test_case_new_prints_recorded_text_cleaned(
     cli: Callable[..., Any], db: Session, cases: Path
 ) -> None:
-    run = _record(db, "trace-esc", asked="hi ‮evil")  # YAML leaves it raw; clean() can't
+    run = _record(
+        db, "trace-esc", asked=f"hi {chr(0x202E)}evil"
+    )  # YAML leaves it raw; clean() can't
     db.commit()
 
     result = cli("case", "new", "--from-run", str(run), "--suite", "smoke",
@@ -447,7 +445,141 @@ def test_expected_fields_keep_their_name_order_whatever_order_the_store_keeps(
     db.commit()
     cli("label", str(run), "--mode", "m", "--answer", "milestone=y")  # JSONB sorts by length
 
-    case = draft_case(db, run, suite="smoke").case
+    case = draft_case(db, run, suite="smoke", redactor=REDACTOR).case
 
     assert list(case["expected"]) == ["duplicate_of", "labels", "milestone"]
     assert [c["field"] for c in case["checks"]] == ["duplicate_of", "labels", "milestone"]
+
+
+# --- review fixes (.review/59-afr-case) -----------------------------------------------
+
+
+def test_a_secret_the_recording_missed_is_redacted_when_the_case_is_drafted(
+    db: Session, ids: dict[str, uuid.UUID]
+) -> None:
+    from flight_recorder.evals.cases import draft_case, placeholders
+    from flight_recorder.store.models import Span
+
+    run = _record(db, "trace-old", asked="placeholder")
+    db.flush()
+    # as a run recorded before a pattern existed holds it: the stored text, unredacted
+    db.execute(update(Span).where(Span.run_id == run).values(input=f"use {SECRET} please"))
+    db.commit()
+
+    case = draft_case(db, run, suite="smoke", redactor=REDACTOR).case
+
+    assert SECRET not in str(case)
+    assert placeholders(case)  # so the gate stops the write
+
+
+def test_a_right_answer_survives_merging_and_removing_its_label(
+    cli: Callable[..., Any], db: Session, ids: dict[str, uuid.UUID]
+) -> None:
+    from flight_recorder.store.labels import answer_of
+
+    run = str(ids["plain"])
+    cli("label", run, "--mode", "first", "--answer", "4")
+    cli("label", run, "--mode", "second")
+    cli("label", run, "--mode", "third")
+
+    assert cli("labels", "rename", "first", "second").exit_code == 0  # merged into second
+    db.expire_all()
+    assert answer_of(db, ids["plain"]) == {"text": "4"}
+    assert cli("labels", "remove", run, "--mode", "second").exit_code == 0
+    db.expire_all()
+    assert answer_of(db, ids["plain"]) == {"text": "4"}  # moved to third
+    assert cli("labels", "remove", run).exit_code == 0
+    db.expire_all()
+    assert answer_of(db, ids["plain"]) is None  # all gone: so is the answer
+
+
+def test_answer_with_a_mode_the_run_has_is_stored_on_that_label(
+    cli: Callable[..., Any], db: Session, ids: dict[str, uuid.UUID]
+) -> None:
+    cli("label", str(ids["plain"]), "--mode", "bad-sum")
+
+    result = cli("label", str(ids["plain"]), "--mode", "Bad Sum", "--answer", "4")
+
+    assert result.exit_code == 0, result.output
+    assert "storing the right answer" in result.output
+    assert [r.expected for r in _labels(db)] == [{"text": "4"}]
+
+
+def test_typed_values_take_the_type_of_the_agents_value(
+    cli: Callable[..., Any], db: Session
+) -> None:
+    attrs = {"t.decided.priority": 2, "t.decided.urgent": False, "t.decided.ids": [1, 2],
+             "t.decided.result.label": "bug"}  # fmt: skip
+    run = _record(db, "trace-typed", attributes=attrs, asked="go")
+    db.commit()
+
+    ok = cli("label", str(run), "--mode", "m",
+             "--answer", "priority=3; urgent=true; ids=1, 3; result.label=feature")  # fmt: skip
+    bad = cli("label", str(run), "--mode", "n", "--answer", "priority=high")
+
+    assert ok.exit_code == 0, ok.output
+    assert bad.exit_code == 2
+    assert _labels(db)[0].expected == {
+        "fields": {"ids": [1, 3], "priority": 3, "result.label": "feature", "urgent": True}
+    }
+
+
+def test_an_answer_error_escapes_recorded_field_names(cli: Callable[..., Any], db: Session) -> None:
+    run = _record(db, "trace-esc-field", attributes={"t.decided.\x1b[31mred": "x"}, asked="go")
+    db.commit()
+
+    result = cli("label", str(run), "--mode", "m", "--answer", "bogus=1")
+
+    assert result.exit_code == 2
+    assert "\x1b[31m" not in result.output
+
+
+def test_a_langchain_runs_unreviewed_answer_is_its_raw_structured_output(
+    db: Session,
+) -> None:
+    from flight_recorder.evals.cases import draft_case
+
+    def llm(n: int, output: Any) -> SpanIn:
+        start = T0 + timedelta(seconds=n)
+        return SpanIn(external_id=f"llm-{n}", parent_external_id="root-lc", kind="llm",
+                      name="ChatModel", started_at=start, ended_at=start, status="ok",
+                      output=output)  # fmt: skip
+
+    def message(**kwargs: Any) -> dict[str, Any]:
+        return {"generations": [[{"message": {"kwargs": kwargs}}]]}
+
+    def run(external_id: str, spans: list[SpanIn]) -> uuid.UUID:
+        recorded = RunIn(source="otel", external_id=external_id, agent="lc", started_at=T0)
+        return record_run(db, recorded, spans, redactor=REDACTOR)
+
+    root = SpanIn(
+        external_id="root-lc",
+        kind="agent",
+        name="LangGraph",
+        started_at=T0,
+        ended_at=T0,
+        status="ok",
+        input="classify this",
+    )  # records no output
+    long_text = "Line one.\n\nLine two with   spaces. " + "word " * 120
+    decision = {"name": "Decision", "args": {"label": "bug", "notes": "a\nb", "n": 3}}
+    spoke = llm(1, message(content=long_text))
+    structured = run("trace-lc", [root, spoke, llm(2, message(content="", tool_calls=[decision]))])
+    said = run("trace-lc2", [root, spoke])
+    db.commit()
+
+    first = draft_case(db, structured, suite="smoke", redactor=REDACTOR).case
+    second = draft_case(db, said, suite="smoke", redactor=REDACTOR).case
+
+    assert first["expected"] == {"label": "bug", "n": 3, "notes": "a\nb"}
+    assert second["expected"] == {"answer": long_text}  # in full, not a summary's 400 chars
+
+
+def test_case_new_writes_the_local_gitignore(
+    cli: Callable[..., Any], ids: dict[str, uuid.UUID], cases: Path
+) -> None:
+    result = cli("case", "new", "--from-run", str(ids["claude"]), "--suite", "smoke",
+                 "--root", str(cases), "--yes")  # fmt: skip
+
+    assert result.exit_code == 0, result.output
+    assert (cases / "local" / ".gitignore").read_text(encoding="utf-8").endswith("*\n")

@@ -14,6 +14,7 @@ import pytest
 from flight_recorder.evals.cases import (
     FAKES,
     CaseError,
+    Draft,
     case_path,
     check_id,
     dump,
@@ -139,7 +140,7 @@ def test_write_refuses_a_case_with_placeholders_and_lists_them(tmp_path: Path) -
     case = _case(expected={"answer": key})
 
     with pytest.raises(CaseError) as error:
-        write_case(tmp_path, "smoke", case, local=False)
+        write_case(tmp_path, Draft(case, "smoke", local=False))
 
     assert key in str(error.value)
     assert not list(tmp_path.rglob("*.yaml"))
@@ -149,33 +150,33 @@ def test_write_refuses_a_bare_placeholder_unless_the_case_is_marked(tmp_path: Pa
     case = _case(expected={"answer": "[REDACTED:anthropic_key]"})
 
     with pytest.raises(CaseError):
-        write_case(tmp_path, "smoke", case, local=False)
-    path = write_case(tmp_path, "smoke", case | {"placeholders": True}, local=False)
+        write_case(tmp_path, Draft(case, "smoke", local=False))
+    path = write_case(tmp_path, Draft(case | {"placeholders": True}, "smoke", local=False))
 
     assert path.is_file()
 
 
 def test_write_never_overwrites_a_case(tmp_path: Path) -> None:
-    path = write_case(tmp_path, "smoke", _case(), local=False)
+    path = write_case(tmp_path, Draft(_case(), "smoke", local=False))
     before = path.read_bytes()
 
     with pytest.raises(CaseError, match="exists"):
-        write_case(tmp_path, "smoke", _case(expected={"labels": ["other"]}), local=False)
+        write_case(tmp_path, Draft(_case(expected={"labels": ["other"]}), "smoke", local=False))
 
     assert path.read_bytes() == before
 
 
 def test_write_checks_the_case_id_too(tmp_path: Path) -> None:
     with pytest.raises(CaseError):
-        write_case(tmp_path, "smoke", _case(id="../escape"), local=False)
+        write_case(tmp_path, Draft(_case(id="../escape"), "smoke", local=False))
     with pytest.raises(CaseError):
-        write_case(tmp_path, "local", _case(), local=False)
+        write_case(tmp_path, Draft(_case(), "local", local=False))
 
 
 def test_a_written_case_reads_back_the_same_with_safe_load(tmp_path: Path) -> None:
     case = _case(input={"prompt": "line one\nline two: with a colon", "n": 3})
 
-    path = write_case(tmp_path, "smoke", case, local=False)
+    path = write_case(tmp_path, Draft(case, "smoke", local=False))
 
     assert load(path.read_text(encoding="utf-8")) == case
     assert path.read_text(encoding="utf-8") == dump(case)
@@ -208,3 +209,59 @@ def test_multi_line_text_is_written_as_a_block_people_can_edit() -> None:
     assert load(text) == case
     awkward = _case(input={"prompt": "trailing space \n\tand a tab\n"})
     assert load(dump(awkward)) == awkward  # falls back to a quoted string when a block can't
+
+
+# --- review fixes (.review/59-afr-case) -----------------------------------------------
+
+
+@pytest.mark.parametrize("device", ["con", "prn", "aux", "nul", "com1", "lpt9"])
+def test_windows_device_names_are_refused(device: str) -> None:
+    with pytest.raises(CaseError, match="Windows"):
+        check_id(device, "suite")
+
+
+def test_a_local_case_is_ignored_by_git_wherever_the_cases_folder_is(tmp_path: Path) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    root = tmp_path / "somewhere" / "else"  # no .gitignore rule names it
+
+    path = write_case(root, Draft(_case(), "smoke", local=True))
+    shared = write_case(root, Draft(_case(id="shared"), "smoke", local=False))
+
+    def ignored(file: Path) -> bool:
+        found = subprocess.run(["git", "-C", str(tmp_path), "check-ignore", "-q", str(file)])
+        return found.returncode == 0
+
+    assert path.parent.parent == root.resolve() / "local"
+    assert ignored(path)
+    assert not ignored(shared)
+    assert (root / "local" / ".gitignore").read_text(encoding="utf-8").splitlines()[-1] == "*"
+
+
+def test_a_write_the_os_refuses_is_a_case_error(tmp_path: Path) -> None:
+    root = tmp_path / "file"
+    root.write_text("not a folder", encoding="utf-8")
+
+    with pytest.raises(CaseError, match="can't write"):
+        write_case(root, Draft(_case(), "smoke", local=False))
+
+
+def test_kept_marks_only_a_case_that_has_placeholders() -> None:
+    assert "placeholders" not in kept(_case())
+
+
+def test_line_breaks_a_block_would_change_survive_a_write() -> None:
+    for brk in (0x85, 0x2028, 0x2029):  # NEL, line and paragraph separators
+        case = _case(input={"prompt": "a" + chr(brk) + "b" + chr(10) + "c"})
+        assert load(dump(case)) == case
+
+
+def test_the_preview_escapes_what_yaml_leaves_raw() -> None:
+    from flight_recorder.evals.cases import preview
+
+    rlo, zwsp = chr(0x202E), chr(0x200B)  # right-to-left override, zero-width space
+    text = preview(_case(input={"prompt": f"hi {rlo}evil {zwsp}there"}))
+
+    assert rlo not in text and zwsp not in text
+    assert "\\u202e" in text  # as an escape

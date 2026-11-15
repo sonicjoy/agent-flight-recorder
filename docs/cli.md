@@ -88,12 +88,12 @@ All recorded text was redacted at ingest, and control characters are shown as es
 - **One mode, whatever its spelling:** a mode is stored as its words joined with `-`. Words are split at ASCII punctuation and spaces, and only A–Z is lowercased, so `Tool Timeout` and `tool_timeout` are `tool-timeout`. Word order doesn't count either: `timeout-tool` is the same mode, and takes the spelling the mode already has. Any other character is part of a word as typed: `x²` and `x` are different modes, and non-ASCII letters keep their case (`ΟΔΟΣ` isn't `οδος`).
 - **The note** is optional, and redacted before it's stored, like everything else a person or model may copy from a run.
 - **Several modes:** after each mode and note it asks for another; press Enter when there are no more. Each is saved as it's answered, so `q` (or the end of piped input) here keeps those already given, and stops `--next`. A mode the run already has is refused and asked again: a run (or one span) has each mode once, which the database enforces even with two people labelling at once ([schema.md](schema.md#labels)).
-- **The right answer** (optional, #59): after the last mode it asks once what the agent should have done, so `afr case` can turn the run into an eval case for an agent with no truth dataset. A run with `<prefix>.decided.<field>` attributes shows the agent's decision and takes the fields that were wrong as `field=value; field=value` (a list field takes comma-separated values, `(none)` for empty); the fields not named keep the agent's value. A run without takes free text. Press Enter to skip; `q` stops like after a mode. It's redacted like the note and stored on the run's first new label. Not asked for a span.
+- **The right answer** (optional, #59): after the last mode it asks once what the agent should have done, so `afr case` can turn the run into an eval case for an agent with no truth dataset. A run with `<prefix>.decided.<field>` attributes shows the agent's decision and takes the fields that were wrong as `field=value; field=value` (a list field takes comma-separated values, `(none)` for empty); the fields not named keep the agent's value, and each value takes the type of the agent's (a number, `true`/`false`). A field is named as after `.decided.`, dots included. A run without takes free text. Press Enter to skip; `q` stops like after a mode. It's redacted like the note and stored on the run's first new label. Merging or removing that label moves the answer to another of the run's labels; only removing them all loses it. Not asked for a span. A script that pipes answers in needs one more line (empty) per run.
 
 | Option | |
 |---|---|
 | `--mode`, `--note` | Skip the questions (for scripts, or an agent driving the CLI); one mode per call, and a mode the run already has adds nothing. `--note` alone is the first mode's note |
-| `--answer` | With `--mode`: the right answer, in the same form as asked. Without it, `--mode` asks nothing |
+| `--answer` | With `--mode`: the right answer, in the same form as asked. A mode the run already has gets the answer on its label. Without it, `--mode` asks nothing |
 | `--span` | Label one of the run's spans instead, by an id prefix; a span of another run is refused |
 | `--author` | Who's labelling. Default: the OS user name. It stays in the local store |
 
@@ -158,15 +158,16 @@ checks:
   - {type: equals, field: milestone, value: "Week 3"}
 ```
 
-- **`expected`** is the run's right answer from its labels (the latest), by field without the attribute prefix, or `answer: <text>`. With none, it's what the agent did (its decided fields, else its answer) and the case says `unreviewed: true`: fix it, then delete the line.
+- **`expected`** is the run's right answer from its labels (the latest), by field, or `answer: <text>`. With none, it's what the agent did and the case says `unreviewed: true`: fix it, then delete the line. What the agent did is its decided fields, else its output as recorded: the entry span's output, a Claude Code session's last reply, or for a LangChain run whose entry span recorded none, its structured output as fields (a tool call no tool ran), else what its last model call said, in full.
+- **Types:** `expected` follows the attributes. The triager writes an empty decision as `(none)`, which a case keeps; its output has `null`. Edit it where the harness (#15) compares with the output.
 - **`checks`** is one `equals` per expected field, to edit by hand: free text rarely matches exactly.
 - It prints the whole case first (control characters escaped), then asks `write it?`. Redaction catches secret shapes, not everything personal (home paths, names, hostnames, passwords written in prose), so read it before it goes into git.
 
 **Safety.** Cases go into git, and the repo will be public. The rules are in `flight_recorder.evals.cases`, which the analyst (#22) uses too:
 
-- **Redacted values** (`[REDACTED:kind:fingerprint]`) anywhere in the case, `expected` included, are listed and nothing is written. `--fake` swaps each for a fixed fake of its kind (`fake-anthropic-key`), which neither the redactor nor gitleaks takes for a secret. `--keep-placeholders` keeps them as `[REDACTED:kind]`, fingerprint stripped, and marks the case `placeholders: true`.
-- **A Claude Code session** goes to `evals/cases/local/<suite>/`, which git ignores: its prompts and replies are your own work. Move it out only after rewriting it by hand.
-- **Ids:** the suite and case id are 1 to 64 of `a-z`, `0-9`, `_` and `-`, starting with a letter or digit; `local` is reserved. The file must resolve inside the cases folder, links included, and an existing case is never overwritten.
+- **Redacted values** (`[REDACTED:kind:fingerprint]`) anywhere in the case, `expected` included, are listed and nothing is written. The case is redacted again first, with today's patterns, so a secret a run recorded before a pattern existed is caught here too. `--fake` swaps each for a fixed fake of its kind (`fake-anthropic-key`): on its own, neither the redactor nor gitleaks takes it for a secret. After a secret's name (`password=fake-secret-assignment`) the redactor still redacts it, as it would any value there. `--keep-placeholders` keeps them as `[REDACTED:kind]`, fingerprint stripped, and marks the case `placeholders: true`.
+- **A Claude Code session** goes to `<root>/local/<suite>/`: its prompts and replies are your own work. `local/` holds a `.gitignore` of its own (`*`), written with the first case, so git ignores it wherever the cases folder is; `evals/cases/local/` is in the repo's `.gitignore` too. Move a case out only after rewriting it by hand.
+- **Ids:** the suite and case id are 1 to 64 of `a-z`, `0-9`, `_` and `-`, starting with a letter or digit; `local` and Windows device names (`con`, `nul`, `com1`, ...) are refused. The file must resolve inside the cases folder, links included, and an existing case is never overwritten.
 - YAML is written with `safe_dump`; read cases with `safe_load`.
 
 | Option | |

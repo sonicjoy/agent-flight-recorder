@@ -47,16 +47,17 @@ def new(
         CaseError,
         check_id,
         draft_case,
-        dump,
         faked,
         kept,
+        preview,
         problems,
         write_case,
     )
+    from flight_recorder.redact import default_redactor
 
     if fake and keep:
         raise typer.BadParameter("use one of them", param_hint="--fake / --keep-placeholders")
-    try:
+    try:  # before opening the store: a bad id is a usage error (exit 2), not a failure
         check_id(suite, "suite")
         if case_id is not None:
             check_id(case_id, "case id")
@@ -66,19 +67,27 @@ def new(
     with open_store() as session:
         summary = resolve_ref(session, from_run)
         try:
-            draft = draft_case(session, summary.run.id, suite=suite, case_id=case_id)
+            draft = draft_case(session, summary.run.id, suite=suite, case_id=case_id,
+                               redactor=default_redactor())  # fmt: skip
         except CaseError as error:
             typer.echo(f"error: {error}", err=True)
             raise typer.Exit(code=1) from error
-    case = faked(draft.case) if fake else kept(draft.case) if keep else draft.case
-    where = f"local/{suite}" if draft.local else suite
-    heading = Text(f"case {where}/{case['id']}", style="bold")
+    if fake:
+        draft = draft.with_case(faked(draft.case))
+    elif keep:
+        draft = draft.with_case(kept(draft.case))
+    try:
+        path = draft.path(root)
+    except CaseError as error:
+        out.print(render.text(f"error: {error}"), soft_wrap=True)
+        raise typer.Exit(code=1) from error
+    heading = render.text(f"case {path}", "bold")
     if draft.local:
-        heading.append(" (a Claude Code session: goes to local/, which git ignores)", "yellow")
-    out.print(heading)
-    out.print(render.text(dump(case)), soft_wrap=True)
+        heading.append(" (a Claude Code session: local/ holds a .gitignore of its own)", "yellow")
+    out.print(heading, soft_wrap=True)
+    out.print(Text(preview(draft.case)), soft_wrap=True)
     out.print(WARNING, style="dim", highlight=False)
-    if found := problems(case):
+    if found := problems(draft.case):
         out.print(Text("redacted values in the case:", style="bold red"))
         for value in found:
             out.print(render.text(f"  {value}"), soft_wrap=True)
@@ -94,7 +103,7 @@ def new(
             out.print("not written")
             raise typer.Exit(code=1)
     try:
-        path = write_case(root, suite, case, local=draft.local)
+        path = write_case(root, draft)
     except CaseError as error:
         out.print(render.text(f"error: {error}"), soft_wrap=True)
         raise typer.Exit(code=1) from error

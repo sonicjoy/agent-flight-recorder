@@ -5,6 +5,7 @@ plain text. Pure, so the label screen (cli/story.py) and search's summaries
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from typing import Any, cast
 
@@ -39,6 +40,19 @@ def _strings(value: Any) -> Iterator[str]:
 def flat_text(value: Any, limit: int) -> str:
     """A recorded value as one line of plain text, cut to `limit` characters."""
     return cut(" ".join(flat(s) for s in _strings(value) if s.strip()), limit)
+
+
+# The convention any agent can use to show its decision next to the truth: an attribute
+# `<prefix>.decided.<field>`, and `<prefix>.expected.<field>` (docs/cli.md).
+DECIDED = re.compile(r"(?P<prefix>.+)\.decided\.(?P<field>.+)")
+NONE_TEXT = "(none)"  # how an empty list reads, and how the triager writes an empty decision
+
+
+def value_text(value: object) -> str:
+    """An attribute's value as typed and shown: a list comma-separated, `(none)` if empty."""
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in cast("list[Any]", value)) or NONE_TEXT
+    return str(value)
 
 
 def as_dict(value: Any) -> dict[str, Any] | None:

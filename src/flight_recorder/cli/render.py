@@ -10,7 +10,6 @@ reaches the terminal as `rich.text.Text`, never as markup.
 from __future__ import annotations
 
 import json
-import re
 import unicodedata
 from collections import Counter
 from collections.abc import Sequence
@@ -24,7 +23,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
 
-from flight_recorder.payloads import cut, flat
+from flight_recorder.payloads import DECIDED, cut, flat, value_text
 
 if TYPE_CHECKING:
     from flight_recorder.store.read import RunSummary, SpanNode
@@ -482,14 +481,7 @@ def _clock(offset: timedelta) -> str:
 
 # --- labelling (#14) ------------------------------------------------------------------
 
-PAIRED = re.compile(r"(?P<prefix>.+)\.decided\.(?P<field>.+)")
 NOISE_PREFIXES = ("telemetry.", "service.instance.", "openinference.")
-
-
-def _attribute(value: object) -> str:
-    if isinstance(value, list):
-        return ", ".join(str(v) for v in value) or "(none)"  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
-    return str(value)
 
 
 def _pairs(attributes: dict[str, Any]) -> list[tuple[str, str, str, str]]:
@@ -497,7 +489,7 @@ def _pairs(attributes: dict[str, Any]) -> list[tuple[str, str, str, str]]:
     `<p>.expected.<f>`, in key order."""
     found: list[tuple[str, str, str, str]] = []
     for key in sorted(attributes):
-        match = PAIRED.fullmatch(key)
+        match = DECIDED.fullmatch(key)
         if match:
             expected_key = f"{match['prefix']}.expected.{match['field']}"
             if expected_key in attributes:
@@ -509,8 +501,8 @@ def decision_rows(attributes: dict[str, Any]) -> Text:
     """One row per decided/expected pair, both sides named: `agent X  ≠  truth Y`."""
     lines = Text()
     for prefix, field, decided_key, expected_key in _pairs(attributes):
-        decided = _attribute(attributes[decided_key])
-        expected = _attribute(attributes[expected_key])
+        decided = value_text(attributes[decided_key])
+        expected = value_text(attributes[expected_key])
         same = decided == expected
         lines.append_text(text(f"{one_line(prefix, 60)} {one_line(field, 40)}: ", "dim"))
         lines.append("agent ", style="dim")
@@ -549,7 +541,7 @@ def other_attributes(attributes: dict[str, Any]) -> Text:
         if key in paired or key.startswith(NOISE_PREFIXES):
             continue
         lines.append(f"{one_line(key, 60)}: ", style="dim")
-        lines.append_text(text(one_line(_attribute(attributes[key]), 160), "dim"))
+        lines.append_text(text(one_line(value_text(attributes[key]), 160), "dim"))
         lines.append("\n")
     lines.rstrip()
     return lines

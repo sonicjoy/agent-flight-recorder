@@ -1,1 +1,1 @@
-"""Eval suites: cases written from recorded runs (#59), and the harness that runs them (#15)."""
+"""Eval suites: cases written from recorded runs (#59); the harness that runs them is #15."""
