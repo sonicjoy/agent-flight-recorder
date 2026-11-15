@@ -2,6 +2,8 @@
 
 **Agent Flight Recorder** records every AI agent run, replays it as a timeline, finds failure patterns, and turns failed runs into eval cases.
 
+**It works for any agent.** The recorder, labels and search aren't tied to one agent, and the eval harness is designed the same way (#15). The issue triager is the demo; the analyst, a different kind of agent with no truth dataset, is evaluated with the same tools (#23). See [From runs to an eval suite](#from-runs-to-an-eval-suite).
+
 - **Timeline:** five weeks, Mon 2 Nov to Sun 6 Dec 2026
 - **Budget:** about 9 hours of building a week. Interview prep runs separately.
 - **Tracking:** one [GitHub milestone](https://github.com/sonicjoy/agent-flight-recorder/milestones) per week and one issue per task. Issues labelled `stretch` are the first to cut.
@@ -12,7 +14,7 @@
 
 - [ ] Public repo where `docker compose up` plus `afr seed` shows the replay UI with demo runs in under five minutes
 - [ ] Records Claude Code sessions (hooks) and OpenTelemetry agent traces, with redaction before anything is stored
-- [ ] Eval suite (own harness, golden cases, LLM judge, red-team set) that gates CI
+- [ ] Eval suite for any agent (own harness, golden cases, LLM judge, red-team set); the triager's gates CI, and the analyst's shows the same tools work on a second agent
 - [ ] Analyst agent that clusters failures and drafts eval cases; MCP server that answers "why did run X fail?"
 - [ ] Deployed to Cloud Run and Cloud SQL with Terraform
 - [ ] README with architecture, design decisions and eval results; demo GIF; published write-up
@@ -48,16 +50,27 @@ flowchart LR
   CC["Claude Code hooks"] --> API
   OT["OpenTelemetry<br/>(triager, Agents SDKs)"] --> API
   API["FastAPI ingest<br/>normalise → redact"] --> DB[("Postgres + pgvector<br/>runs · spans · embeddings<br/>labels · eval results")]
-  DB --> CLI["CLI<br/>list · replay · label · search"]
+  DB --> CLI["CLI<br/>list · replay · label · search · case"]
   DB --> AN["Analyst agent<br/>(LangGraph)"]
   DB --> MCP["MCP server<br/>(FastMCP)"]
   DB --> UI["Replay UI<br/>(React + TS)"]
+  CLI -->|writes cases| EV
   AN -->|drafts cases| EV["Eval suite<br/>harness · judge · red-team"]
   EV -->|gates| CI["GitHub Actions"]
   EV -.->|eval runs are recorded too| API
 ```
 
-Runs arrive from Claude Code hooks and OpenTelemetry, are normalised to one span model, redacted, then stored. Four consumers read the store. The analyst agent closes the loop: it groups failed runs by cause and drafts eval cases, and those cases then guard against regressions in CI.
+Runs arrive from Claude Code hooks and OpenTelemetry, are normalised to one span model, redacted, then stored. Four consumers read the store. Failed runs become eval cases, one at a time with `afr case` or in batches by the analyst agent, which groups them by cause; those cases then guard against regressions in CI.
+
+### From runs to an eval suite
+
+The same steps for any agent, whether or not it has a truth dataset:
+
+1. **Record.** The agent exports OpenTelemetry, or is a Claude Code session.
+2. **Find failures.** Runs with an error status, or, when the agent knows its truth, runs it graded wrong (`<prefix>.grade` and `<prefix>.grade.<field>`). Otherwise, read runs and label what you see. Search finds runs by topic or decision, not by whether they were right.
+3. **Label.** `afr label` names each failure mode and, optionally, the right answer (#59). That answer is the truth an agent without a dataset never had.
+4. **Write cases.** `afr case new --from-run` turns a labelled run into a YAML case (#59); the analyst does it in batches, one cluster at a time (#22).
+5. **Run the suite.** The harness calls any agent and grades its output with generic checks and a judge rubric (#15, #17). An agent that exports OpenTelemetry records its eval runs too, so step 1 starts again.
 
 ### Data model (draft)
 
@@ -66,10 +79,10 @@ Runs arrive from Claude Code hooks and OpenTelemetry, are normalised to one span
 | `runs` | One agent run or Claude Code session: source, agent, status, start/end, total tokens and cost, attributes |
 | `spans` | Tree of steps within a run: kind (agent, llm, tool, step), parent, model, tokens, cost, latency, status, error, redacted input/output, raw attributes |
 | `embeddings` | 384-d vectors for run summaries and failed spans (pgvector HNSW) |
-| `labels` | Failure modes on runs, from you, the judge or the analyst |
+| `labels` | Failure modes on runs, from you, the judge or the analyst, and optionally the right answer (#59) |
 | `eval_results` | Each eval run: case, score, model, git SHA, time, for pass-rate trends |
 
-Eval *cases* are YAML files in `evals/cases/`, not database rows, so they are reviewed in PRs like code.
+Eval *cases* are YAML files in `evals/cases/`, not database rows, so they are reviewed in PRs like code. Cases from Claude Code sessions go to the git-ignored `evals/cases/local/` (#59).
 
 ### Repo layout (target)
 
@@ -83,7 +96,7 @@ src/flight_recorder/
   evals/       harness, judge
   analyst/     LangGraph analyst agent
   mcp/         FastMCP server
-evals/cases/              golden and red-team cases (YAML)
+evals/cases/              golden and red-team cases (YAML); local/ is git-ignored
 ui/                       React + TypeScript (Vite)
 infra/terraform/          GCP deployment
 docs/                     plan, schema, evals write-ups, decisions/
@@ -150,23 +163,23 @@ Estimates are build hours. The learning items come from the 5-week prep plan and
 
 ### Week 3 · 16–22 Nov · Evals and guardrails
 
-**Ships:** a hand-made failure taxonomy, your own eval harness with golden, judge and red-team cases, and evals failing the build on regressions.
+**Ships:** a hand-made failure taxonomy, `afr case` to turn labelled runs into eval cases, your own eval harness with golden, judge and red-team cases, and evals failing the build on regressions.
 
 | Task | Issue | Est. |
 |---|---|---|
 | Generate a run corpus with real failures | #13 | 1h |
-| Labelling CLI and hand error analysis (50 runs) | #14 | 2h |
-| Eval harness from scratch | #15 | 1.5h |
+| Labelling CLI and hand error analysis (50 runs) | #14 | 2.5h |
+| Eval harness from scratch, for any agent | #15 | 2h |
+| `afr case`: turn a recorded run into an eval case | #59 | 2.5h |
 | Golden eval cases from labelled failures | #16 | 0.5h |
 | LLM-as-judge rubric with agreement check | #17 | 1.5h |
 | Red-team set: prompt injection and secret leaks | #18 | 1h |
 | Evals in CI | #19 | 1h |
 | Compare with promptfoo or DeepEval | #20 | 0.5h |
-| *Stretch:* provider comparison on the golden set | #21 | 0.5h |
 
 **Learning (about 1.5h):** Hamel Husain's "Your AI Product Needs Evals" and Eugene Yan's "Task-Specific LLM Evals". Read them before the error analysis; starting on the week 2 weekend works well.
 
-This is the heaviest week (about 10.5h with reading). The error analysis is the part to protect, since everything after it depends on it.
+This is the heaviest week (about 14h with reading), and week 4 is about 10h: both are over the 9h budget, so expect to use the cut list. The error analysis is the part to protect, since everything after it depends on it.
 
 ### Week 4 · 23–29 Nov · Analyst, MCP and deploy
 
@@ -175,12 +188,12 @@ This is the heaviest week (about 10.5h with reading). The error analysis is the 
 | Task | Issue | Est. |
 |---|---|---|
 | Analyst agent: cluster failures, draft eval cases | #22 | 3h |
-| Evaluate the analyst against your labels | #23 | 1h |
+| Evaluate the analyst as the second agent, against your labels | #23 | 1.5h |
 | MCP server | #24 | 1.5h |
 | API key auth before deploy | #25 | 0.5h |
 | Containerise the API and MCP server | #26 | 0.5h |
 | Deploy with Terraform to Cloud Run and Cloud SQL | #27 | 2.5h |
-| *Stretch:* record the recorder's own agents | #28 | 0.5h |
+| Record the recorder's own agents (needed by #23, and by #17 in week 3, so do the judge's part with #17) | #28 | 0.5h |
 
 **Optional:** dbt basics on BigQuery, a weekend extra that's not part of this repo.
 
@@ -195,6 +208,7 @@ This is the heaviest week (about 10.5h with reading). The error analysis is the 
 | README, architecture diagram and decisions | #31 | 1.5h |
 | Demo GIF or 2-minute video | #32 | 0.5h |
 | Launch checklist and go public | #33 | 0.5h |
+| *Stretch:* provider comparison on the golden set | #21 | 0.5h |
 | *Stretch:* metrics dashboard | #34 | 2h |
 
 **Outside the repo:** publish the write-up (for example "What I learned from reading 500 agent runs"), add a Projects section to your CVs, and update LinkedIn.
@@ -204,13 +218,13 @@ This is the heaviest week (about 10.5h with reading). The error analysis is the 
 Cut in this order:
 
 1. Metrics dashboard (#34)
-2. Self-tracing (#28)
-3. Provider comparison (#21)
-4. Agents SDK port (#6)
+2. Provider comparison (#21)
+3. Comparison with promptfoo or DeepEval (#20), the week 3 fallback
+4. The analyst's own eval suite (#23), keeping its cluster agreement and accepted-case numbers; the any-agent claim then rests on the design and the analyst's metrics
 5. Terraform falls back to a documented `gcloud run deploy`, though keep Terraform if at all possible since job ads ask for it
 6. The replay UI shrinks to a run list plus a timeline, with no span detail panel
 
-**Never cut:** redaction, the hand error analysis, your own harness, evals in CI, and the quickstart. They're the core of the story.
+**Never cut:** redaction, the hand error analysis, your own harness, `afr case`, evals in CI, and the quickstart. They're the core of the story.
 
 ## Weekly check-in (Sundays)
 
