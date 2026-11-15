@@ -20,6 +20,7 @@ from typing import Any
 
 from pgvector.sqlalchemy import Vector  # pyright: ignore[reportMissingTypeStubs]
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     Computed,
     DateTime,
@@ -125,8 +126,8 @@ class Run(Base):
     ended_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), comment="Null while a run is still going"
     )
-    input_tokens: Mapped[int | None]
-    output_tokens: Mapped[int | None]
+    input_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    output_tokens: Mapped[int | None] = mapped_column(BigInteger)
     cost_usd: Mapped[Decimal | None] = mapped_column(
         Money, comment="Sum of span costs at ingest; null if any priced span is unknown"
     )
@@ -173,8 +174,8 @@ class Span(Base):
     error: Mapped[str | None] = mapped_column(Text, comment="Redacted before storing")
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    input_tokens: Mapped[int | None]
-    output_tokens: Mapped[int | None]
+    input_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    output_tokens: Mapped[int | None] = mapped_column(BigInteger)
     cost_usd: Mapped[Decimal | None] = mapped_column(Money, comment="Priced at ingest")
     pricing_version: Mapped[str | None] = mapped_column(
         Text, comment="Version of pricing.yaml that priced cost_usd; null if not priced"
@@ -217,6 +218,15 @@ class Span(Base):
         Index(None, "run_id", "started_at"),
         Index(None, "run_id", "parent_id"),
         Index("ix_spans_errors", "run_id", postgresql_where=text("status = 'error'")),
+        # Claude Code finds a running tool, and a permission wait, by what it is rather than
+        # by id: without these, each lookup scans the session (ingest/claude_code.py).
+        Index("ix_spans_tool_ends", "run_id", "ended_at", postgresql_where=text("kind = 'tool'")),
+        Index(
+            "ix_spans_permission_waits",
+            "run_id",
+            "parent_external_id",
+            postgresql_where=text("external_id LIKE 'permission:%'"),
+        ),
     )
 
 

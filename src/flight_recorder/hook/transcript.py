@@ -25,17 +25,34 @@ What it relies on, checked against Claude Code's transcripts on 11 Nov 2026:
   "config", "user_temporary", "user_permanent") and "reasonType" / "reasonCode" (such as
   "classifier", "rule", "mode", "safetyCheck"). Hooks don't say whether a call was
   rejected, so decisions are read from here.
+- User lines (prompts and tool results) carry "promptId", the same id hooks send as
+  prompt_id (checked with Claude Code 2.1.321 on 13 Nov 2026). The responses after one
+  belong to that turn, so each response carries it: a read can span two turns, since later
+  hooks read on in a long turn's transcript. The latest one is kept with the read position.
+  A turn Claude Code starts itself (a background task's result) begins with an "isMeta"
+  user line carrying a new promptId, and its last response, like any turn's, stops with
+  "end_turn". The recorder ends turns from that (seen in this machine's transcripts on
+  14 Nov 2026: 781 of 782 turns ending in end_turn had one "stop_hook_summary" line).
+  Whether Stop's prompt_id names such a turn is unverified.
 
 Where reading stopped is kept per transcript in <AFR_HOME>/hook-state/, so each turn reads
-only new lines. The position is saved only once the event carrying the usage has been sent
-or spooled (TranscriptRead.commit): a hook killed before that leaves the lines for the next
-turn end or SessionEnd. Reading a line twice is harmless: the recorder keys responses by id.
+only new lines. The position is saved only once the events carrying the usage have been
+sent or spooled (TranscriptRead.commit): a hook killed before that leaves the lines for the
+next turn end or SessionEnd. Reading a line twice is harmless: the recorder keys responses
+by id.
+
+One read takes at most max_items responses and decisions, and stops after the line that
+reaches it; the position is saved there, and the next read carries on (the hook has later
+hooks read the rest: client._leave_rest). Without a saved position (a session that predates
+the hooks) the first read starts at the beginning, so such a session's history arrives a
+page at a time instead of all at once.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -155,18 +172,30 @@ class TranscriptRead:
     offset: int = 0
     requests: dict[str, Any] = field(default_factory=dict[str, Any])
     permissions: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
+    more: bool = False
+    """Stopped before the end of what was written: the rest waits for the next read."""
+    prompt_id: str | None = None
+    """The turn the read stopped in, for the next read to carry on with."""
 
     def commit(self) -> None:
         if self.state_file is not None:
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            state = {"offset": self.offset, "requests": self.requests}
-            self.state_file.write_text(json.dumps(state), encoding="utf-8")
+            state = {"offset": self.offset, "requests": self.requests, "prompt_id": self.prompt_id}
+            # Written whole, then renamed: a hook reading at the same moment never sees it empty.
+            partial = self.state_file.with_suffix(f".{os.getpid()}.tmp")
+            partial.write_text(json.dumps(state), encoding="utf-8")
+            os.replace(partial, self.state_file)
 
 
 def read_new(
-    transcript: Path, state_dir: Path, *, include_sidechain: bool = False
+    transcript: Path,
+    state_dir: Path,
+    *,
+    include_sidechain: bool = False,
+    max_items: int | None = None,
 ) -> TranscriptRead:
-    """Usage of the model responses written since the last commit, one entry per response."""
+    """Usage of the model responses written since the last commit, one entry per response,
+    and the permission decisions; at most about max_items of the two together."""
     if not transcript.is_file():
         return TranscriptRead([])
     state = _state_file(state_dir, transcript)
@@ -175,7 +204,8 @@ def read_new(
         offset = int(saved["offset"])
     except (OSError, ValueError, KeyError, TypeError):
         saved, offset = {}, 0
-    if offset > transcript.stat().st_size:  # rewritten or replaced: start again
+    size = transcript.stat().st_size
+    if not 0 <= offset <= size:  # rewritten, replaced or damaged: start again
         saved, offset = {}, 0
     kept: Any = cast("dict[str, Any]", saved).get("requests") if isinstance(saved, dict) else None
     with transcript.open("rb") as file:
@@ -186,7 +216,14 @@ def read_new(
     permissions: list[dict[str, Any]] = []
     # api-request id -> when it was sent, including requests read in earlier turns
     requests: dict[str, Any] = dict(cast("dict[str, Any]", kept)) if isinstance(kept, dict) else {}
-    for raw in complete.splitlines():
+    turn: Any = cast("dict[str, Any]", saved).get("prompt_id") if isinstance(saved, dict) else None
+    prompt_id = turn if isinstance(turn, str) else None  # the turn being written
+    consumed, paged = 0, False
+    for raw in complete.splitlines(keepends=True):
+        if max_items is not None and len(responses) + len(permissions) >= max_items:
+            paged = True  # a page: the rest is read next time
+            break
+        consumed += len(raw)
         try:
             line = json.loads(raw)
         except ValueError:
@@ -199,19 +236,30 @@ def read_new(
             continue
         if line.get("isSidechain") and not include_sidechain:
             continue
+        if line.get("type") == "user" and isinstance(line.get("promptId"), str):
+            prompt_id = line["promptId"]
         permissions += permission_decisions(line)
         if (usage := response_usage(line)) is not None:
+            usage["prompt_id"] = prompt_id
             earlier = responses.get(usage["message_id"])
             if earlier is not None:  # a later line of the same response: keep when it began
                 usage["started_at"] = earlier["started_at"]
                 usage["output"] = _joined(earlier["output"], usage["output"])
+                usage["prompt_id"] = earlier["prompt_id"]
             responses[usage["message_id"]] = usage
     for usage in responses.values():
         usage["requested_at"] = requests.get(str(usage.pop("request_ref")))
         usage["output"] = _said(usage["output"])
     recent = dict(list(requests.items())[-KEPT_REQUESTS:])
+    more = paged or offset + len(chunk) < size  # not a half-written last line
     return TranscriptRead(
-        list(responses.values()), state, offset + len(complete), recent, permissions
+        list(responses.values()),
+        state,
+        offset + consumed,
+        recent,
+        permissions,
+        more=more,
+        prompt_id=prompt_id,
     )
 
 

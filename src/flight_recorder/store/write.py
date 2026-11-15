@@ -124,10 +124,13 @@ def _usage(span: SpanIn) -> dict[str, Any]:
 
 
 def _upsert_span(values: dict[str, Any]) -> Any:
-    """A span is sent whole once it ends, so a re-send replaces it."""
+    """A span is sent whole once it ends, so a re-send replaces it. A span moved to another
+    parent drops its link to the old one until _link_parents finds the new one."""
     statement = insert(Span).values(**values)
     key = ("run_id", "external_id")
-    changes = {name: statement.excluded[name] for name in values if name not in key}
+    changes: dict[str, Any] = {name: statement.excluded[name] for name in values if name not in key}
+    moved = Span.parent_external_id.is_distinct_from(statement.excluded.parent_external_id)
+    changes["parent_id"] = case((moved, None), else_=Span.parent_id)
     return statement.on_conflict_do_update(index_elements=key, set_=changes)
 
 
@@ -187,6 +190,18 @@ def record_run(
     run_id: uuid.UUID = session.execute(
         _upsert_run(run_values, fills_gaps=run.fills_gaps)
     ).scalar_one()
+    written = [span.external_id for span in spans]
+    # Run totals sum llm spans, so only a batch that writes one (or rewrites one as another
+    # kind) changes them: most Claude Code events don't, and summing scans the whole run.
+    totals_change = any(span.kind == "llm" for span in spans) or bool(
+        session.scalar(
+            text("""
+                SELECT EXISTS (SELECT 1 FROM spans WHERE run_id = :run_id
+                               AND external_id = ANY(:written) AND kind = 'llm')
+            """),
+            {"run_id": run_id, "written": written},
+        )
+    )
 
     for span in spans:
         counts = Counter()
@@ -217,27 +232,41 @@ def record_run(
         }
         session.execute(_upsert_span(values))
 
-    _link_parents(session, run_id)
-    _total(session, run_id)
+    _link_parents(session, run_id, written)
+    if totals_change:
+        _total(session, run_id)
     return run_id
 
 
-def _link_parents(session: Session, run_id: uuid.UUID) -> None:
-    """Set parent_id wherever the parent has arrived, in this batch or an earlier one."""
+def _link_parents(session: Session, run_id: uuid.UUID, written: list[str]) -> None:
+    """Set parent_id wherever the parent has arrived, in this batch or an earlier one.
+
+    Only the spans just written, and children still waiting for one of them, can change:
+    a span's id never changes, and its parent_external_id only when it is written. So an
+    event's cost doesn't grow with the run (a Claude Code session is one run, applied an
+    event at a time).
+    """
     session.execute(
         text("""
             UPDATE spans AS child SET parent_id = parent.id
             FROM spans AS parent
-            WHERE child.run_id = :run_id AND parent.run_id = child.run_id
-              AND parent.external_id = child.parent_external_id
+            WHERE child.id IN (
+                    -- two index lookups: an OR here scans the whole table
+                    SELECT id FROM spans WHERE run_id = :run_id AND external_id = ANY(:written)
+                    UNION
+                    SELECT id FROM spans WHERE run_id = :run_id AND parent_id IS NULL
+                                           AND parent_external_id = ANY(:written))
+              AND parent.run_id = child.run_id AND parent.external_id = child.parent_external_id
               AND child.parent_id IS DISTINCT FROM parent.id
         """),
-        {"run_id": run_id},
+        {"run_id": run_id, "written": written},
     )
 
 
 def _total(session: Session, run_id: uuid.UUID) -> None:
-    """Run totals from all its spans. Cost is NULL if any span with tokens has no price."""
+    """Run totals from its model calls (llm spans). Cost is NULL if any with tokens has no
+    price. Other spans keep their own counts but aren't added: the GenAI conventions put an
+    agent's total on its invoke_agent span, which its model calls would then count twice."""
     session.execute(
         text("""
             UPDATE runs SET input_tokens = t.input_tokens, output_tokens = t.output_tokens,
@@ -247,7 +276,7 @@ def _total(session: Session, run_id: uuid.UUID) -> None:
                        CASE WHEN bool_or(cost_usd IS NULL AND (input_tokens IS NOT NULL
                                                                OR output_tokens IS NOT NULL))
                             THEN NULL ELSE sum(cost_usd) END AS cost_usd
-                FROM spans WHERE run_id = :run_id
+                FROM spans WHERE run_id = :run_id AND kind = 'llm'
             ) AS t
             WHERE runs.id = :run_id
         """),

@@ -31,7 +31,9 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
+from sqlalchemy import cast as sql_cast
 from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from flight_recorder.redact import PATTERNS, Redactor
@@ -42,6 +44,7 @@ SOURCE = "claude_code"
 AGENT = "claude-code"
 ROOT = "session"
 NAME_CHARS = 80
+TURN_ENDS = ("Stop", "StopFailure", "SubagentStop", "SessionEnd")  # they carry items
 
 
 class EventError(ValueError):
@@ -49,8 +52,12 @@ class EventError(ValueError):
 
 
 def _time(value: Any) -> datetime | None:
+    """A time from seconds since the epoch or ISO 8601; None if it isn't one we can store."""
     if isinstance(value, int | float) and not isinstance(value, bool):
-        return datetime.fromtimestamp(value, tz=UTC)
+        try:
+            return datetime.fromtimestamp(value, tz=UTC)
+        except (OverflowError, OSError, ValueError):  # past year 9999, or not a number
+            return None
     if isinstance(value, str):
         try:
             parsed = datetime.fromisoformat(value)
@@ -187,8 +194,11 @@ def _responses(
     """One llm span per model response read from the transcript: from when the request was
     sent to its last block, with what it said, any thinking, and the tools it called.
 
-    A response read twice keeps the more specific parent (see _better_parent), and a
-    response read in two parts keeps both: the earliest start, the latest end, and what
+    Outside a subagent, a response goes under the turn the transcript says it was written
+    in (its prompt_id), whichever turn end carries it: later hooks read on in a long turn,
+    so one read can hold the end of one turn and the start of the next. Without one (an
+    older hook), a response read twice keeps the more specific parent (see _better_parent).
+    A response read in two parts keeps both: the earliest start, the latest end, and what
     each part said.
     """
     spans: list[SpanIn] = []
@@ -197,6 +207,7 @@ def _responses(
             continue
         external_id = f"llm:{item['message_id']}"
         stored = _stored(session, session_id, external_id)
+        written_in = _turn(item) if not parent.startswith("agent:") else None
         model = item.get("model")
         ended = _time(item.get("timestamp")) or at
         first = _time(item.get("started_at")) or ended
@@ -215,9 +226,8 @@ def _responses(
         spans.append(
             SpanIn(
                 external_id=external_id,
-                parent_external_id=_better_parent(
-                    stored.parent_external_id if stored else None, parent
-                ),
+                parent_external_id=written_in
+                or _better_parent(stored.parent_external_id if stored else None, parent),
                 kind="llm",
                 name=str(model or "model response"),
                 model=f"anthropic:{model}" if isinstance(model, str) else None,
@@ -235,6 +245,75 @@ def _responses(
             )
         )
     return spans
+
+
+def _turn_ends(usage: Any) -> dict[str, datetime]:
+    """The turns the transcript says ended: each turn's last response stops with end_turn,
+    and carries the turn it was written in (its prompt_id). The latest end per turn."""
+    ends: dict[str, datetime] = {}
+    for item in _items(usage):
+        turn, ended = _turn(item), _time(item.get("timestamp"))
+        if turn and ended and item.get("stop_reason") == "end_turn":
+            ends[turn] = max(ended, ends.get(turn, ended))
+    return ends
+
+
+def _stopped_turn(
+    session: Session, session_id: str, turn: str | None, ends: dict[str, datetime]
+) -> str | None:
+    """The turn a Stop ended. Usually the one its prompt_id names. But a turn Claude Code
+    starts itself (a background task's result, say) has no UserPromptSubmit, and whether
+    its Stop carries its own prompt_id is unverified: if the Stop names none, or a turn
+    already ended, and its read holds a later turn's last response, the Stop is that turn's,
+    as long as no prompt or Stop has filled that turn in yet (a re-sent Stop whose read
+    reached into the next typed turn keeps its own)."""
+    if not ends:
+        return turn
+    latest, ended = max(ends.items(), key=lambda end: end[1])
+    if latest == turn:
+        return turn
+    own = _stored(session, session_id, turn) if turn else None
+    if turn and not (own and own.ended_at and own.ended_at < ended):
+        return turn
+    target = _stored(session, session_id, latest)
+    if target is not None and (target.input is not None or target.output is not None):
+        return turn
+    return latest
+
+
+def _began(turn: str, spans: list[SpanIn], at: datetime) -> datetime:
+    """When a turn began, at the latest: by its first response here, for a turn no
+    UserPromptSubmit started."""
+    return min((s.started_at for s in spans if s.parent_external_id == turn), default=at)
+
+
+def _ended_turns(
+    session: Session, session_id: str, ends: dict[str, datetime], spans: list[SpanIn]
+) -> list[SpanIn]:
+    """End each turn the transcript says ended, unless this event already writes it: a turn
+    whose Stop was lost, or named another turn, ends with its last response."""
+    written = {span.external_id for span in spans}
+    ended: list[SpanIn] = []
+    for turn, at in ends.items():
+        if turn in written:
+            continue
+        stored = _stored(session, session_id, turn)
+        began = _began(turn, spans, at)
+        ended.append(
+            _merge(
+                session,
+                session_id,
+                began,
+                external_id=turn,
+                parent_external_id=ROOT,
+                kind="step",
+                name=None if stored else "turn",
+                started_at=began,
+                ended_at=at,
+                status="ok" if stored is None or stored.status == "unset" else None,
+            )
+        )
+    return ended
 
 
 def _session_attributes(hook: Mapping[str, Any]) -> dict[str, Any]:
@@ -289,9 +368,20 @@ def _compaction_started(session: Session, session_id: str, at: datetime) -> str 
 
 def _same_call(hook: Mapping[str, Any], prefix: str = "") -> Any:
     """Spans for a call of this tool with this input (named with prefix). The hook redacts
-    with the same key as the server, so the stored input matches."""
+    with the same key as the server, so the stored input matches. Compared as jsonb: bound
+    as is, a string, number or bool has no `=` with jsonb (42883), and None is SQL NULL,
+    not the JSON null stored. (cast binds the value through JSONB, which encodes it.)"""
     return (Span.name == f"{prefix}{_str(hook, 'tool_name') or 'tool'}") & (
-        Span.input == cast("Any", hook.get("tool_input"))
+        Span.input == sql_cast(hook.get("tool_input"), JSONB)
+    )
+
+
+def _run_id(session_id: str) -> Any:
+    """The session's run id, as a subquery: the planner then knows it before reading spans,
+    so the partial indexes (ix_spans_tool_ends, ix_spans_permission_waits) serve an OR. A
+    join hides it, and the whole session was scanned."""
+    return (
+        select(Run.id).where(Run.source == SOURCE, Run.external_id == session_id).scalar_subquery()
     )
 
 
@@ -303,10 +393,8 @@ def _waiting_tool(
     or ended after it (its PostToolUse arrived first)."""
     return session.scalars(
         select(Span)
-        .join(Run, Run.id == Span.run_id)
         .where(
-            Run.source == SOURCE,
-            Run.external_id == session_id,
+            Span.run_id == _run_id(session_id),
             Span.kind == "tool",
             _same_call(hook),
             Span.ended_at.is_(None) | (Span.ended_at >= at),
@@ -323,10 +411,8 @@ def _open_wait(
     request arrived before the tool's start, waiting under the turn with the same call."""
     found = session.scalar(
         select(Span.external_id)
-        .join(Run, Run.id == Span.run_id)
         .where(
-            Run.source == SOURCE,
-            Run.external_id == session_id,
+            Span.run_id == _run_id(session_id),
             Span.external_id.like("permission:%"),
             Span.ended_at.is_(None),
             (Span.parent_external_id == tool_id)
@@ -385,7 +471,14 @@ def _placeholders(
     return added
 
 
-MAX_ITEMS = 1_000  # usage or decisions per event: far more than one turn has
+MAX_ITEMS = 1_000  # usage or decisions per event; the hook sends at most 100 (EVENT_ITEMS)
+
+
+def items_over_limit(event: Mapping[str, Any]) -> int:
+    """How many usage and decision entries past MAX_ITEMS this event's lists hold: they are
+    not applied, and the reply says how many (dropped_items)."""
+    lists = (event.get("usage"), event.get("permissions"))
+    return sum(max(0, len(cast("list[Any]", v)) - MAX_ITEMS) for v in lists if isinstance(v, list))
 
 
 def _items(value: Any) -> list[dict[str, Any]]:
@@ -474,11 +567,8 @@ def _decision(
 def _waits_of(session: Session, session_id: str, tool_id: str) -> list[SpanIn]:
     """The permission waits already under a tool call."""
     ids = session.scalars(
-        select(Span.external_id)
-        .join(Run, Run.id == Span.run_id)
-        .where(
-            Run.source == SOURCE,
-            Run.external_id == session_id,
+        select(Span.external_id).where(
+            Span.run_id == _run_id(session_id),
             Span.external_id.like("permission:%"),
             Span.parent_external_id == tool_id,
         )
@@ -548,7 +638,17 @@ def apply_event(session: Session, redactor: Redactor, event: Mapping[str, Any]) 
         "redactions": client,
     }
 
-    if name == "UserPromptSubmit" and turn:
+    if event.get("rest") is True and name in TURN_ENDS:
+        # More of a turn end already applied, read by a later hook: only its items are news.
+        # Applying the rest again would take the run back to that turn's permission mode.
+        subagent = _str(hook, "agent_id") if name == "SubagentStop" else None
+        under = f"agent:{subagent}" if subagent else turn or ROOT
+        spans += _responses(session, session_id, event.get("usage"), under, at)
+        spans += _decisions(session, session_id, event.get("permissions"))
+        if not subagent:
+            spans += _ended_turns(session, session_id, _turn_ends(event.get("usage")), spans)
+        run = {"started_at": at}
+    elif name == "UserPromptSubmit" and turn:
         prompt = _str(hook, "prompt") or ""
         spans.append(merge(**turn_fields, input=prompt, started_at=at))
         stored_root = _stored(session, session_id, ROOT)
@@ -613,19 +713,23 @@ def apply_event(session: Session, redactor: Redactor, event: Mapping[str, Any]) 
             spans += _decisions(session, session_id, event.get("permissions"))
     elif name in ("Stop", "StopFailure"):
         failed = name == "StopFailure"
-        if turn:
+        ends = _turn_ends(event.get("usage"))
+        responses = _responses(session, session_id, event.get("usage"), turn or ROOT, at)
+        if stopped := _stopped_turn(session, session_id, turn, ends):
             error = (_str(hook, "error") or "the turn ended with an API error") if failed else None
             spans.append(
                 merge(
-                    **turn_fields,
+                    **turn_fields | {"external_id": stopped},
+                    started_at=_began(stopped, responses, at),
                     output=hook.get("last_assistant_message"),
                     ended_at=at,
                     status="error" if failed else "ok",
                     error=error,
                 )
             )
-        spans += _responses(session, session_id, event.get("usage"), turn or ROOT, at)
+        spans += responses
         spans += _decisions(session, session_id, event.get("permissions"))
+        spans += _ended_turns(session, session_id, ends, spans)
         stored_root = _stored(session, session_id, ROOT)
         latest = _time(stored_root.attributes.get("latest_reply_at")) if stored_root else None
         reply = hook.get("last_assistant_message")
@@ -747,4 +851,14 @@ def apply_event(session: Session, redactor: Redactor, event: Mapping[str, Any]) 
     spans.insert(0, merge(**root))
     spans += _placeholders(session, session_id, spans, turn)
     run_in = RunIn(source=SOURCE, external_id=session_id, agent=AGENT, **run)
-    record_run(session, run_in, spans, redactor=redactor)
+    record_run(session, run_in, [_in_order(s) for s in spans], redactor=redactor)
+
+
+def _in_order(span: SpanIn) -> SpanIn:
+    """No span ends before it starts. Its start and end can come from two clocks: each hook
+    process stamps its own time, a little late, and decisions and responses carry the
+    transcript's. An end that lands before the start means the step took no measurable time.
+    Every span of every event passes through here, whichever route built it."""
+    if span.ended_at is not None and span.ended_at < span.started_at:
+        return span.model_copy(update={"ended_at": span.started_at})
+    return span

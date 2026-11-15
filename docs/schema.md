@@ -68,7 +68,7 @@ One agent run (an OTel trace) or one Claude Code session.
 | `agent` | The application that ran (OTel `service.name`); the agents it ran are spans of kind `agent` |
 | `name` | Root span name, or the session title (redacted: titles can quote the prompt) |
 | `status`, `started_at`, `ended_at` | `ended_at` is `NULL` while the run is going |
-| `input_tokens`, `output_tokens`, `cost_usd` | Totals over the run's spans. `cost_usd` is `NULL` if any priced span's model is unknown |
+| `input_tokens`, `output_tokens`, `cost_usd` | Totals over the run's model calls (`llm` spans), as 64-bit integers (migration 0008): a long Claude Code session passes 2,147,483,647 input tokens, since every response counts its cache reads. Other spans keep their own counts but aren't added: an `invoke_agent` span's usage is its model calls' total, and adding it would count them twice. `cost_usd` is `NULL` if any model call with tokens has no price |
 | `attributes` | Resource and root span attributes, after redaction. For OTel runs the root's attributes come without its events and links, and without the content keys the mapping moves to the span's `input` and `output`; content under keys it doesn't move (older or vendor prompt keys) can come along, redacted like everything else. A resource attribute wins over a root attribute with the same key. They arrive with the root's batch. An application can say something about the whole run there, such as the triager's `triager.grade` |
 | `redactions` | `{"pattern": count}` for the run's own fields (migration 0003): the largest count per pattern in one batch, since batches may repeat the same attributes. Never the values |
 

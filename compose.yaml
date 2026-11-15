@@ -1,6 +1,6 @@
 # Local Postgres with pgvector for the recorder.
 #   docker compose up -d      start it
-#   uv run alembic upgrade head   create the tables
+#   uv run afr db upgrade     create the tables
 # Port 5433 on the host, so it doesn't clash with a locally installed Postgres on 5432.
 services:
   db:

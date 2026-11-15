@@ -5,10 +5,11 @@ from __future__ import annotations
 import gzip
 import json
 from collections.abc import Callable, Generator
+from secrets import token_hex
 from typing import Any
 
 import pytest
-from fake_secrets import secrets_by_kind
+from fake_secrets import in_dicts, secrets_by_kind
 from fastapi.testclient import TestClient
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceResponse
 from opentelemetry.trace import Tracer
@@ -123,6 +124,32 @@ def test_batches_of_one_trace_merge_and_link(client: TestClient, store: Engine) 
     assert all(s.parent_id == root_row.id for s in stored if s is not root_row)
 
 
+def test_a_secret_in_tool_arguments_sent_as_json_text_is_redacted(
+    client: TestClient, store: Engine
+) -> None:
+    """The mapping parses a JSON-string attribute into the span's input, so the value
+    arrives alone under its key: {"password": "..."}, with no `password=` around it."""
+    value, secret = in_dicts()["password"]
+
+    def build(tracer: Tracer) -> None:
+        attributes = {
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.tool.name": "connect",
+            "gen_ai.tool.call.arguments": json.dumps(value),
+        }
+        with tracer.start_as_current_span("execute_tool connect", attributes=attributes):
+            pass
+
+    post(client, protobuf(record(build)))
+
+    [_], [span] = rows(store)
+    assert span.input == {
+        "user": "app",
+        "password": REDACTOR.placeholder("secret_assignment", secret),
+    }
+    assert span.redactions == {"secret_assignment": 1}
+
+
 def bad_tokens(secret: str) -> Callable[[Tracer], None]:
     def build(tracer: Tracer) -> None:
         with tracer.start_as_current_span(
@@ -170,9 +197,9 @@ def bad_for_postgres(attributes: dict[str, Any]) -> Callable[[Tracer], None]:
     [
         {"note": "nul \x00 char"},
         {"score": float("nan")},
-        {"gen_ai.operation.name": "chat", "gen_ai.usage.input_tokens": 2**40},
+        {"gen_ai.operation.name": "chat", "gen_ai.usage.input_tokens": "9" * 25},
     ],
-    ids=["nul-in-jsonb", "nan-in-jsonb", "tokens-over-int4"],
+    ids=["nul-in-jsonb", "nan-in-jsonb", "tokens-over-int8"],
 )
 def test_a_trace_postgres_refuses_is_rejected_and_the_rest_are_stored(
     client: TestClient, store: Engine, attributes: dict[str, Any]
@@ -335,3 +362,90 @@ def test_json_partial_success_is_json(client: TestClient) -> None:
     response = post(client, otlp_json(record(bad_tokens("x"))), JSON)
 
     assert json.loads(response.content)["partialSuccess"]["rejectedSpans"] == "1"
+
+
+# ---- One bad trace never sinks the batch, and data is never "retry later" -----------
+
+
+def json_span(trace: str, span_id: str, attributes: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "traceId": trace,
+        "spanId": span_id,
+        "name": "s",
+        "startTimeUnixNano": "1760000000000000000",
+        "endTimeUnixNano": "1760000001000000000",
+        "attributes": [{"key": k, "value": v} for k, v in attributes.items()],
+    }
+
+
+def json_export(*spans: dict[str, Any]) -> bytes:
+    scope = {"scopeSpans": [{"spans": list(spans)}]}
+    return json.dumps({"resourceSpans": [{"resource": {}, **scope}]}).encode()
+
+
+GOOD_TRACE = "aa" * 16
+BAD_SPANS = {
+    "a 40-digit token count on a priced model": json_span("bb" * 16, "02" * 8, {
+        "gen_ai.operation.name": {"stringValue": "chat"},
+        "gen_ai.provider.name": {"stringValue": "anthropic"},
+        "gen_ai.request.model": {"stringValue": "claude-opus-5-5"},
+        "gen_ai.usage.input_tokens": {"stringValue": "9" * 40},
+    }),
+    # random, so it does not compress into the index row
+    "an id too long for the index": json_span("dd" * 16, token_hex(10_000), {}),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("bad", BAD_SPANS.values(), ids=BAD_SPANS.keys())
+def test_a_trace_the_store_cannot_take_is_rejected_alone(
+    client: TestClient, store: Engine, bad: dict[str, Any]
+) -> None:
+    body = json_export(bad, json_span(GOOD_TRACE, "01" * 8, {}))
+
+    response = post(client, body, JSON)
+
+    assert response.status_code == 200  # not a 500, nor a 503 to retry for ever
+    assert response.json()["partialSuccess"]["rejectedSpans"] == "1"
+    [run], _ = rows(store)
+    assert run.external_id == GOOD_TRACE
+
+
+def test_deeply_nested_json_text_is_kept_as_text(client: TestClient, store: Engine) -> None:
+    nested = "[" * 100_000
+    body = json_export(json_span(GOOD_TRACE, "01" * 8, {"input.value": {"stringValue": nested}}))
+
+    response = post(client, body, JSON)
+
+    assert (response.status_code, response.json()) == (200, {})
+    [_], [span] = rows(store)
+    assert span.input == nested
+
+
+@pytest.mark.parametrize("body", [b"null", b"123", b"true"])
+def test_an_otlp_json_body_that_is_not_an_object_is_a_400(client: TestClient, body: bytes) -> None:
+    assert post(client, body, JSON).status_code == 400
+
+
+def usage_on_the_agent_too(tracer: Tracer) -> None:
+    """The GenAI conventions recommend usage on invoke_agent spans, as the agent's total."""
+    usage = {"gen_ai.usage.input_tokens": 1000, "gen_ai.usage.output_tokens": 100}
+    agent = {"gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "helper"}
+    chat = {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-5.4-mini",
+    }
+    with (
+        tracer.start_as_current_span("invoke_agent helper", attributes=agent | usage),
+        tracer.start_as_current_span("chat gpt-5.4-mini", attributes=chat | usage),
+    ):
+        pass
+
+
+def test_usage_on_an_agent_span_is_not_counted_twice(client: TestClient, store: Engine) -> None:
+    post(client, protobuf(record(usage_on_the_agent_too)))
+
+    [run], spans = rows(store)
+    [chat] = [s for s in spans if s.kind == "llm"]
+    assert (run.input_tokens, run.output_tokens) == (1000, 100)
+    assert chat.cost_usd is not None and run.cost_usd == chat.cost_usd

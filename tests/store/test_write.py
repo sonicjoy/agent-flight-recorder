@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from fake_secrets import in_context, secrets_by_kind
+from fake_secrets import in_context, in_dicts, prefixed_assignments, secrets_by_kind
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
@@ -45,8 +45,21 @@ def test_planted_secrets_never_reach_the_database(session: Session) -> None:
     """The canary test: a fake of every kind, in every field that takes text."""
     canaries = secrets_by_kind()
     contextual = in_context()
-    everything = " ".join(canaries.values()) + " " + " ".join(t for t, _ in contextual.values())
-    secret_parts = [*canaries.values(), *(part for _, part in contextual.values())]
+    prefixed = prefixed_assignments()
+    shaped = in_dicts()  # a tool's input or output: the key names the secret
+    everything = " ".join(
+        [
+            *canaries.values(),
+            *(t for t, _ in contextual.values()),
+            *(t for t, _ in prefixed.values()),
+        ]
+    )
+    secret_parts = [
+        *canaries.values(),
+        *(part for _, part in contextual.values()),
+        *(part for _, part in prefixed.values()),
+        *(part for _, part in shaped.values()),
+    ]
 
     run = run_in(
         agent=f"agent {canaries['email']}",
@@ -68,7 +81,10 @@ def test_planted_secrets_never_reach_the_database(session: Session) -> None:
             input_tokens=1000,
             output_tokens=65,
             input={"messages": [{"role": "user", "content": everything}]},
-            output={"content": f"Use {canaries['github_token']}"},
+            output={
+                "content": f"Use {canaries['github_token']}",
+                "tool_calls": [{"name": "connect", "input": v} for v, _ in shaped.values()],
+            },
             attributes={
                 "gen_ai.input.messages": json.dumps([{"content": everything}]),  # a JSON string
                 canaries["aws_access_key"]: "a secret used as a key",
@@ -222,3 +238,69 @@ def test_child_arriving_before_its_parent_is_linked_later(session: Session) -> N
     root = session.scalars(select(Span).where(Span.external_id == "root")).one()
     child = session.scalars(select(Span).where(Span.external_id == "child")).one()
     assert child.parent_id == root.id
+
+
+def test_run_totals_hold_more_than_32_bits(session: Session) -> None:
+    """A Claude Code session is one run, and every response's input counts its cache reads:
+    a long session passes 2,147,483,647 input tokens."""
+    responses = [
+        span_in(f"llm-{n}", kind="llm", model="anthropic:claude-opus-5-5",
+                input_tokens=1_000_000_000, output_tokens=1_000_000_000)
+        for n in range(3)
+    ]  # fmt: skip
+
+    run_id = record_run(session, run_in(), responses, redactor=REDACTOR)
+
+    run = session.get_one(Run, run_id)
+    assert (run.input_tokens, run.output_tokens) == (3_000_000_000, 3_000_000_000)
+
+
+def test_totals_follow_a_model_call_rewritten_as_another_kind(session: Session) -> None:
+    """Totals are only summed again when a batch touches a model call: a re-sent span that
+    is no longer one still counts as touching it, and a batch of other spans keeps them."""
+    llm = span_in("a", kind="llm", input_tokens=100, output_tokens=10)
+    run_id = record_run(session, run_in(), [llm], redactor=REDACTOR)
+    record_run(session, run_in(), [span_in("b", kind="tool")], redactor=REDACTOR)
+    assert session.get_one(Run, run_id).input_tokens == 100
+
+    record_run(session, run_in(), [llm.model_copy(update={"kind": "agent"})], redactor=REDACTOR)
+    session.expire_all()
+
+    run = session.get_one(Run, run_id)
+    assert (run.input_tokens, run.output_tokens) == (None, None)
+
+
+def test_parents_are_linked_whichever_arrives_first(session: Session) -> None:
+    """Linking looks only at what a batch wrote: a child stored earlier, waiting for its
+    parent, is linked when the parent comes; a child moved to another parent follows it."""
+    run_id = record_run(
+        session, run_in(), [span_in("child", parent_external_id="p1")], redactor=REDACTOR
+    )
+    record_run(session, run_in(), [span_in("p1"), span_in("p2")], redactor=REDACTOR)
+
+    def parent_of(external_id: str) -> str | None:
+        session.expire_all()
+        return session.scalar(
+            text("""SELECT parent.external_id FROM spans child
+                    JOIN spans parent ON parent.id = child.parent_id
+                    WHERE child.run_id = :r AND child.external_id = :e"""),
+            {"r": run_id, "e": external_id},
+        )
+
+    assert parent_of("child") == "p1"
+    record_run(session, run_in(), [span_in("child", parent_external_id="p2")], redactor=REDACTOR)
+    assert parent_of("child") == "p2"
+
+    # moved to a parent that hasn't arrived yet: it waits for that one, not the old one
+    record_run(session, run_in(), [span_in("child", parent_external_id="p3")], redactor=REDACTOR)
+    assert parent_of("child") is None
+    record_run(session, run_in(), [span_in("p3")], redactor=REDACTOR)
+    assert parent_of("child") == "p3"
+
+
+def test_one_span_can_hold_more_than_32_bits_of_tokens(session: Session) -> None:
+    span = span_in("big", kind="llm", input_tokens=3_000_000_000, output_tokens=1)
+
+    run_id = record_run(session, run_in(), [span], redactor=REDACTOR)
+
+    assert session.get_one(Run, run_id).input_tokens == 3_000_000_000
