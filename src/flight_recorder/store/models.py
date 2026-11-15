@@ -284,6 +284,10 @@ class Label(Base):
         comment="failure_mode's words, sorted: one mode whatever its spelling",
     )
     note: Mapped[str | None] = mapped_column(Text, comment="Redacted before storing")
+    expected: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB,
+        comment="The right answer, redacted: {fields: {key: value}} or {text: ...} (#59)",
+    )
     source: Mapped[str] = mapped_column(Text)
     author: Mapped[str | None] = mapped_column(Text, comment="Who labelled it, or which model")
     confidence: Mapped[float | None]

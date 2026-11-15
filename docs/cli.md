@@ -81,17 +81,19 @@ Shows the run so it can be judged from the screen, top to bottom, then asks for 
 3. **`steps`.** The model and tool calls in time order; a run with more than 12 shows its first 8 and last 4, so the final decision stays on screen. A model call shows its tool calls with their arguments, such as the decision and its rationale, or its text. A tool call shows its input and result; a list of records, such as search hits, is shown as `#id title (labels; milestone)`. An empty result says `(no results)`. Other shapes are shown as their text.
 4. **`problems`.** The error spans, with their parents.
 5. **`attributes`.** The rest, dimmed. SDK attributes (`telemetry.*`, `service.instance.*`, `openinference.*`) are left out.
-6. **`labels`.** The run's labels so far.
+6. **`labels`.** The run's labels so far, each with its right answer if one was given.
 
 All recorded text was redacted at ingest, and control characters are shown as escapes.
 - **The mode:** type a number to reuse a mode (they're listed most used first, with how many runs have each), or type a new name: up to 80 printable characters, with a letter or digit, not a number and not `s` or `q`. Answer `q` to stop without labelling.
 - **One mode, whatever its spelling:** a mode is stored as its words joined with `-`. Words are split at ASCII punctuation and spaces, and only A–Z is lowercased, so `Tool Timeout` and `tool_timeout` are `tool-timeout`. Word order doesn't count either: `timeout-tool` is the same mode, and takes the spelling the mode already has. Any other character is part of a word as typed: `x²` and `x` are different modes, and non-ASCII letters keep their case (`ΟΔΟΣ` isn't `οδος`).
 - **The note** is optional, and redacted before it's stored, like everything else a person or model may copy from a run.
 - **Several modes:** after each mode and note it asks for another; press Enter when there are no more. Each is saved as it's answered, so `q` (or the end of piped input) here keeps those already given, and stops `--next`. A mode the run already has is refused and asked again: a run (or one span) has each mode once, which the database enforces even with two people labelling at once ([schema.md](schema.md#labels)).
+- **The right answer** (optional, #59): after the last mode it asks once what the agent should have done, so `afr case` can turn the run into an eval case for an agent with no truth dataset. A run with `<prefix>.decided.<field>` attributes shows the agent's decision and takes the fields that were wrong as `field=value; field=value` (a list field takes comma-separated values, `(none)` for empty); the fields not named keep the agent's value. A run without takes free text. Press Enter to skip; `q` stops like after a mode. It's redacted like the note and stored on the run's first new label. Not asked for a span.
 
 | Option | |
 |---|---|
 | `--mode`, `--note` | Skip the questions (for scripts, or an agent driving the CLI); one mode per call, and a mode the run already has adds nothing. `--note` alone is the first mode's note |
+| `--answer` | With `--mode`: the right answer, in the same form as asked. Without it, `--mode` asks nothing |
 | `--span` | Label one of the run's spans instead, by an id prefix; a span of another run is refused |
 | `--author` | Who's labelling. Default: the OS user name. It stays in the local store |
 
@@ -130,6 +132,51 @@ kept note; [afr-note v1 at=2026-11-13T10:01:00Z by=ann mode=a] note a; [afr-note
 ```
 
 The tagged fragments are always kept sorted (by time first), so merging in any order, or in a chain (`a` into `b`, then `b` into `c`), gives the same note. `v1` is the tag's format version; values are percent-encoded for `%`, space, `;`, `[` and `]`. Only afr writes tags: `[afr-note v` typed into a note is stored as `\[afr-note v`, so a tag's `by=` can't be typed. A tag's `mode=` is the label's mode when it was merged.
+
+## `afr case new`
+
+Turns a recorded run into an eval case for any agent (#59), in the format the harness reads (#15):
+
+```bash
+uv run afr label 7af8a849                          # name what went wrong, and the right answer
+uv run afr case new --from-run 7af8a849 --suite smoke
+```
+
+It writes `evals/cases/<suite>/<case-id>.yaml`:
+
+```yaml
+id: run-7af8a849
+from_run: 4bf92f3577b34da6a3ce929d0e0e4736   # the run's trace or session id
+tags: [extra-label]                           # the run's failure modes
+input:
+  prompt: "Triage this issue. ..."            # the entry span's input, else the first model call's human message; a dict input as it is
+expected:
+  labels: [evals]
+  milestone: "Week 3"
+checks:
+  - {type: equals, field: labels, value: [evals]}
+  - {type: equals, field: milestone, value: "Week 3"}
+```
+
+- **`expected`** is the run's right answer from its labels (the latest), by field without the attribute prefix, or `answer: <text>`. With none, it's what the agent did (its decided fields, else its answer) and the case says `unreviewed: true`: fix it, then delete the line.
+- **`checks`** is one `equals` per expected field, to edit by hand: free text rarely matches exactly.
+- It prints the whole case first (control characters escaped), then asks `write it?`. Redaction catches secret shapes, not everything personal (home paths, names, hostnames, passwords written in prose), so read it before it goes into git.
+
+**Safety.** Cases go into git, and the repo will be public. The rules are in `flight_recorder.evals.cases`, which the analyst (#22) uses too:
+
+- **Redacted values** (`[REDACTED:kind:fingerprint]`) anywhere in the case, `expected` included, are listed and nothing is written. `--fake` swaps each for a fixed fake of its kind (`fake-anthropic-key`), which neither the redactor nor gitleaks takes for a secret. `--keep-placeholders` keeps them as `[REDACTED:kind]`, fingerprint stripped, and marks the case `placeholders: true`.
+- **A Claude Code session** goes to `evals/cases/local/<suite>/`, which git ignores: its prompts and replies are your own work. Move it out only after rewriting it by hand.
+- **Ids:** the suite and case id are 1 to 64 of `a-z`, `0-9`, `_` and `-`, starting with a letter or digit; `local` is reserved. The file must resolve inside the cases folder, links included, and an existing case is never overwritten.
+- YAML is written with `safe_dump`; read cases with `safe_load`.
+
+| Option | |
+|---|---|
+| `--from-run` | The run, as for `runs show` |
+| `--suite` | The suite folder (default `drafts`, for cases waiting for review) |
+| `--id` | The case id (default `run-` and the first 8 characters of the run's id) |
+| `--fake`, `--keep-placeholders` | What to do with redacted values (above) |
+| `--root` | The cases folder (default `evals/cases`) |
+| `--yes` | Write without asking |
 
 ## Choosing a run
 

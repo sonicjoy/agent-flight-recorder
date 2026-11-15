@@ -13,7 +13,7 @@ import re
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 import typer
 from rich.console import Console
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
     from flight_recorder.redact import Redactor
     from flight_recorder.store.labels import ModeCount
+    from flight_recorder.store.models import Label
     from flight_recorder.store.read import RunSummary
 
 labels_app = typer.Typer(
@@ -38,6 +39,7 @@ SEED = 14
 RACED = ("23505", "40P01", "40001")
 EVERY_RUN = 100_000
 SKIP, QUIT = "s", "q"
+NONE_TEXT = "(none)"
 NUMBER = re.compile(r"[0-9]{1,6}")  # ASCII only (str.isdigit() also takes ²), and short
 
 
@@ -115,6 +117,9 @@ def show_run(out: Console, session: Session, summary: RunSummary) -> None:
             who = f"{label.source}{f', {label.author}' if label.author else ''}"
             line.append_text(render.text(f"  ({render.one_line(who, 80)})", "dim"))
             out.print(line)
+            if label.expected:
+                answer = render.one_line(answer_line(label.expected), 160)
+                out.print(render.text(f"  right answer: {answer}"))
 
 
 def _pick(
@@ -184,11 +189,13 @@ def _ask_and_save(
     redactor: Redactor,
     first_note: str | None = None,
     span_id: uuid.UUID | None = None,
+    decided: dict[str, Any] | None = None,
 ) -> tuple[list[str], bool]:
     """Asks for failure modes, each with an optional note (`first_note` is the first one's,
-    if given), and saves each as it's answered, until an empty answer. Returns the modes
-    saved, and whether to stop (`q` or end of input after a mode)."""
-    from flight_recorder.store.labels import mode_counts, mode_key, modes_of
+    if given), and saves each as it's answered, until an empty answer; then, for a run (not
+    a span), the right answer, stored on the first label (#59). Returns the modes saved, and
+    whether to stop (`q` or end of input after a mode)."""
+    from flight_recorder.store.labels import mode_counts, mode_key, modes_of, set_answer
 
     modes = mode_counts(session)
     if modes:
@@ -201,12 +208,22 @@ def _ask_and_save(
         return mode_key(session, mode) in have
 
     saved: list[str] = []
+    first: uuid.UUID | None = None
     while True:
         try:
             mode = _pick(out, modes, already, queue=queue, first=not saved)
         except Done:
             return saved, True
         if mode is None:
+            if first is None or span_id is not None:
+                return saved, False
+            try:
+                answer = _ask_answer(out, decided or {})
+            except Done:
+                return saved, True
+            if answer is not None:
+                set_answer(session, first, answer, redactor)
+                session.commit()
             return saved, False
         note = first_note if not saved else None
         if note is None:
@@ -215,7 +232,8 @@ def _ask_and_save(
         stored = _save(session, run_id, mode, note, author=author, redactor=redactor,
                        span_id=span_id)  # fmt: skip
         if stored is not None:
-            saved.append(stored)
+            saved.append(stored.failure_mode)
+            first = first or stored.id
         else:  # another labeller added it since the check
             out.print(render.text(f"someone just added {render.one_line(mode, 80)} to this "
                                   "run; yours wasn't saved"))  # fmt: skip
@@ -230,14 +248,51 @@ def _save(
     author: str | None,
     redactor: Redactor,
     span_id: uuid.UUID | None = None,
-) -> str | None:
-    """The mode as stored, or None when the run (or span) already had it."""
+) -> Label | None:
+    """The label as stored, or None when the run (or span) already had the mode."""
     from flight_recorder.store.labels import add_label
 
     added = add_label(session, run_id, mode, note, author=author, redactor=redactor,
                       span_id=span_id)  # fmt: skip
     session.commit()
-    return added.failure_mode if added is not None else None
+    return added
+
+
+def answer_line(answer: dict[str, Any]) -> str:
+    """A stored right answer as one line: free text, or `field=value; field=value`."""
+    fields = answer.get("fields")
+    if isinstance(fields, dict):
+        items = cast("dict[str, Any]", fields).items()
+        return "; ".join(f"{key.rsplit('.', 1)[-1]}={_value(v)}" for key, v in items)
+    return str(answer.get("text", ""))
+
+
+def _value(value: Any) -> str:
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in cast("list[Any]", value)) or NONE_TEXT
+    return str(value)
+
+
+def _ask_answer(out: Console, decided: dict[str, Any]) -> dict[str, Any] | None:
+    """The right answer, or None when skipped (Enter or end of input); `q` stops."""
+    from flight_recorder.store.labels import parse_answer
+
+    if decided:
+        out.print(render.text(f"agent decided: {answer_line({'fields': decided})}"))
+        question = "right answer (field=value; field=value for what's wrong, Enter to skip)"
+    else:
+        question = "right answer (optional, Enter to skip)"
+    while True:
+        try:
+            typed = typer.prompt(question, default="", show_default=False)
+        except typer.Abort:
+            return None
+        if typed.strip() == QUIT:
+            raise Done
+        try:
+            return parse_answer(typed, decided)
+        except ValueError as error:
+            out.print(render.text(f"{error}; try again"))
 
 
 def _queue(
@@ -252,7 +307,7 @@ def _queue(
     author: str | None,
     redactor: Redactor,
 ) -> None:
-    from flight_recorder.store.labels import labelled_runs, sample
+    from flight_recorder.store.labels import decided_fields, labelled_runs, sample
     from flight_recorder.store.read import RunFilter, find_runs
 
     now = datetime.now(UTC)
@@ -278,8 +333,9 @@ def _queue(
         summary = runs[todo[0]]
         show_run(out, session, summary)
         try:
+            decided = decided_fields(summary.run.attributes or {})
             _, stop = _ask_and_save(out, session, summary.run.id, queue=True, author=author,
-                                    redactor=redactor)  # fmt: skip
+                                    redactor=redactor, decided=decided)  # fmt: skip
         except Quit:
             return
         except Skip:
@@ -297,6 +353,13 @@ def label(
     mode: Annotated[str | None, typer.Option(help="The failure mode; asked if not given.")] = None,
     note: Annotated[
         str | None, typer.Option(help="What happened (redacted before storing).")
+    ] = None,
+    answer: Annotated[
+        str | None,
+        typer.Option(
+            help="With --mode: the right answer, field=value; field=value or free text "
+            "(redacted before storing)."
+        ),
     ] = None,
     span: Annotated[
         str | None, typer.Option(help="Label this span of the run (an id prefix).")
@@ -317,12 +380,20 @@ def label(
 ) -> None:
     """Label a run with a failure mode and a note, or walk a sample of runs with --next."""
     from flight_recorder.redact import default_redactor
-    from flight_recorder.store.labels import SpanNotInRunError, span_of_run
+    from flight_recorder.store.labels import (
+        SpanNotInRunError,
+        decided_fields,
+        parse_answer,
+        set_answer,
+        span_of_run,
+    )
 
     if (run is None) == (not next_run):
         raise typer.BadParameter("give a run, or --next", param_hint="RUN")
     if next_run and (mode is not None or note is not None or span is not None):
         raise typer.BadParameter("--next asks for each run's mode and note", param_hint="--next")
+    if answer is not None and (mode is None or span is not None):
+        raise typer.BadParameter("give it with --mode, for a run", param_hint="--answer")
     if mode is not None:
         mode = _mode(mode)
     attrs = parse_attrs(attr or [])
@@ -342,13 +413,20 @@ def label(
             except SpanNotInRunError as error:
                 typer.echo(f"error: {error}", err=True)
                 raise typer.Exit(code=1) from error
+        decided = decided_fields(summary.run.attributes or {})
+        parsed = None
+        if answer is not None:
+            try:
+                parsed = parse_answer(answer, decided)
+            except ValueError as error:
+                raise typer.BadParameter(str(error), param_hint="--answer") from None
         show_run(out, session, summary)
         short = str(summary.run.id)[:8]
         if mode is None:
             try:
                 saved, _ = _ask_and_save(out, session, summary.run.id, queue=False, author=who,
                                          redactor=redactor, first_note=note,
-                                         span_id=span_id)  # fmt: skip
+                                         span_id=span_id, decided=decided)  # fmt: skip
             except Quit:
                 return
         else:
@@ -359,7 +437,10 @@ def label(
                 out.print(render.text(f"{where} already has {render.one_line(mode, 80)}; "
                                       "not added"))  # fmt: skip
                 return
-            saved = [added]
+            if parsed is not None:
+                set_answer(session, added.id, parsed, redactor)
+                session.commit()
+            saved = [added.failure_mode]
         modes = ", ".join(render.one_line(m, 80) for m in saved)
         out.print(render.text(f"labelled {short}: {modes}"))
 

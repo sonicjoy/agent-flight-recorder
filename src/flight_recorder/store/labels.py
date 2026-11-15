@@ -221,6 +221,71 @@ def mode_counts(session: Session, source: str = HUMAN) -> list[ModeCount]:
     return sorted(counts, key=lambda c: (-c.runs, -c.labels, c.mode))
 
 
+# --- the right answer (#59) -------------------------------------------------------------
+
+DECIDED = re.compile(r"(?P<prefix>.+)\.decided\.(?P<field>.+)")
+NONE_TEXT = "(none)"  # how the triager writes an empty decision
+
+
+def decided_fields(attributes: dict[str, Any]) -> dict[str, Any]:
+    """The agent's decisions, `<prefix>.decided.<field>` as `{"<prefix>.<field>": value}`."""
+    found: dict[str, Any] = {}
+    for key in sorted(attributes):
+        if match := DECIDED.fullmatch(key):
+            found[f"{match['prefix']}.{match['field']}"] = attributes[key]
+    return found
+
+
+def parse_answer(answer: str, decided: dict[str, Any]) -> dict[str, Any] | None:
+    """The right answer as typed: None when empty. With decided fields it's
+    `field=value; field=value`, a field named bare or with its prefix; fields not named keep
+    the agent's value, and a list field takes comma-separated values. Without, free text.
+    Raises ValueError for a field the run doesn't have."""
+    answer = answer.strip()
+    if not answer:
+        return None
+    if not decided:
+        return {"text": answer}
+    fields = dict(decided)
+    for part in filter(None, (p.strip() for p in answer.split(";"))):
+        name, equals, value = part.partition("=")
+        name, value = name.strip(), value.strip()
+        matches = [k for k in decided if name in (k, k.rsplit(".", 1)[-1])] if equals else []
+        if len(matches) != 1:
+            known = ", ".join(k.rsplit(".", 1)[-1] for k in decided)
+            raise ValueError(f"{name or part!r} isn't one of this run's fields ({known}); "
+                             "type field=value; field=value")  # fmt: skip
+        if isinstance(decided[matches[0]], list):
+            values = [v.strip() for v in value.split(",") if v.strip()]
+            fields[matches[0]] = [] if values == [NONE_TEXT] else values
+        else:
+            fields[matches[0]] = value
+    return {"fields": fields}
+
+
+def set_answer(session: Session, label_id: uuid.UUID, answer: dict[str, Any],
+               redactor: Redactor) -> None:  # fmt: skip
+    """Stores the right answer on a label, redacted like a note."""
+    session.execute(
+        update(Label).where(Label.id == label_id).values(expected=redactor.redact(answer).value)
+    )
+
+
+def answer_of(session: Session, run_id: uuid.UUID) -> dict[str, Any] | None:
+    """The run's latest right answer from a human label on the run itself, if any."""
+    return session.scalar(
+        select(Label.expected)
+        .where(
+            Label.run_id == run_id,
+            Label.span_id.is_(None),
+            Label.source == HUMAN,
+            Label.expected.is_not(None),
+        )
+        .order_by(Label.created_at.desc(), Label.id.desc())
+        .limit(1)
+    )
+
+
 def labels_of(session: Session, run_id: uuid.UUID) -> list[Label]:
     return list(
         session.scalars(

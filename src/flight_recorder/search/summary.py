@@ -68,7 +68,7 @@ def _cap(lines: list[str]) -> str:
 TURN = "turn"  # a Claude Code turn span (ingest/claude_code.py)
 
 
-def _conversation(session: Session, run: Run, roots: list[SpanNode]) -> tuple[Any, Any]:
+def conversation(session: Session, run: Run, roots: list[SpanNode]) -> tuple[Any, Any]:
     """What the run was asked and what it answered. The entry span has them; a Claude Code
     session whose entry span lacks them (it crashed, or events were lost) has them on its
     turns: the first prompt, the last reply. Never another child: a compaction's summary or a
@@ -135,7 +135,7 @@ def documents(session: Session, run: Run, state: str) -> list[Document]:
     MAX_FAILURES, the earliest)."""
     roots = span_tree(session, run.id)
     nodes = _all(roots)
-    asked, answered = _conversation(session, run, roots)
+    asked, answered = conversation(session, run, roots)
     failures = root_failures(roots)
     # A refused call's permission wait is rejected too: list the call once, not its wait
     refused = [
