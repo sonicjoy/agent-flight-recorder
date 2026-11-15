@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 import pytest
 import yaml
-from sqlalchemy import create_engine, delete, select, update
+from sqlalchemy import create_engine, delete, func, select, update
 from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
@@ -583,3 +583,77 @@ def test_case_new_writes_the_local_gitignore(
 
     assert result.exit_code == 0, result.output
     assert (cases / "local" / ".gitignore").read_text(encoding="utf-8").endswith("*\n")
+
+
+# --- review fixes, round 2 ----------------------------------------------------------------
+
+
+def test_a_run_keeps_one_right_answer_the_last_one_given(
+    cli: Callable[..., Any], db: Session, ids: dict[str, uuid.UUID]
+) -> None:
+    from flight_recorder.store.labels import answer_of
+
+    run = str(ids["plain"])
+    cli("label", run, "--mode", "first", "--answer", "old")
+    cli("label", run, "--mode", "second", "--answer", "new")
+    cli("label", run, "--mode", "first", "--answer", "newest")  # on the older label
+
+    db.expire_all()
+    assert answer_of(db, ids["plain"]) == {"text": "newest"}
+    assert [r.expected for r in _labels(db)] == [{"text": "newest"}, None]
+    assert cli("labels", "remove", run, "--mode", "first").exit_code == 0
+    db.expire_all()
+    assert answer_of(db, ids["plain"]) == {"text": "newest"}  # moved, not the old one back
+
+
+def test_non_finite_numbers_are_refused(cli: Callable[..., Any], db: Session) -> None:
+    run = _record(db, "trace-float", attributes={"t.decided.score": 0.5}, asked="go")
+    db.commit()
+
+    for value in ("nan", "inf", "-inf"):
+        result = cli("label", str(run), "--mode", "m", "--answer", f"score={value}")
+        assert result.exit_code == 2, (value, result.output)
+
+
+def test_the_unreviewed_answer_is_the_newest_model_calls_by_time(db: Session) -> None:
+    from flight_recorder.evals.cases import draft_case
+
+    def llm(name: str, second: int, parent: str, output: Any) -> SpanIn:
+        start = T0 + timedelta(seconds=second)
+        return SpanIn(external_id=name, parent_external_id=parent, kind="llm", name="Chat",
+                      started_at=start, ended_at=start, status="ok", output=output)  # fmt: skip
+
+    def message(**kwargs: Any) -> dict[str, Any]:
+        return {"generations": [[{"message": {"kwargs": kwargs}}]]}
+
+    root = SpanIn(external_id="root-t", kind="agent", name="graph", started_at=T0,
+                  ended_at=T0, status="ok", input="weather?")  # fmt: skip
+    branch = SpanIn(external_id="branch", parent_external_id="root-t", kind="step",
+                    name="branch", started_at=T0, ended_at=T0, status="ok")  # fmt: skip
+    spans = [
+        root,
+        branch,
+        # in tree order the branch's call comes last, but it's the oldest
+        llm("late", 5, "root-t", message(content="It is sunny in Paris.")),
+        llm("early", 1, "branch", message(content="", tool_calls=[
+            {"name": "lookup", "args": {"city": "Paris"}}])),
+    ]  # fmt: skip
+    recorded = RunIn(source="otel", external_id="trace-time", agent="lc", started_at=T0)
+    run = record_run(db, recorded, spans, redactor=REDACTOR)
+    db.commit()
+
+    case = draft_case(db, run, suite="smoke", redactor=REDACTOR).case
+
+    assert case["expected"] == {"answer": "It is sunny in Paris."}
+
+
+def test_a_cleared_answer_is_sql_null_not_json_null(
+    cli: Callable[..., Any], db: Session, ids: dict[str, uuid.UUID]
+) -> None:
+    run = str(ids["plain"])
+    cli("label", run, "--mode", "first", "--answer", "old")
+    cli("label", run, "--mode", "second", "--answer", "new")
+
+    nulls = db.scalar(select(func.count()).where(Label.expected.is_(None)))
+
+    assert nulls == 1  # the first label's answer, cleared

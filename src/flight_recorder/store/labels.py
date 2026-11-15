@@ -7,6 +7,7 @@ text a person or a model may have copied from a run (docs/schema.md).
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import string
 import uuid
@@ -250,9 +251,12 @@ def _typed_like(value: str, agent: Any, name: str) -> Any:
         return value.lower() == "true"
     if isinstance(agent, int | float):
         try:
-            return type(agent)(value)
+            number = type(agent)(value)
         except ValueError:
             raise ValueError(f"{name} is a number") from None
+        if not math.isfinite(number):  # JSON (and so the store) has no nan or inf
+            raise ValueError(f"{name} is a finite number")
+        return number
     return value
 
 
@@ -287,7 +291,14 @@ def parse_answer(answer: str, decided: dict[str, Any]) -> dict[str, Any] | None:
 
 def set_answer(session: Session, label_id: uuid.UUID, answer: dict[str, Any],
                redactor: Redactor) -> None:  # fmt: skip
-    """Stores the right answer on a label, redacted like a note."""
+    """Stores the right answer on a label, redacted like a note. A run keeps one answer, the
+    last one given: its other labels' answers are cleared."""
+    run_id = session.scalar(select(Label.run_id).where(Label.id == label_id))
+    session.execute(
+        update(Label)
+        .where(Label.run_id == run_id, Label.source == HUMAN, Label.id != label_id)
+        .values(expected=None)
+    )
     session.execute(
         update(Label).where(Label.id == label_id).values(expected=redactor.redact(answer).value)
     )

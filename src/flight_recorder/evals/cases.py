@@ -250,8 +250,9 @@ def _as_expected(output: Any) -> dict[str, Any]:
 def agent_output(session: Session, run: Run, roots: list[SpanNode]) -> dict[str, Any]:
     """What the agent answered, as recorded, not as a summary shows it: the entry span's
     output; for a Claude Code session, its last reply; for a LangChain run whose entry span
-    recorded none, the structured output (a tool call no tool span ran) as its arguments,
-    else what the last model call said, in full."""
+    recorded none, the newest model call (by time) that answered: its structured output (a
+    tool call no tool span ran) as its arguments, else what it said, in full. A call whose
+    tool calls all ran is a step, not an answer."""
     from flight_recorder.payloads import ai, as_dict, message_text, tool_calls
     from flight_recorder.search.summary import conversation
     from flight_recorder.store.read import span_content
@@ -263,11 +264,12 @@ def agent_output(session: Session, run: Run, roots: list[SpanNode]) -> dict[str,
     output = span_content(session, roots[0].id).output
     if output is not None and output != "":
         return _as_expected(output)
-    nodes = [node for root in roots for node in root.walk()]
+    nodes = sorted(
+        (n for r in roots for n in r.walk()), key=lambda n: (n.started_at, n.external_id)
+    )
     tools = {n.name for n in nodes if n.kind == "tool"}
-    said: str | None = None
     for node in reversed([n for n in nodes if n.kind == "llm"]):  # newest first
-        if node.status == "error":
+        if node.status == "error":  # a failed call answered nothing
             continue
         result = span_content(session, node.id).output
         calls = tool_calls(result)
@@ -275,9 +277,9 @@ def agent_output(session: Session, run: Run, roots: list[SpanNode]) -> dict[str,
             found = as_dict(call)
             if found is not None and found.get("name") not in tools:
                 return as_dict(found.get("args")) or {}
-        if not calls and said is None:
-            said = message_text((ai(result) or {}).get("content")) or None
-    return _as_expected(said)
+        if not calls:
+            return _as_expected(message_text((ai(result) or {}).get("content")) or None)
+    return {}
 
 
 def draft_case(

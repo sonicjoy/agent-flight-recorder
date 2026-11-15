@@ -285,7 +285,7 @@ class Label(Base):
     )
     note: Mapped[str | None] = mapped_column(Text, comment="Redacted before storing")
     expected: Mapped[dict[str, Any] | None] = mapped_column(
-        JSONB,
+        JSONB(none_as_null=True),  # None is SQL NULL (no answer), never JSON null
         comment="The right answer, redacted: {fields: {key: value}} or {text: ...} (#59)",
     )
     source: Mapped[str] = mapped_column(Text)
