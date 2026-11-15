@@ -435,3 +435,19 @@ def test_the_repo_ignores_local_cases() -> None:
     ignore = Path(__file__).parents[1] / ".gitignore"
 
     assert "evals/cases/local/" in ignore.read_text(encoding="utf-8").splitlines()
+
+
+def test_expected_fields_keep_their_name_order_whatever_order_the_store_keeps(
+    db: Session, cli: Callable[..., Any]
+) -> None:
+    from flight_recorder.evals.cases import draft_case
+
+    wide = {f"agent.decided.{f}": "x" for f in ("labels", "milestone", "duplicate_of")}
+    run = _record(db, "trace-wide", attributes=wide, asked="go")
+    db.commit()
+    cli("label", str(run), "--mode", "m", "--answer", "milestone=y")  # JSONB sorts by length
+
+    case = draft_case(db, run, suite="smoke").case
+
+    assert list(case["expected"]) == ["duplicate_of", "labels", "milestone"]
+    assert [c["field"] for c in case["checks"]] == ["duplicate_of", "labels", "milestone"]

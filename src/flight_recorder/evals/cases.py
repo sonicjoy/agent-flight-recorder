@@ -127,8 +127,25 @@ def kept(case: dict[str, Any]) -> dict[str, Any]:
 # --- YAML ---------------------------------------------------------------------------
 
 
+class _Dumper(yaml.SafeDumper):
+    """Safe YAML for people to edit: no anchors and aliases for a value used twice (expected
+    and its check), and multi-line text as a `|` block. The emitter quotes it instead when a
+    block can't hold it (trailing spaces, tabs)."""
+
+    def ignore_aliases(self, data: Any) -> bool:
+        return True
+
+
+def _text(dumper: yaml.SafeDumper, value: str) -> yaml.ScalarNode:
+    style = "|" if "\n" in value else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style)  # pyright: ignore[reportUnknownMemberType]
+
+
+_Dumper.add_representer(str, _text)
+
+
 def dump(case: dict[str, Any]) -> str:
-    return yaml.safe_dump(case, sort_keys=False, allow_unicode=True, width=100)
+    return yaml.dump(case, Dumper=_Dumper, sort_keys=False, allow_unicode=True, width=100)
 
 
 def load(text: str) -> dict[str, Any]:
@@ -167,12 +184,14 @@ class Draft:
 
 
 def _bare(fields: dict[str, Any]) -> dict[str, Any]:
-    """`<prefix>.<field>` keys as `<field>`, unless two prefixes share a field name."""
+    """`<prefix>.<field>` keys as `<field>`, unless two prefixes share a field name, in
+    name order (the store's JSONB keeps its own order)."""
     names = [key.rsplit(".", 1)[-1] for key in fields]
-    return {
+    bare = {
         (name if names.count(name) == 1 else key): value
         for key, name, value in zip(fields, names, fields.values(), strict=True)
     }
+    return dict(sorted(bare.items()))
 
 
 def _input(asked: Any) -> dict[str, Any]:

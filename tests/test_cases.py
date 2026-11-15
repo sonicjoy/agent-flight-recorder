@@ -185,3 +185,26 @@ def test_a_written_case_reads_back_the_same_with_safe_load(tmp_path: Path) -> No
 def test_load_refuses_python_tags() -> None:
     with pytest.raises(CaseError):
         load("!!python/object/apply:os.system ['echo hi']")
+
+
+def test_a_value_shared_by_expected_and_checks_is_written_twice_not_as_an_alias() -> None:
+    labels = ["infra", "recorder"]
+    case = _case(expected={"labels": labels}, checks=[{"type": "equals", "field": "labels",
+                                                       "value": labels}])  # fmt: skip
+
+    text = dump(case)
+
+    assert "&id" not in text and "*id" not in text
+    assert load(text) == case
+
+
+def test_multi_line_text_is_written_as_a_block_people_can_edit() -> None:
+    case = _case(input={"prompt": "Triage this issue.\n\nTitle: auth\n"})
+
+    text = dump(case)
+
+    assert "prompt: |" in text
+    assert "    Title: auth" in text
+    assert load(text) == case
+    awkward = _case(input={"prompt": "trailing space \n\tand a tab\n"})
+    assert load(dump(awkward)) == awkward  # falls back to a quoted string when a block can't
