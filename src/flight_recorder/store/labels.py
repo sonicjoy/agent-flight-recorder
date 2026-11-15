@@ -305,7 +305,8 @@ def set_answer(session: Session, label_id: uuid.UUID, answer: dict[str, Any],
 
 
 def answer_of(session: Session, run_id: uuid.UUID) -> dict[str, Any] | None:
-    """The run's latest right answer from a human label on the run itself, if any."""
+    """The run's right answer (it keeps one: `set_answer`), from a human label on the run
+    itself, if any."""
     return session.scalar(
         select(Label.expected)
         .where(

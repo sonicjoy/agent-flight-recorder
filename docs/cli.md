@@ -158,7 +158,7 @@ checks:
   - {type: equals, field: milestone, value: "Week 3"}
 ```
 
-- **`expected`** is the run's right answer from its labels (the latest), by field, or `answer: <text>`. With none, it's what the agent did and the case says `unreviewed: true`: fix it, then delete the line. What the agent did is its decided fields, else its output as recorded: the entry span's output, a Claude Code session's last reply, or for a LangChain run whose entry span recorded none, its structured output as fields (a tool call no tool ran), else what its last model call said, in full.
+- **`expected`** is the run's right answer from its labels (a run keeps one, the last given), by field, or `answer: <text>`. With none, it's what the agent did and the case says `unreviewed: true`: fix it, then delete the line. What the agent did is its decided fields, else its output as recorded: the entry span's output, a Claude Code session's last reply, or for a LangChain run whose entry span recorded none, its structured output as fields (a tool call no tool ran), else what its last model call said, in full.
 - **Types:** `expected` follows the attributes. The triager writes an empty decision as `(none)`, which a case keeps; its output has `null`. Edit it where the harness (#15) compares with the output.
 - **`checks`** is one `equals` per expected field, to edit by hand: free text rarely matches exactly.
 - It prints the whole case first (control characters escaped), then asks `write it?`. Redaction catches secret shapes, not everything personal (home paths, names, hostnames, passwords written in prose), so read it before it goes into git.
