@@ -60,7 +60,7 @@ flowchart LR
   EV -.->|eval runs are recorded too| API
 ```
 
-Runs arrive from Claude Code hooks and OpenTelemetry, are normalised to one span model, redacted, then stored. Four consumers read the store. Labelled runs become eval cases, one at a time with `afr case` or in batches by the analyst agent, which groups failed runs by cause; those cases then guard against regressions in CI.
+Runs arrive from Claude Code hooks and OpenTelemetry, are normalised to one span model, redacted, then stored. Four consumers read the store. Failed runs become eval cases, one at a time with `afr case` or in batches by the analyst agent, which groups them by cause; those cases then guard against regressions in CI.
 
 ### From runs to an eval suite
 
@@ -82,7 +82,7 @@ The same steps for any agent, whether or not it has a truth dataset:
 | `labels` | Failure modes on runs, from you, the judge or the analyst, and optionally the right answer (#59) |
 | `eval_results` | Each eval run: case, score, model, git SHA, time, for pass-rate trends |
 
-Eval *cases* are YAML files in `evals/cases/`, not database rows, so they are reviewed in PRs like code.
+Eval *cases* are YAML files in `evals/cases/`, not database rows, so they are reviewed in PRs like code. Cases from Claude Code sessions go to the git-ignored `evals/cases/local/` (#59).
 
 ### Repo layout (target)
 
@@ -96,7 +96,7 @@ src/flight_recorder/
   evals/       harness, judge
   analyst/     LangGraph analyst agent
   mcp/         FastMCP server
-evals/cases/              golden and red-team cases (YAML)
+evals/cases/              golden and red-team cases (YAML); local/ is git-ignored
 ui/                       React + TypeScript (Vite)
 infra/terraform/          GCP deployment
 docs/                     plan, schema, evals write-ups, decisions/
@@ -193,7 +193,7 @@ This is the heaviest week (about 14h with reading), and week 4 is about 10h: bot
 | API key auth before deploy | #25 | 0.5h |
 | Containerise the API and MCP server | #26 | 0.5h |
 | Deploy with Terraform to Cloud Run and Cloud SQL | #27 | 2.5h |
-| Record the recorder's own agents (needed by #17 and #23) | #28 | 0.5h |
+| Record the recorder's own agents (needed by #23, and by #17 in week 3, so do the judge's part with #17) | #28 | 0.5h |
 
 **Optional:** dbt basics on BigQuery, a weekend extra that's not part of this repo.
 
