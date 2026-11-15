@@ -2,7 +2,7 @@
 
 **Agent Flight Recorder** records every AI agent run, replays it as a timeline, finds failure patterns, and turns failed runs into eval cases.
 
-**It works for any agent.** No part of the recorder, labels, search or eval harness is written for one agent. The issue triager is the demo; the analyst, a different kind of agent with no truth dataset, is evaluated with the same tools (#23). See [From runs to an eval suite](#from-runs-to-an-eval-suite).
+**It works for any agent.** The recorder, labels and search aren't tied to one agent, and the eval harness is designed the same way (#15). The issue triager is the demo; the analyst, a different kind of agent with no truth dataset, is evaluated with the same tools (#23). See [From runs to an eval suite](#from-runs-to-an-eval-suite).
 
 - **Timeline:** five weeks, Mon 2 Nov to Sun 6 Dec 2026
 - **Budget:** about 9 hours of building a week. Interview prep runs separately.
@@ -14,7 +14,7 @@
 
 - [ ] Public repo where `docker compose up` plus `afr seed` shows the replay UI with demo runs in under five minutes
 - [ ] Records Claude Code sessions (hooks) and OpenTelemetry agent traces, with redaction before anything is stored
-- [ ] Eval suite for any agent (own harness, golden cases, LLM judge, red-team set) that gates CI; shown on the triager and the analyst
+- [ ] Eval suite for any agent (own harness, golden cases, LLM judge, red-team set); the triager's gates CI, and the analyst's shows the same tools work on a second agent
 - [ ] Analyst agent that clusters failures and drafts eval cases; MCP server that answers "why did run X fail?"
 - [ ] Deployed to Cloud Run and Cloud SQL with Terraform
 - [ ] README with architecture, design decisions and eval results; demo GIF; published write-up
@@ -54,7 +54,7 @@ flowchart LR
   DB --> AN["Analyst agent<br/>(LangGraph)"]
   DB --> MCP["MCP server<br/>(FastMCP)"]
   DB --> UI["Replay UI<br/>(React + TS)"]
-  CLI -->|writes cases| EV[
+  CLI -->|writes cases| EV
   AN -->|drafts cases| EV["Eval suite<br/>harness · judge · red-team"]
   EV -->|gates| CI["GitHub Actions"]
   EV -.->|eval runs are recorded too| API
@@ -170,7 +170,7 @@ Estimates are build hours. The learning items come from the 5-week prep plan and
 | Generate a run corpus with real failures | #13 | 1h |
 | Labelling CLI and hand error analysis (50 runs) | #14 | 2.5h |
 | Eval harness from scratch, for any agent | #15 | 2h |
-| `afr case`: turn a recorded run into an eval case | #59 | 2h |
+| `afr case`: turn a recorded run into an eval case | #59 | 2.5h |
 | Golden eval cases from labelled failures | #16 | 0.5h |
 | LLM-as-judge rubric with agreement check | #17 | 1.5h |
 | Red-team set: prompt injection and secret leaks | #18 | 1h |
@@ -179,7 +179,7 @@ Estimates are build hours. The learning items come from the 5-week prep plan and
 
 **Learning (about 1.5h):** Hamel Husain's "Your AI Product Needs Evals" and Eugene Yan's "Task-Specific LLM Evals". Read them before the error analysis; starting on the week 2 weekend works well.
 
-This is the heaviest week (about 13.5h with reading), and week 4 is about 10h: both are over the 9h budget, so expect to use the cut list. The error analysis is the part to protect, since everything after it depends on it.
+This is the heaviest week (about 14h with reading), and week 4 is about 10h: both are over the 9h budget, so expect to use the cut list. The error analysis is the part to protect, since everything after it depends on it.
 
 ### Week 4 · 23–29 Nov · Analyst, MCP and deploy
 
@@ -193,7 +193,7 @@ This is the heaviest week (about 13.5h with reading), and week 4 is about 10h: b
 | API key auth before deploy | #25 | 0.5h |
 | Containerise the API and MCP server | #26 | 0.5h |
 | Deploy with Terraform to Cloud Run and Cloud SQL | #27 | 2.5h |
-| Record the recorder's own agents (needed by #23) | #28 | 0.5h |
+| Record the recorder's own agents (needed by #17 and #23) | #28 | 0.5h |
 
 **Optional:** dbt basics on BigQuery, a weekend extra that's not part of this repo.
 
@@ -220,7 +220,7 @@ Cut in this order:
 1. Metrics dashboard (#34)
 2. Provider comparison (#21)
 3. Comparison with promptfoo or DeepEval (#20), the week 3 fallback
-4. The analyst's own eval suite (#23), keeping its cluster agreement and accepted-case numbers
+4. The analyst's own eval suite (#23), keeping its cluster agreement and accepted-case numbers; the any-agent claim then rests on the design and the analyst's metrics
 5. Terraform falls back to a documented `gcloud run deploy`, though keep Terraform if at all possible since job ads ask for it
 6. The replay UI shrinks to a run list plus a timeline, with no span detail panel
 
