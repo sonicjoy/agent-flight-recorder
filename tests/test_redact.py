@@ -87,6 +87,8 @@ NEAR_MISSES = {
     "a call then a // comment": "password: getPassword() // from the vault",
     "a call with quoted arguments": "token = os.environ.get('TOKEN', 'none')",
     "a call ending a list": "api_key=key.get_secret_value(),",
+    "a call then a # comment": "password: getpass.getpass()  # prompt",
+    "a call left open at its bracket": "api_key: str = Field(  # wrapped",
     # a flag named in prose, or followed by a redirection
     "a flag in prose": "use the --password flag to set it, or the --token option",
     "a flag then a redirection": "gh auth login --with-token < token.txt",
@@ -384,6 +386,12 @@ def test_a_connection_strings_other_settings_are_kept(redactor: Redactor, text: 
         ("password=Correct(Horse)-Battery", "Correct(Horse)-Battery"),
         ("password=Tr(0)ub", "Tr(0)ub"),
         ("mysql -u o'neil -pX9secret", "X9secret"),  # an unbalanced quote before -p
+        ("password: Summer(Fun)#1", "Summer(Fun)#1"),  # no space before the #: not a comment
+        ("token: Abc(def)#Hunter22", "Abc(def)#Hunter22"),
+        ("password: Open(Sesame)//2024", "Open(Sesame)//2024"),
+        ("password=Summer(Fun", "Summer(Fun"),  # open, but not at its bracket
+        ("login --password Open(Sesame", "Open(Sesame"),
+        ("password=Open(Sesame # x", "Open(Sesame"),
     ],
 )
 def test_values_close_to_the_near_misses_are_still_redacted(
@@ -439,6 +447,24 @@ def test_a_value_cut_at_a_quote_is_code_only_if_the_line_closes_the_call(
     result, counts = redact(redactor, text)
 
     assert counts["secret_assignment"] >= 1, result
+
+
+@pytest.mark.parametrize(
+    ("text", "cut"),
+    [
+        ('token = Abc("Hunter22!")', "Abc("),
+        ("password = Open('Sesame 9')", "Open("),
+        ("token = Get('x-y')", "Get("),
+    ],
+)
+def test_a_call_with_a_quoted_argument_that_is_not_a_name_is_not_code(
+    redactor: Redactor, text: str, cut: str
+) -> None:
+    """Only a name in quotes (os.environ['TOKEN']) keeps a call code; a password in quotes
+    doesn't. The value still stops at the quote, as it always has."""
+    result, _ = redact(redactor, text)
+
+    assert result == text.replace(cut, redactor.placeholder("secret_assignment", cut), 1)
 
 
 GITHUB_TOKEN = "ghp_" + "a1B2c3D4" * 5

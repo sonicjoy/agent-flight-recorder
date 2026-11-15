@@ -88,13 +88,18 @@ _A_CALL = re.compile(_CALL)
 # A call the value's word stops inside, at a quote or a comma: os.environ[, Field(a=None,
 # cases()["key"]
 _OPEN_CALL = re.compile(rf"{_NAME}(?:\({_ARGS}\))?+[(\[]{_ARGS}")
-# The rest of the line must then close it, with nothing after but a , ; or a comment, or
-# leave it open for the next line: os.environ['TOKEN'], os.environ.get('TOKEN', 'none'),
-# Field(a=None, b="x"), Field(
+# A comment after code starts after a space: Summer(Fun)#1 and Open(Sesame)//2024 are values.
+_COMMENT = r"[ \t]++(?:#|//).*+"
+# The rest of the line must then close it, with nothing after but a , ; or a comment:
+# os.environ['TOKEN'], os.environ.get('TOKEN', 'none'), Field(a=None, b='x'). Quoted
+# arguments are names too (Abc("Hunter22!") is a value).
 _CLOSES_CALL = re.compile(
-    rf"(?:[ \t]*+(?:\"[^\"\n]{{0,100}}+\"|'[^'\n]{{0,100}}+'|{_IDENT}|[=,]))*+"
-    r"(?:[ \t]*+[)\]]{1,3}+[ \t]*+[,;]?+)?+[ \t]*+(?:(?:#|//).*+)?+"
+    rf"(?:[ \t]*+(?:\"{_IDENT}\"|'{_IDENT}'|{_IDENT}|[=,]))*+"
+    rf"[ \t]*+[)\]]{{1,3}}+(?:[ \t]*+[,;])?+(?:{_COMMENT})?+[ \t]*+"
 )
+# Or the word ends at its open bracket and the line ends there, for the next line to go on:
+# Field(  (but not Summer(Fun, which has more after the bracket)
+_LEFT_OPEN = re.compile(rf"(?:{_COMMENT})?+[ \t]*+")
 _REST = 300  # characters of the rest of the line looked at
 
 
@@ -106,11 +111,17 @@ def is_a_value(text: str, rest: str | None = None) -> bool:
         return False
     if len(words) == 1 and (
         _A_CALL.fullmatch(words[0])
-        or (rest is not None and _OPEN_CALL.fullmatch(words[0]) and _CLOSES_CALL.fullmatch(rest))
+        or (rest is not None and _OPEN_CALL.fullmatch(words[0]) and _closes(words[0], rest))
     ):
         return False  # the whole value is code
     first = _FIRST_NAME.fullmatch(words[0])
     return not (first and first.group(1).lower() in NOT_A_VALUE)
+
+
+def _closes(word: str, rest: str) -> bool:
+    """Whether the rest of the line closes the call `word` opens, or leaves it open at its
+    bracket for the next line."""
+    return bool(_CLOSES_CALL.fullmatch(rest) or (word[-1] in "([" and _LEFT_OPEN.fullmatch(rest)))
 
 
 def _rest_of_line(match: re.Match[str]) -> str:
@@ -171,12 +182,13 @@ _WORD = rf"[^\s\"'\\,;{{}}=](?:{_PLAIN}|[,{{}}](?={_PLAIN})|;(?={_PLAIN}){_NEXT_
 # What the words after `name:` must not start with, or the match would be skipped whole and
 # hide a secret later on the line: a placeholder, the inside of one ([REDACTED:github_token:
 # 1a2b3c4d] holds `token:1a2b3c4d]`), a word that says there is no value (as is_a_value
-# reads it), or a call that is all there is up to the end of the line or a comment.
+# reads it), or a call that is all there is up to the end of the line or a comment (after
+# a space: Summer(Fun)#1 is a value).
 # Checked in the regex, so the search goes on from the next position instead.
 _NOT_A_VALUE_WORD = "|".join(sorted(NOT_A_VALUE))
 _SKIPPED = (
     rf"\[REDACTED:|[0-9a-f]{{8}}\]|(?i:{_NOT_A_VALUE_WORD}){_CLOSING}(?!\S)"
-    rf"|{_CALL}[ \t]*+(?=[\r\n#]|//|\\[rn]|\Z)"
+    rf"|{_CALL}(?:[ \t]++(?=#|//)|[ \t]*+(?=[\r\n]|\\[rn]|\Z))"
 )
 SECRET_VALUES = (
     # password: "two words" / api_key='...' / \"token\": \"...\" (a JSON string): to the
