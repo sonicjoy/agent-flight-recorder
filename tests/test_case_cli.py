@@ -531,7 +531,9 @@ def test_an_answer_error_escapes_recorded_field_names(cli: Callable[..., Any], d
     result = cli("label", str(run), "--mode", "m", "--answer", "bogus=1")
 
     assert result.exit_code == 2
-    assert "\x1b[31m" not in result.output
+    # Rich colours its own error box when CI forces colour: look for the recorded name only
+    assert "\x1b[31mred" not in result.output
+    assert "\\x1b[31mred" in result.output
 
 
 def test_a_langchain_runs_unreviewed_answer_is_its_raw_structured_output(
