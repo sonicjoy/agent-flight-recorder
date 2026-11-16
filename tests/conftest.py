@@ -92,6 +92,17 @@ def session(engine: Engine) -> Generator[Session]:
         transaction.rollback()
 
 
+@pytest.fixture(autouse=True)
+def _no_git_settings_from_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop every GIT_* variable, so a test that runs git acts on its own repository only.
+
+    A commit hook in a linked worktree runs the suite with GIT_DIR and GIT_INDEX_FILE set:
+    left in place, `git init <tmp>` re-initialises the repository being committed to.
+    """
+    for name in [name for name in os.environ if name.startswith("GIT_")]:
+        monkeypatch.delenv(name)
+
+
 @pytest.fixture
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     """Remove every setting from the environment so tests don't see real keys."""

@@ -5,6 +5,8 @@ Written from issue #59 before the code: cases go into git, and the repo goes pub
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -221,8 +223,6 @@ def test_windows_device_names_are_refused(device: str) -> None:
 
 
 def test_a_local_case_is_ignored_by_git_wherever_the_cases_folder_is(tmp_path: Path) -> None:
-    import subprocess
-
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     root = tmp_path / "somewhere" / "else"  # no .gitignore rule names it
 
@@ -237,6 +237,37 @@ def test_a_local_case_is_ignored_by_git_wherever_the_cases_folder_is(tmp_path: P
     assert ignored(path)
     assert not ignored(shared)
     assert (root / "local" / ".gitignore").read_text(encoding="utf-8").splitlines()[-1] == "*"
+
+
+def test_the_git_test_leaves_alone_the_repo_whose_hook_runs_it(tmp_path: Path) -> None:
+    """A commit hook in a linked worktree runs pytest with GIT_DIR naming that worktree."""
+    repo, worktree = tmp_path / "repo", tmp_path / "worktree"
+    # Its own git calls drop GIT_* too, so a broken fixture can't make this test commit elsewhere,
+    # and --no-verify keeps any hook from running the suite again.
+    own = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+    who = ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"]
+    for args in (
+        ["init", "-q", str(repo)],
+        ["-C", str(repo), *who, "commit", "-q", "--no-verify", "--allow-empty", "-m", "x"],
+        ["-C", str(repo), "worktree", "add", "-q", "--detach", str(worktree)],
+    ):
+        subprocess.run(["git", *args], env=own, check=True)
+    git_dir = repo / ".git" / "worktrees" / worktree.name
+    hook_env = {**own, "GIT_DIR": str(git_dir), "GIT_INDEX_FILE": str(git_dir / "index")}
+    config = (repo / ".git" / "config").read_text(encoding="utf-8")
+
+    test = f"{__file__}::test_a_local_case_is_ignored_by_git_wherever_the_cases_folder_is"
+    done = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", test],
+        cwd=Path(__file__).parents[1],
+        env=hook_env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert (repo / ".git" / "config").read_text(encoding="utf-8") == config
 
 
 def test_a_write_the_os_refuses_is_a_case_error(tmp_path: Path) -> None:
