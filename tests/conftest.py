@@ -1,4 +1,4 @@
-"""Fixtures for tests that need a real Postgres.
+"""Fixtures for tests that need a real Postgres, and one that keeps git settings out of every test.
 
 Each test session creates throwaway databases on the server from AFR_TEST_DATABASE_URL
 (default: compose.yaml's Postgres) and drops them at the end. Without a server the tests
@@ -94,10 +94,11 @@ def session(engine: Engine) -> Generator[Session]:
 
 @pytest.fixture(autouse=True)
 def _no_git_settings_from_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Drop every GIT_* variable, so a test that runs git acts on its own repository only.
+    """Drop every GIT_* variable, so git run by a test acts on that test's repository only.
 
     A commit hook in a linked worktree runs the suite with GIT_DIR and GIT_INDEX_FILE set:
     left in place, `git init <tmp>` re-initialises the repository being committed to.
+    Function scope: a session or module fixture, or collection-time code, still sees them.
     """
     for name in [name for name in os.environ if name.startswith("GIT_")]:
         monkeypatch.delenv(name)

@@ -243,7 +243,7 @@ def test_the_git_test_leaves_alone_the_repo_whose_hook_runs_it(tmp_path: Path) -
     """A commit hook in a linked worktree runs pytest with GIT_DIR naming that worktree."""
     repo, worktree = tmp_path / "repo", tmp_path / "worktree"
     # Its own git calls drop GIT_* too, so a broken fixture can't make this test commit elsewhere,
-    # and --no-verify keeps any hook from running the suite again.
+    # and --no-verify keeps a pre-commit hook from running the suite again.
     own = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
     who = ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"]
     for args in (
