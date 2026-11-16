@@ -34,3 +34,6 @@ Thumbs.db
 
 # Personal Claude Code settings, such as `afr hook install` (machine-specific paths)
 .claude/settings.local.json
+
+# Eval cases that may hold personal content, such as from Claude Code sessions (#59)
+evals/cases/local/

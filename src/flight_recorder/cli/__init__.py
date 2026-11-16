@@ -6,6 +6,7 @@ from typing import Annotated
 import typer
 
 from flight_recorder import __version__
+from flight_recorder.cli.case import case_app
 from flight_recorder.cli.db import db_app
 from flight_recorder.cli.hook import hook_app
 from flight_recorder.cli.label import label, labels_app
@@ -18,6 +19,7 @@ app = typer.Typer(
     help="Agent Flight Recorder: record, replay and analyse AI agent runs.",
     no_args_is_help=True,
 )
+app.add_typer(case_app, name="case")
 app.add_typer(db_app, name="db")
 app.add_typer(hook_app, name="hook")
 app.add_typer(pricing_app, name="pricing")

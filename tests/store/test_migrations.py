@@ -403,3 +403,26 @@ def test_0007_notes_are_exactly_what_the_app_would_merge(
         dropped = Label(failure_mode=mode, note=escaped(note), author=author, created_at=at)
         expected = merged_note(expected, dropped)
     assert migrated == expected
+
+
+def test_0010_adds_an_empty_right_answer_to_existing_labels(
+    make_database: Callable[[], str],
+) -> None:
+    url = make_database()
+    upgrade(url, "0009")
+    engine = create_engine(url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(SEED_AT_0001))  # one human label
+        upgrade(url, "0010")
+        with engine.connect() as connection:
+            answers = connection.scalars(text("SELECT expected FROM labels")).all()
+            comment = connection.scalar(
+                text("SELECT col_description('labels'::regclass, attnum) FROM pg_attribute "
+                     "WHERE attrelid = 'labels'::regclass AND attname = 'expected'")
+            )  # fmt: skip
+    finally:
+        engine.dispose()
+
+    assert answers == [None]
+    assert "redacted" in (comment or "").lower()

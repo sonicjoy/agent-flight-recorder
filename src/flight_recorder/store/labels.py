@@ -7,6 +7,7 @@ text a person or a model may have copied from a run (docs/schema.md).
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import string
 import uuid
@@ -21,6 +22,7 @@ from sqlalchemy import String, and_, cast, delete, func, select, text, update
 from sqlalchemy.dialects.postgresql import aggregate_order_by, insert
 from sqlalchemy.orm import Session, aliased
 
+from flight_recorder.payloads import DECIDED, NONE_TEXT, value_text
 from flight_recorder.redact import Redactor
 from flight_recorder.store.models import Label, Span
 
@@ -221,6 +223,140 @@ def mode_counts(session: Session, source: str = HUMAN) -> list[ModeCount]:
     return sorted(counts, key=lambda c: (-c.runs, -c.labels, c.mode))
 
 
+# --- the right answer (#59) -------------------------------------------------------------
+
+
+def decided_fields(attributes: dict[str, Any]) -> dict[str, Any]:
+    """The agent's decisions, `<prefix>.decided.<field>`, keyed by `<field>` (dots kept), or
+    by the whole attribute when two prefixes decide a field of the same name."""
+    found = [(m["field"], key) for key in sorted(attributes) if (m := DECIDED.fullmatch(key))]
+    names = [field for field, _ in found]
+    return {(f if names.count(f) == 1 else key): attributes[key] for f, key in found}
+
+
+def answer_line(answer: dict[str, Any]) -> str:
+    """A right answer as one line, the form `parse_answer` reads."""
+    fields = answer.get("fields")
+    if isinstance(fields, dict):
+        items = typed("dict[str, Any]", fields).items()
+        return "; ".join(f"{name}={value_text(value)}" for name, value in items)
+    return str(answer.get("text", ""))
+
+
+def _typed_like(value: str, agent: Any, name: str) -> Any:
+    """`value` as the type of the agent's value for the field: a bool, a number or text."""
+    if isinstance(agent, bool):
+        if value.lower() not in ("true", "false"):
+            raise ValueError(f"{name} is true or false")
+        return value.lower() == "true"
+    if isinstance(agent, int | float):
+        try:
+            number = type(agent)(value)
+        except ValueError:
+            raise ValueError(f"{name} is a number") from None
+        if not math.isfinite(number):  # JSON (and so the store) has no nan or inf
+            raise ValueError(f"{name} is a finite number")
+        return number
+    return value
+
+
+def parse_answer(answer: str, decided: dict[str, Any]) -> dict[str, Any] | None:
+    """The right answer as typed: None when empty. With decided fields it's
+    `field=value; field=value`; fields not named keep the agent's value, a list field takes
+    comma-separated values (`(none)` for empty), and each value takes the type of the
+    agent's. Without, free text. Raises ValueError for a field the run doesn't have."""
+    answer = answer.strip()
+    if not answer:
+        return None
+    if not decided:
+        return {"text": answer}
+    fields = dict(decided)
+    for part in filter(None, (p.strip() for p in answer.split(";"))):
+        name, equals, value = (s.strip() for s in part.partition("="))
+        if not equals or name not in decided:
+            raise ValueError(f"{name or part!r} isn't one of this run's fields "
+                             f"({', '.join(decided)}); type field=value; field=value")  # fmt: skip
+        agent = decided[name]
+        if isinstance(agent, list):
+            items = typed("list[Any]", agent)
+            values = [v.strip() for v in value.split(",") if v.strip()]
+            like = items[0] if items else ""
+            fields[name] = (
+                [] if values == [NONE_TEXT] else [_typed_like(v, like, name) for v in values]
+            )
+        else:
+            fields[name] = _typed_like(value, agent, name)
+    return {"fields": fields}
+
+
+def set_answer(session: Session, label_id: uuid.UUID, answer: dict[str, Any],
+               redactor: Redactor) -> None:  # fmt: skip
+    """Stores the right answer on a label, redacted like a note. A run keeps one answer, the
+    last one given: its other labels' answers are cleared."""
+    run_id = session.scalar(select(Label.run_id).where(Label.id == label_id))
+    session.execute(
+        update(Label)
+        .where(Label.run_id == run_id, Label.source == HUMAN, Label.id != label_id)
+        .values(expected=None)
+    )
+    session.execute(
+        update(Label).where(Label.id == label_id).values(expected=redactor.redact(answer).value)
+    )
+
+
+def answer_of(session: Session, run_id: uuid.UUID) -> dict[str, Any] | None:
+    """The run's right answer (it keeps one: `set_answer`), from a human label on the run
+    itself, if any."""
+    return session.scalar(
+        select(Label.expected)
+        .where(
+            Label.run_id == run_id,
+            Label.span_id.is_(None),
+            Label.source == HUMAN,
+            Label.expected.is_not(None),
+        )
+        .order_by(Label.created_at.desc(), Label.id.desc())
+        .limit(1)
+    )
+
+
+def label_with_mode(session: Session, run_id: uuid.UUID, mode: str) -> Label | None:
+    """The run's own human label with `mode`, in any spelling."""
+    return session.scalar(
+        select(Label).where(
+            Label.run_id == run_id,
+            Label.span_id.is_(None),
+            Label.source == HUMAN,
+            Label.mode_key == func.afr_mode_key(mode),
+        )
+    )
+
+
+def _keep_answers(session: Session, going: Sequence[uuid.UUID]) -> None:
+    """Before labels are deleted: each run's answer on them moves to one of the run's own
+    human labels that stays and has none, so only removing all of them loses it."""
+    gone = session.execute(
+        select(Label.run_id, Label.expected)
+        .where(Label.id.in_(going), Label.span_id.is_(None), Label.expected.is_not(None))
+        .order_by(Label.created_at, Label.id)  # the latest answer last: it wins
+    ).all()
+    for run_id, answer in gone:
+        stays = session.scalar(
+            select(Label)
+            .where(
+                Label.run_id == run_id,
+                Label.span_id.is_(None),
+                Label.source == HUMAN,
+                Label.id.not_in(going),
+            )
+            .order_by(Label.expected.is_not(None), Label.created_at, Label.id)
+            .limit(1)
+        )
+        if stays is not None and stays.expected is None:
+            stays.expected = answer
+    session.flush()
+
+
 def labels_of(session: Session, run_id: uuid.UUID) -> list[Label]:
     return list(
         session.scalars(
@@ -301,14 +437,19 @@ def rename_mode(session: Session, old: str, new: str) -> Renamed:
     ).all()
     for gone, label in pairs:
         label.note = merged_note(label.note, gone)
+        label.expected = label.expected or gone.expected  # a right answer is never dropped
     session.execute(delete(Label).where(Label.id.in_([gone.id for gone, _ in pairs])))
     renamed = session.execute(update(Label).where(mine).values(failure_mode=target))
     return Renamed(typed("CursorResult[Any]", renamed).rowcount, len(pairs), 0)
 
 
 def remove_labels(session: Session, run_id: uuid.UUID, mode: str | None = None) -> int:
-    """Deletes a run's human labels, or only those with `mode`; returns how many."""
-    query = delete(Label).where(Label.run_id == run_id, Label.source == HUMAN)
+    """Deletes a run's human labels, or only those with `mode`; returns how many. A right
+    answer on a deleted label moves to one that stays."""
+    where = [Label.run_id == run_id, Label.source == HUMAN]
     if mode is not None:  # whatever its spelling
-        query = query.where(Label.mode_key == func.afr_mode_key(mode))
+        where.append(Label.mode_key == func.afr_mode_key(mode))
+    going = list(session.scalars(select(Label.id).where(*where)))
+    _keep_answers(session, going)
+    query = delete(Label).where(Label.id.in_(going))
     return typed("CursorResult[Any]", session.execute(query)).rowcount

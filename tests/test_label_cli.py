@@ -536,7 +536,7 @@ def test_next_takes_several_modes_for_a_run_before_moving_on(
 ) -> None:
     queue = ["label", "--next", "--attr", "triager.grade=wrong"]
 
-    result = cli(*queue, input="mode-one\n\nmode-two\n\n\nq\n")
+    result = cli(*queue, input="mode-one\n\nmode-two\n\n\n\nq\n")  # no right answer (#59)
 
     assert result.exit_code == 0, result.output
     assert len({label.run_id for label in labels(db)}) == 1
