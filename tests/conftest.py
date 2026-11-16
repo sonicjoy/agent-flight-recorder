@@ -98,7 +98,7 @@ def _no_git_settings_from_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
 
     A commit hook in a linked worktree runs the suite with GIT_DIR and GIT_INDEX_FILE set:
     left in place, `git init <tmp>` re-initialises the repository being committed to.
-    Function scope: a session or module fixture, or collection-time code, still sees them.
+    Function scope: any fixture of wider scope, and collection-time or hook code, still sees them.
     """
     for name in [name for name in os.environ if name.startswith("GIT_")]:
         monkeypatch.delenv(name)
