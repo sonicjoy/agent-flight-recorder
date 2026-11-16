@@ -659,3 +659,43 @@ def test_a_cleared_answer_is_sql_null_not_json_null(
     nulls = db.scalar(select(func.count()).where(Label.expected.is_(None)))
 
     assert nulls == 1  # the first label's answer, cleared
+
+
+# --- a recorded tool call's name is any JSON ----------------------------------------------
+
+
+def test_a_tool_call_whose_name_isnt_a_string_cant_stop_afr_case(
+    cli: Callable[..., Any], db: Session, cases: Path
+) -> None:
+    """A recorded output is whatever JSON a client sent. A tool call named by a list or an
+    object used to raise when its name was looked up among the run's tool spans. No tool span
+    has such a name, so the call is the run's structured output, as it is when the name is
+    missing (`afr embed` reads it the same way)."""
+    from flight_recorder.evals.cases import draft_case
+
+    def llm(output: Any) -> SpanIn:
+        return SpanIn(external_id="llm", parent_external_id="root-odd", kind="llm", name="Chat",
+                      started_at=T0, ended_at=T0, status="ok", output=output)  # fmt: skip
+
+    root = SpanIn(external_id="root-odd", kind="agent", name="graph", started_at=T0,
+                  ended_at=T0, status="ok", input="classify this")  # fmt: skip
+    ran = SpanIn(external_id="tool", parent_external_id="root-odd", kind="tool", name="lookup",
+                 started_at=T0, ended_at=T0, status="ok", output="found")  # fmt: skip
+    odd_names: list[Any] = [["a", "list"], {"an": "object"}, 5, True, None]
+    runs: list[uuid.UUID] = []
+    for number, name in enumerate(odd_names):
+        odd = {"name": name, "args": {"label": f"bug-{number}"}}
+        step = {"name": "lookup", "args": {"q": "x"}}  # its tool span ran: not an answer
+        output = {"generations": [[{"message": {"kwargs": {
+            "content": "", "tool_calls": [odd, step]}}}]]}  # fmt: skip
+        recorded = RunIn(source="otel", external_id=f"trace-odd-{number}", agent="lc",
+                         started_at=T0)  # fmt: skip
+        runs.append(record_run(db, recorded, [root, llm(output), ran], redactor=REDACTOR))
+    db.commit()
+
+    for number, run in enumerate(runs):
+        case = draft_case(db, run, suite="smoke", redactor=REDACTOR).case
+        assert case["expected"] == {"label": f"bug-{number}"}, odd_names[number]
+    result = cli("case", "new", "--from-run", str(runs[0]), "--suite", "smoke",
+                 "--root", str(cases), "--yes")  # fmt: skip
+    assert result.exit_code == 0, result.output

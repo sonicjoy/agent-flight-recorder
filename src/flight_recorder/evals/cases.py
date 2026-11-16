@@ -275,7 +275,12 @@ def agent_output(session: Session, run: Run, roots: list[SpanNode]) -> dict[str,
         calls = tool_calls(result)
         for call in reversed(calls):
             found = as_dict(call)
-            if found is not None and found.get("name") not in tools:
+            if found is None:
+                continue
+            name = found.get("name")
+            # A recorded name is any JSON value. Only a string can be a tool span's name, and
+            # looking a list or an object up in the set would raise.
+            if not (isinstance(name, str) and name in tools):
                 return as_dict(found.get("args")) or {}
         if not calls:
             return _as_expected(message_text((ai(result) or {}).get("content")) or None)
