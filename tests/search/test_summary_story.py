@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy.orm import Session
-from test_search import FakeEmbedder, db, embeddings, fake, record, span  # noqa: F401
+from test_search import FakeEmbedder, at, db, embeddings, fake, record, span  # noqa: F401
 
 pytestmark = pytest.mark.db
 
@@ -255,3 +255,42 @@ def test_text_beside_a_tool_request_isnt_the_answer(db: Session, fake: FakeEmbed
     text = summary(db)
     assert 'answered: "Done: it was a typo"' in text
     assert "Let me look that up" not in text and "search_issues(" not in text
+
+
+# --- a recorded tool call's name is any JSON -------------------------------------------
+
+
+def test_a_tool_call_whose_name_isnt_a_string_cant_stop_embedding(
+    db: Session, fake: FakeEmbedder
+) -> None:
+    """A recorded output is whatever JSON a client sent. A tool call named by a list or an
+    object used to raise when its name was looked up among the run's tool spans, which
+    stopped `afr embed` at that run every time. No tool span has such a name, so the call is
+    summarised as a call with no name already was: as the run's structured output."""
+    from flight_recorder.search.index import embed_runs
+
+    odd_names: list[Any] = [["a", "list"], {"an": "object"}, 5, True, None]
+    for number, name in enumerate(odd_names):
+        odd = call("placeholder", q=f"odd-args-{number}") | {"name": name}
+        record(db, f"odd-{number}", [
+            span("root", None, 0, kind="agent", name="agent"),
+            span("llm1", "root", 1, kind="llm", name="m", input=prompt(message("human", "Triage")),
+                 output=answer(calls=[odd, call("search_issues", query="x")])),
+            span("tool1", "root", 2, kind="tool", name="search_issues", input="x", output="none"),
+        ])  # fmt: skip
+    record(db, "ordinary-after", [
+        span("root", None, 200, kind="agent", name="agent"),
+        span("llm1", "root", 201, kind="llm", name="m", input=prompt(message("human", "Triage")),
+             output=answer(calls=[DECISION])),
+    ], started_at=at(200), ended_at=at(300))  # fmt: skip
+
+    stats = embed_runs(db, fake)
+
+    found = {e.run.external_id: e.content for e in embeddings(db) if e.kind == "run_summary"}
+    assert stats.runs == len(odd_names) + 1
+    assert "answered: TriageDecision(" in found["ordinary-after"]  # the run after them
+    for number in range(len(odd_names)):
+        text = found[f"odd-{number}"]
+        assert "asked: Triage" in text
+        assert f"(q: odd-args-{number})" in text  # the odd call, which no tool span ran
+        assert "search_issues(" not in text  # still a step: its tool span ran

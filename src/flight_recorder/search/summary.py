@@ -114,7 +114,12 @@ def _from_model_calls(session: Session, roots: list[SpanNode]) -> tuple[Any, Any
         calls = tool_calls(output)
         for call in reversed(calls):
             found = as_dict(call)
-            if found is not None and found.get("name") not in tools:
+            if found is None:
+                continue
+            name = found.get("name")
+            # A recorded name is any JSON value. Only a string can be a tool span's name, and
+            # looking a list or an object up in the set would raise.
+            if not (isinstance(name, str) and name in tools):
                 return asked, call_line(found)
         if not calls:
             answered = answered or langchain_text(output)
