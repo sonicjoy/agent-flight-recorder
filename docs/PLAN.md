@@ -96,7 +96,8 @@ src/flight_recorder/
   evals/       harness, judge
   analyst/     LangGraph analyst agent
   mcp/         FastMCP server
-evals/cases/              golden and red-team cases (YAML); local/ is git-ignored
+evals/cases/              the harness's smoke suite (YAML); local/ is git-ignored.
+                          The triager's golden suite lives in its own repo
 ui/                       React + TypeScript (Vite)
 infra/terraform/          GCP deployment
 docs/                     plan, schema, evals write-ups, decisions/
@@ -171,15 +172,17 @@ Estimates are build hours. The learning items come from the 5-week prep plan and
 | Labelling CLI and hand error analysis (50 runs) | #14 | 2.5h |
 | Eval harness from scratch, for any agent | #15 | 3.5h |
 | `afr case`: turn a recorded run into an eval case | #59 | 2.5h |
-| Golden eval cases from labelled failures | #16 | 0.5h |
+| Triager golden suite from its dataset | #16 | 3.5h |
 | LLM-as-judge rubric with agreement check | #17 | 1.5h |
 | Red-team set: prompt injection and secret leaks | #18 | 1h |
 | Evals in CI | #19 | 1h |
 | Compare with promptfoo or DeepEval | #20 | 0.5h |
 
+The golden suite lives in the triager's repo (`evals/cases/triager/`, run with `afr eval`; see [the harness doc](evals/harness.md#the-first-real-suite)). #17, #18, #19 and #21 act on that suite, so #19's live CI run and its API key belong to the triager's workflow, not this repo's.
+
 **Learning (about 1.5h):** Hamel Husain's "Your AI Product Needs Evals" and Eugene Yan's "Task-Specific LLM Evals". Read them before the error analysis; starting on the week 2 weekend works well.
 
-This is the heaviest week (about 14h with reading), and week 4 is about 10h: both are over the 9h budget, so expect to use the cut list. The error analysis is the part to protect, since everything after it depends on it.
+This is the heaviest week (about 18.5h with reading), and week 4 is about 10h: both are over the 9h budget, so expect to use the cut list. The error analysis is the part to protect, since everything after it depends on it.
 
 ### Week 4 · 23–29 Nov · Analyst, MCP and deploy
 
