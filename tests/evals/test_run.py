@@ -17,6 +17,7 @@ import yaml
 from fake_secrets import secrets_by_kind
 from pydantic import BaseModel
 
+from flight_recorder.evals import agent
 from flight_recorder.evals.cases import CaseError
 from flight_recorder.evals.grade import input_hash
 from flight_recorder.evals.run import (
@@ -60,7 +61,7 @@ def root(tmp_path: Path) -> Path:
 def agents() -> Generator[dict[str, Callable[[dict[str, Any]], Any]]]:
     """A module `evalagents` whose functions the tests set."""
     module = types.ModuleType("evalagents")
-    module.echo = lambda input: {"type": "bug", "seen": input}  # pyright: ignore[reportAttributeAccessIssue]
+    module.echo = agent(lambda input: {"type": "bug", "seen": input})  # pyright: ignore[reportAttributeAccessIssue]
     module.not_callable = 3  # pyright: ignore[reportAttributeAccessIssue]
     sys.modules["evalagents"] = module
     yield module.__dict__
@@ -196,19 +197,19 @@ def test_agent_failures_become_error_lines_and_the_run_goes_on(
             raise ValueError("no title")
         return ["not", "a", "dict"]
 
-    agents["flaky"] = flaky
+    agents["flaky"] = agent(flaky)
     lines = run(root, agent="evalagents:flaky")[1]
     assert (lines["a"]["output"], lines["a"]["error"]) == (None, "ValueError: no title")
     assert (lines["b"]["output"], lines["b"]["error"]) == (None, "output not a dict: list")
 
 
 def test_an_output_json_cant_hold_is_an_error(root: Path, agents: dict[str, Any]) -> None:
-    agents["odd"] = lambda input: {"x": object()}
+    agents["odd"] = agent(lambda input: {"x": object()})
     assert run(root, agent="evalagents:odd")[1]["a"]["error"] == "output not JSON: object"
 
 
 def test_a_pydantic_model_counts_as_a_dict(root: Path, agents: dict[str, Any]) -> None:
-    agents["model"] = lambda input: Answer(type="bug")
+    agents["model"] = agent(lambda input: Answer(type="bug"))
     assert run(root, agent="evalagents:model")[1]["a"]["output"] == {"type": "bug"}
 
 
@@ -219,7 +220,7 @@ def test_an_agent_that_changes_its_input_changes_nothing_else(
         input["title"] = "changed"
         return {"type": "bug"}
 
-    agents["greedy"] = greedy
+    agents["greedy"] = agent(greedy)
     suite = load_suite(root, "s", agent="evalagents:greedy")
     _, lines = run_suite(suite, redactor=REDACTOR, include_unreviewed=False, now=NOW)
     assert suite.cases[0]["input"] == {"title": "a"}
@@ -230,8 +231,8 @@ def test_a_secret_in_output_is_redacted_without_a_fingerprint(
     root: Path, agents: dict[str, Any]
 ) -> None:
     secret = secrets_by_kind()["anthropic_key"]
-    agents["leaky"] = lambda input: {"type": "bug", "note": f"key {secret}"}
-    agents["leaky_error"] = lambda input: (_ for _ in ()).throw(RuntimeError(secret))
+    agents["leaky"] = agent(lambda input: {"type": "bug", "note": f"key {secret}"})
+    agents["leaky_error"] = agent(lambda input: (_ for _ in ()).throw(RuntimeError(secret)))
     out = run(root, agent="evalagents:leaky")[1]["a"]
     err = run(root, agent="evalagents:leaky_error")[1]["a"]
     assert out["output"] == {"note": "key [REDACTED:anthropic_key]", "type": "bug"}
@@ -383,7 +384,7 @@ def test_no_answer_an_agent_gives_stops_the_run(root: Path, agents: dict[str, An
         print("noise on stdout")
         return {"type": "bug"}
 
-    agents["bad"] = bad
+    agents["bad"] = agent(bad)
     for name in ("cyclic", "deep", "near", "exit"):
         write(root / "s", f"{name}.yaml", case(name))
     header, lines = run(root, agent="evalagents:bad")
@@ -399,17 +400,37 @@ def test_no_answer_an_agent_gives_stops_the_run(root: Path, agents: dict[str, An
 def test_what_an_agent_prints_goes_to_stderr(
     root: Path, agents: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    agents["chatty"] = lambda input: print("thinking...") or {"type": "bug"}
+    agents["chatty"] = agent(lambda input: print("thinking...") or {"type": "bug"})
     run(root, agent="evalagents:chatty")
     out, err = capsys.readouterr()
     assert "thinking..." not in out
     assert "thinking..." in err
 
 
-@pytest.mark.parametrize("spec", ["subprocess:run", "os:system", "builtins:eval", "json:loads"])
-def test_an_agent_from_the_standard_library_is_refused(spec: str) -> None:
-    with pytest.raises(CaseError, match=r"not an agent's module|not a function"):
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "subprocess:run",
+        "builtins:eval",
+        "flight_recorder.cli:app",
+        "flight_recorder.store.db:downgrade",
+        "flight_recorder.evals.run:Suite",
+        "evalagents:unmarked",
+        "evalagents:wrong_mark",
+    ],
+)
+def test_only_a_function_marked_as_an_agent_is_accepted(spec: str, agents: dict[str, Any]) -> None:
+    """suite.yaml is data: an allowlist, not a list of known gadgets."""
+    agents["unmarked"] = lambda input: {}
+    wrong = lambda input: {}  # noqa: E731
+    wrong.__afr_agent__ = "yes"  # pyright: ignore[reportFunctionMemberAccess]
+    agents["wrong_mark"] = wrong
+    with pytest.raises(CaseError, match="isn't marked as an agent"):
         import_agent(spec)
+
+
+def test_the_marked_smoke_agent_is_accepted() -> None:
+    assert import_agent("flight_recorder.evals.example:triage")({"title": "crash"})["type"] == "bug"
 
 
 def test_an_agent_module_that_fails_to_import_in_any_way_is_a_case_error() -> None:
@@ -460,7 +481,7 @@ def test_a_yaml_date_in_a_check_compares_as_the_text_an_output_holds(
         "id: a\ninput: {title: a}\nchecks: [{type: equals, field: due, value: 2024-01-02}]\n",
         encoding="utf-8",
     )
-    agents["dated"] = lambda input: {"due": datetime(2024, 1, 2).date()}
+    agents["dated"] = agent(lambda input: {"due": datetime(2024, 1, 2).date()})
     suite = load_suite(root, "s", agent="evalagents:dated")
     _, lines = run_suite(suite, redactor=REDACTOR, include_unreviewed=False, now=NOW)
     result = grade_suite(suite.cases, lines, include_unreviewed=False)
@@ -502,7 +523,7 @@ def test_no_failure_inside_one_case_stops_the_run(root: Path, agents: dict[str, 
             raise asyncio.CancelledError
         return {"type": "bug"}
 
-    agents["bad2"] = bad
+    agents["bad2"] = agent(bad)
     names = ("surrogate", "raised_surrogate", "unprintable", "cancelled")
     for name in names:
         write(root / "s", f"{name}.yaml", case(name))
@@ -520,7 +541,7 @@ def test_ctrl_c_still_stops_the_run(root: Path, agents: dict[str, Any]) -> None:
     def interrupted(input: dict[str, Any]) -> Any:
         raise KeyboardInterrupt
 
-    agents["interrupted"] = interrupted
+    agents["interrupted"] = agent(interrupted)
     with pytest.raises(KeyboardInterrupt):
         run(root, agent="evalagents:interrupted")
 
@@ -536,30 +557,20 @@ def test_a_print_while_the_agent_imports_goes_to_stderr(
             return importlib.util.spec_from_loader(name, self) if name == "evalloud" else None
 
         def exec_module(self, module: types.ModuleType) -> None:
-            exec("print('loading...')\ndef agent(input):\n    return {'type': 'bug'}\n",
+            exec("from flight_recorder.evals import agent\nprint('loading...')\n"
+                 "@agent\ndef answer(input):\n    return {'type': 'bug'}\n",
                  module.__dict__)  # fmt: skip
 
     finder = Finder()
     sys.meta_path.insert(0, finder)
     try:
-        run(root, agent="evalloud:agent")
+        run(root, agent="evalloud:answer")
     finally:
         sys.meta_path.remove(finder)
         sys.modules.pop("evalloud", None)
     out, err = capsys.readouterr()
     assert "loading..." not in out
     assert "loading..." in err
-
-
-@pytest.mark.parametrize(
-    "spec", ["flight_recorder.cli:app", "flight_recorder.evals.run:Suite", "evalagents:partial"]
-)
-def test_an_agent_that_isnt_a_function_is_refused(spec: str, agents: dict[str, Any]) -> None:
-    import functools
-
-    agents["partial"] = functools.partial(lambda input, x: {}, x=1)
-    with pytest.raises(CaseError, match="not a function"):
-        import_agent(spec)
 
 
 def test_deep_nesting_in_a_case_or_an_outputs_line_is_a_case_error(root: Path) -> None:

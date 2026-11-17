@@ -1,7 +1,7 @@
 # Eval harness for any agent (#15)
 
 *   **Author:** Joe Luo
-*   **Status:** Reviewed
+*   **Status:** Approved
 *   **Date:** 2026-11-17
 
 --------------------------------------------------------------------------------
@@ -215,7 +215,7 @@ One serialiser, used for every hash and for `outputs.jsonl`: `json.dumps(convert
 
 ### Calling the agent
 
-`run` imports the agent from `module:function`. If the module or function is missing or not callable, it exits with code 2 and names what's missing, before any case runs. Then, for each case not skipped, it calls the agent with a deep copy of the case's `input`.
+`run` imports the agent from `module:function`. If the module or function is missing, isn't callable, or isn't marked with `@agent` (from `flight_recorder.evals`, which sets `__afr_agent__ = True`), it exits with code 2 and names what's wrong, before any case runs. The marker is an allowlist: `suite.yaml` is data, so it must not be able to choose an arbitrary installed function (added in the pre-merge review). Then, for each case not skipped, it calls the agent with a deep copy of the case's `input`.
 
 ### Checks
 
@@ -389,7 +389,7 @@ The existing `ci.yml` job gets one step after "Pytest", **"Eval harness (no agen
 | A grading bug passes checks it shouldn't. | `grade` fails on any difference, and the smoke suite has checks the agent fails on purpose. |
 | An interrupted run loses the last good outputs. | Atomic replace at the end of the run. |
 | A secret, or a key-tied fingerprint, reaches git in outputs. | Redaction, then `strip_fingerprints`. Non-local outputs are new LLM text going into a public repo, so they are reviewed in the PR like cases. Claude Code suites stay under the git-ignored `local/`. |
-| The agent is arbitrary code running with the user's permissions. | Same as any imported Python. The docs say to run only agents you trust. Because `suite.yaml` is data, an agent must be a plain function or method (not a class, a partial or a Typer/click app such as `flight_recorder.cli:app`), and one defined in the standard library or builtins is refused (found in the pre-merge review: `agent: subprocess:run` ran a command from YAML alone). Any other plain function still gets through, afr's own included: `agent: flight_recorder.store.db:downgrade` with `input: {}` would drop every table in the configured store (found in the pre-merge fix review, shown with stand-ins). So a `suite.yaml` from someone else is code: read it before `afr eval run`. CI runs only `grade`, which imports nothing. Closing this needs an allowlist (an explicit agent marker), not more refusals. |
+| The agent is arbitrary code running with the user's permissions. | Same as any imported Python. The docs say to run only agents you trust. Because `suite.yaml` is data, only a function marked with `@agent` is accepted. The pre-merge review showed why a blocklist fails: `subprocess:run`, then `flight_recorder.cli:app`, then `flight_recorder.store.db:downgrade` (which would drop every table in the store) each got past the refusals added for the one before. CI runs only `grade`, which imports nothing. |
 | Large suites: calls run one after another, and `outputs.jsonl` grows with the suite. | Accepted. Suites are tens of cases. A single case can't be rerun on its own; a changed input means rerunning the suite. |
 | The agreement check's data was back-filled and partly re-graded (#14), so truth versions may be mixed. | The consistency step sets those runs apart before comparing. |
 | Eval runs can't be found in the store. | Accepted until the linking issue (see Alternative K). |

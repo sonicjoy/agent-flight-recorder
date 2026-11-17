@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from flight_recorder.evals import agent
+
 RULES = (  # (words, label, type), checked in order
     (("crash", "error", "exception"), "bug", "bug"),
     (("docs", "readme", "typo"), "documentation", "docs"),
@@ -16,6 +18,7 @@ RULES = (  # (words, label, type), checked in order
 )
 
 
+@agent
 def triage(input: dict[str, Any]) -> dict[str, Any]:
     text = f"{input.get('title', '')} {input.get('body', '')}".lower()
     matched = [(label, kind) for words, label, kind in RULES if any(w in text for w in words)]

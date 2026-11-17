@@ -18,6 +18,7 @@ import yaml
 from typer.testing import CliRunner
 
 from flight_recorder.cli import app
+from flight_recorder.evals import agent
 from flight_recorder.evals.example import triage
 
 runner = CliRunner()
@@ -118,7 +119,7 @@ def test_a_check_that_starts_passing_fails_grade_but_not_run(
         return answer | {"type": answer["type"] or "performance"} if "Timeout" in input[
             "title"] else answer  # fmt: skip
 
-    agents["better"] = better
+    agents["better"] = agent(better)
     run = accepted("run", "--agent", "evalclitest:better")
     assert run.exit_code == 0, run.output
     assert "improvements: smoke-05 type/" in run.output
@@ -231,7 +232,7 @@ def test_json_stays_one_ascii_object_whatever_the_agent_prints_or_answers(
         answer = triage(input)  # a type no check expects, so it's printed as the actual value
         return answer | {"type": answer["type"] or "\u009b31m \u202e\u200b"}
 
-    agents["odd"] = odd
+    agents["odd"] = agent(odd)
     result = accepted("run", "--agent", "evalclitest:odd", "--json")
     assert result.stdout.isascii()
     assert "\\u009b31m \\u202e\\u200b" in result.stdout

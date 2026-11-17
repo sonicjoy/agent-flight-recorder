@@ -8,11 +8,9 @@ is `grade.py`'s job; nothing here opens the store.
 
 from __future__ import annotations
 
-import builtins
 import contextlib
 import copy
 import importlib
-import inspect
 import json
 import os
 import subprocess
@@ -25,6 +23,7 @@ from importlib.metadata import PackageNotFoundError, packages_distributions, ver
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from flight_recorder.evals import MARK
 from flight_recorder.evals.cases import (
     SUFFIX,
     SUITE,
@@ -137,13 +136,11 @@ def import_agent(spec: str) -> Callable[[dict[str, Any]], Any]:
         raise CaseError(f"{module_name} has no {function!r}")
     if not callable(agent):
         raise CaseError(f"{spec} isn't callable")
-    # suite.yaml is data, so it mustn't be able to pick a gadget: a command-line app (a Typer
-    # or click object), a class, a partial, or a function from the standard library
-    if not (inspect.isfunction(agent) or inspect.ismethod(agent)):
-        raise CaseError(f"{spec} is a {type(agent).__name__}, not a function: wrap it in one")
-    home = str(getattr(agent, "__module__", None) or "").split(".")[0]
-    if home in sys.stdlib_module_names or home == builtins.__name__ or not home:
-        raise CaseError(f"{spec} is defined in {home or 'no module'}, not an agent's module")
+    # suite.yaml is data: only a function its author marked as an agent may be called, never
+    # one a YAML file happens to name (subprocess:run, flight_recorder.store.db:downgrade)
+    if getattr(agent, MARK, None) is not True:
+        raise CaseError(f"{spec} isn't marked as an agent: decorate it with "
+                        "@agent from flight_recorder.evals")  # fmt: skip
     return cast("Callable[[dict[str, Any]], Any]", agent)
 
 

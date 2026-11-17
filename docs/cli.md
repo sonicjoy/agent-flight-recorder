@@ -201,7 +201,7 @@ smoke-06 labels/f7099305: expected "documentation", got ["bug", "documentation"]
 smoke-08 (unreviewed): skipped: unreviewed
 ```
 
-The suite is `<root>/<suite>/` or `<root>/local/<suite>/`: a `suite.yaml` naming the agent (`agent: module:function`, and an optional `model:` label) and one `<id>.yaml` per case. `run` writes `outputs.jsonl` there; `--accept` writes `baseline.json`. Neither command opens the store. The report lists changes against the baseline, each failing check as expected against actual, and agent output escaped like any recorded text.
+The suite is `<root>/<suite>/` or `<root>/local/<suite>/`: a `suite.yaml` naming the agent (`agent: module:function`, a function marked with `@agent` from `flight_recorder.evals`; and an optional `model:` label) and one `<id>.yaml` per case. `run` writes `outputs.jsonl` there; `--accept` writes `baseline.json`. Neither command opens the store. The report lists changes against the baseline, each failing check as expected against actual, and agent output escaped like any recorded text.
 
 How each change against the baseline gates each command:
 
