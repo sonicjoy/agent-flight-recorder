@@ -213,3 +213,35 @@ def test_neither_command_opens_the_store(
     clean_env.setenv("AFR_DATABASE_URL", "postgresql+psycopg://afr:afr@127.0.0.1:1/afr")
     assert afr("run", "--accept").exit_code == 0
     assert afr("grade").exit_code == 0
+
+
+def test_a_path_in_an_error_reaches_the_terminal_escaped(tmp_path: Path, afr: Any) -> None:
+    root = tmp_path / "odd\x1b[31mroot"
+    result = runner.invoke(app, ["eval", "grade", "--suite", "smoke", "--root", str(root)])
+    assert result.exit_code == 2
+    assert "\x1b" not in result.output
+    assert "\\x1b" in result.output
+
+
+def test_json_stays_one_ascii_object_whatever_the_agent_prints_or_answers(
+    accepted: Callable[..., Any], agents: dict[str, Any]
+) -> None:
+    def odd(input: dict[str, Any]) -> dict[str, Any]:
+        print("progress: 50%")
+        return triage(input) | {"note": "\u009b31m \u202e\u200b"}
+
+    agents["odd"] = odd
+    result = accepted("run", "--agent", "evalclitest:odd", "--json")
+    assert result.exit_code == 0, result.output
+    assert result.stdout.isascii()
+    report = json.loads(result.stdout)
+    assert report["counts"]["pass"] == 5
+
+
+def test_a_bad_redaction_key_exits_2(
+    afr: Callable[..., Any], clean_env: pytest.MonkeyPatch
+) -> None:
+    clean_env.setenv("AFR_REDACTION_KEY", "short")
+    result = afr("run")
+    assert result.exit_code == 2
+    assert "AFR_REDACTION_KEY must be at least" in result.output

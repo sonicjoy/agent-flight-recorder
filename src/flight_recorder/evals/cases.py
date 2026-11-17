@@ -199,9 +199,19 @@ def preview(case: dict[str, Any]) -> str:
     return clean(dump(case))
 
 
+class _NoAliases(yaml.SafeLoader):
+    """Safe YAML without anchors and aliases: a few hundred bytes of nested aliases expand
+    to gigabytes, and the dumper here never writes them."""
+
+    def compose_node(self, parent: Any, index: Any) -> Any:
+        if self.check_event(yaml.AliasEvent):
+            raise yaml.YAMLError("aliases (*name) aren't allowed in a case")
+        return super().compose_node(parent, index)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+
+
 def load(text: str) -> dict[str, Any]:
     try:
-        case = yaml.safe_load(text)
+        case = yaml.load(text, Loader=_NoAliases)  # a SafeLoader subclass
     except yaml.YAMLError as error:
         raise CaseError(f"not a case: {error}") from error
     if not isinstance(case, dict):

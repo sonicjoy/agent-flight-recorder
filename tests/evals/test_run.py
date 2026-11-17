@@ -243,7 +243,16 @@ def test_a_secret_in_output_is_redacted_without_a_fingerprint(
 # --- the header -----------------------------------------------------------------------
 
 
-def test_agent_version_is_the_installed_distribution_of_its_package() -> None:
+def test_agent_version_is_the_installed_distribution_of_its_package(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "flight_recorder.evals.run._distributions", lambda: {"evalagents": ["PyYAML"]}
+    )
+    assert agent_version("evalagents:echo") == version("PyYAML")
+
+
+def test_agent_version_of_the_smoke_agent_and_of_an_unknown_one() -> None:
     assert agent_version("flight_recorder.evals.example:triage") == version("agent-flight-recorder")
     assert agent_version("evalagents:echo") is None
 
@@ -340,3 +349,134 @@ def test_a_damaged_baseline_is_an_error(tmp_path: Path) -> None:
     (tmp_path / "baseline.json").write_text('{"a": ["pass"]}', encoding="utf-8")
     with pytest.raises(CaseError, match=r"baseline.json is damaged"):
         read_baseline(tmp_path)
+
+
+# --- one case can't stop the run, and every bad input is a CaseError ------------------
+
+
+def test_no_answer_an_agent_gives_stops_the_run(root: Path, agents: dict[str, Any]) -> None:
+    """The property: whatever one case's call does short of Ctrl-C, the run goes on and the
+    case gets an error line."""
+    cyclic: dict[str, Any] = {}
+    cyclic["self"] = cyclic
+    deep: dict[str, Any] = {}
+    node = deep
+    for _ in range(5000):
+        node["n"] = {}
+        node = node["n"]
+    near_limit: dict[str, Any] = {}
+    node = near_limit
+    for _ in range(900):  # convert copes; redaction or storage may not
+        node["n"] = {}
+        node = node["n"]
+
+    def bad(input: dict[str, Any]) -> Any:
+        title = input["title"]
+        if title == "cyclic":
+            return cyclic
+        if title == "deep":
+            return deep
+        if title == "near":
+            return near_limit
+        if title == "exit":
+            raise SystemExit(0)
+        print("noise on stdout")
+        return {"type": "bug"}
+
+    agents["bad"] = bad
+    for name in ("cyclic", "deep", "near", "exit"):
+        write(root / "s", f"{name}.yaml", case(name))
+    header, lines = run(root, agent="evalagents:bad")
+    assert lines["a"]["output"] == {"type": "bug"}
+    assert lines["cyclic"]["error"] == "output not JSON: nested too deep"
+    assert lines["deep"]["error"] == "output not JSON: nested too deep"
+    assert lines["exit"]["error"] == "SystemExit: 0"
+    assert lines["near"]["error"] is None or "nested too deep" in lines["near"]["error"]
+    write_outputs(root / "s", header, lines)  # every line can be stored
+    assert read_outputs(root / "s")[1].keys() == lines.keys()
+
+
+def test_what_an_agent_prints_goes_to_stderr(
+    root: Path, agents: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    agents["chatty"] = lambda input: print("thinking...") or {"type": "bug"}
+    run(root, agent="evalagents:chatty")
+    out, err = capsys.readouterr()
+    assert "thinking..." not in out
+    assert "thinking..." in err
+
+
+@pytest.mark.parametrize("spec", ["subprocess:run", "os:system", "builtins:eval", "json:loads"])
+def test_an_agent_from_the_standard_library_is_refused(spec: str) -> None:
+    with pytest.raises(CaseError, match="not an agent's module"):
+        import_agent(spec)
+
+
+def test_an_agent_module_that_fails_to_import_in_any_way_is_a_case_error() -> None:
+    sys.modules.pop("evalbroken", None)
+    source = "raise KeyError('AGENT_KEY')"
+    import importlib.abc
+    import importlib.util
+
+    class Finder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+        def find_spec(self, name: str, path: Any, target: Any = None) -> Any:
+            return importlib.util.spec_from_loader(name, self) if name == "evalbroken" else None
+
+        def exec_module(self, module: types.ModuleType) -> None:
+            exec(source, module.__dict__)
+
+    finder = Finder()
+    sys.meta_path.insert(0, finder)
+    try:
+        with pytest.raises(CaseError, match="can't import evalbroken: KeyError"):
+            import_agent("evalbroken:f")
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop("evalbroken", None)
+
+
+def test_an_input_json_cant_hold_is_refused_when_the_suite_loads(root: Path) -> None:
+    (root / "s" / "c.yaml").write_text(
+        "id: c\ninput: {1: one}\nchecks: [{type: equals, field: x, value: 1}]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CaseError, match="'input' can't be stored as JSON"):
+        load_suite(root, "s")
+
+
+@pytest.mark.parametrize("name", ["c.YAML", "c.Yml", "c.YML"])
+def test_a_case_file_with_an_odd_extension_is_refused_not_skipped(root: Path, name: str) -> None:
+    write(root / "s", name, case("c"))
+    with pytest.raises(CaseError, match=r"use .yaml"):
+        load_suite(root, "s")
+
+
+def test_a_yaml_date_in_a_check_compares_as_the_text_an_output_holds(
+    root: Path, agents: dict[str, Any]
+) -> None:
+    from flight_recorder.evals.grade import grade_suite
+
+    (root / "s" / "a.yaml").write_text(
+        "id: a\ninput: {title: a}\nchecks: [{type: equals, field: due, value: 2024-01-02}]\n",
+        encoding="utf-8",
+    )
+    agents["dated"] = lambda input: {"due": datetime(2024, 1, 2).date()}
+    suite = load_suite(root, "s", agent="evalagents:dated")
+    _, lines = run_suite(suite, redactor=REDACTOR, include_unreviewed=False, now=NOW)
+    result = grade_suite(suite.cases, lines, include_unreviewed=False)
+    assert next(c for c in result.cases if c.id == "a").outcome == "pass"
+    assert suite.cases[0]["checks"][0]["value"] == "2024-01-02"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '{"case":"a","input_hash":"x","output":[1],"error":null}',
+        '{"case":"a","input_hash":"x","output":null,"error":3}',
+        '{"case":"a","input_hash":null,"output":null,"error":null}',
+    ],
+)
+def test_an_outputs_line_of_the_wrong_shape_is_damage(tmp_path: Path, line: str) -> None:
+    (tmp_path / "outputs.jsonl").write_text('{"run":{}}\n' + line + "\n", encoding="utf-8")
+    with pytest.raises(CaseError, match=r"outputs\.jsonl is damaged"):
+        read_outputs(tmp_path)

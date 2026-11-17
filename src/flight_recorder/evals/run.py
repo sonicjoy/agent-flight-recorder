@@ -8,11 +8,14 @@ is `grade.py`'s job; nothing here opens the store.
 
 from __future__ import annotations
 
+import builtins
+import contextlib
 import copy
 import importlib
 import json
 import os
 import subprocess
+import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -23,6 +26,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from flight_recorder.evals.cases import (
     SUFFIX,
+    SUITE,
     CaseError,
     check_id,
     load,
@@ -35,7 +39,6 @@ from flight_recorder.evals.grade import input_hash
 if TYPE_CHECKING:
     from flight_recorder.redact import Redactor
 
-SETTINGS = "suite"  # suite.yaml
 SETTING_KEYS = ("agent", "model")
 OUTPUTS = "outputs.jsonl"
 BASELINE = "baseline.json"
@@ -80,12 +83,18 @@ def _case(path: Path) -> dict[str, Any]:
         problems.append(f"'id' must be {case_id!r}, the file's name")
     if not isinstance(case.get("input"), dict):
         problems.append("'input' must be a mapping")
+    else:
+        try:
+            input_hash(case)
+        except ValueError as error:
+            problems.append(f"'input' can't be stored as JSON ({error})")
     if "unreviewed" in case and not isinstance(case["unreviewed"], bool):
         problems.append("'unreviewed' must be true or false")
     problems += validate(case.get("checks"))
     if problems:
         raise CaseError(f"{path.name}: " + "; ".join(problems))
-    return case
+    # check values compared in the form outputs are stored in: a YAML date as ISO text
+    return case | {"checks": convert(case["checks"])}
 
 
 def load_suite(root: Path, name: str, *, agent: str | None = None) -> Suite:
@@ -100,11 +109,11 @@ def load_suite(root: Path, name: str, *, agent: str | None = None) -> Suite:
     settings: dict[str, Any] = {}
     cases: list[dict[str, Any]] = []
     for path in sorted(p for p in folder.iterdir() if p.is_file()):
-        if path.suffix == ".yml":
+        if path.suffix.lower() in (".yml", SUFFIX) and path.suffix != SUFFIX:
             raise CaseError(f"{path.name}: use .yaml, so no case is skipped by accident")
         if path.suffix != SUFFIX:
             continue
-        if path.stem == SETTINGS:
+        if path.stem == SUITE:
             settings = _settings(path)
         else:
             cases.append(_case(path))
@@ -120,13 +129,17 @@ def import_agent(spec: str) -> Callable[[dict[str, Any]], Any]:
         raise CaseError(f"agent {spec!r} must be module:function")
     try:
         module = importlib.import_module(module_name)
-    except ImportError as error:
-        raise CaseError(f"can't import {module_name}: {error}") from error
+    except Exception as error:  # an agent module can fail to import in any way
+        raise CaseError(f"can't import {module_name}: {type(error).__name__}: {error}") from error
     agent = getattr(module, function, None)
     if agent is None:
         raise CaseError(f"{module_name} has no {function!r}")
     if not callable(agent):
         raise CaseError(f"{spec} isn't callable")
+    # suite.yaml is data, so it mustn't be able to pick a gadget like subprocess:run
+    home = str(getattr(agent, "__module__", None) or "").split(".")[0]
+    if home in sys.stdlib_module_names or home == builtins.__name__ or not home:
+        raise CaseError(f"{spec} is defined in {home or 'no module'}, not an agent's module")
     return cast("Callable[[dict[str, Any]], Any]", agent)
 
 
@@ -173,14 +186,17 @@ def git_sha(folder: Path) -> str | None:
 
 def _call(agent: Callable[[dict[str, Any]], Any], case: dict[str, Any]) -> tuple[Any, str | None]:
     """`(output, error)` for one case. The agent gets a copy of the input as loaded."""
-    try:
-        answer = agent(copy.deepcopy(case["input"]))
-    except Exception as error:  # the agent is arbitrary code; one case failing isn't the run
+    try:  # what the agent prints mustn't mix with a report or --json on stdout
+        with contextlib.redirect_stdout(sys.stderr):
+            answer = agent(copy.deepcopy(case["input"]))
+    except (Exception, SystemExit) as error:  # arbitrary code; one case failing isn't the run
         return None, f"{type(error).__name__}: {error}"
     try:
         output = convert(answer)
     except ValueError as error:  # "output not JSON: <type>"
         return None, str(error)
+    except RecursionError:  # cyclic, or nested past Python's limit
+        return None, "output not JSON: nested too deep"
     if not isinstance(output, dict):
         return None, f"output not a dict: {type(output).__name__}"
     return cast("dict[str, Any]", output), None
@@ -206,7 +222,12 @@ def run_suite(
         if (case.get("unreviewed") is True and not include_unreviewed) or not case["checks"]:
             continue
         output, error = _call(agent, case)
-        safe = strip_fingerprints(redactor.redact({"output": output, "error": error}).value)
+        try:
+            safe = strip_fingerprints(redactor.redact({"output": output, "error": error}).value)
+            canonical(safe)  # storable, as write_outputs will need
+        except (RecursionError, ValueError):
+            failed = {"output": None, "error": "output not storable: nested too deep"}
+            safe = strip_fingerprints(redactor.redact(failed).value)
         lines[case["id"]] = {"case": case["id"], "input_hash": input_hash(case)} | safe
     return header, lines
 
@@ -239,7 +260,13 @@ def read_outputs(folder: Path) -> tuple[dict[str, Any] | None, dict[str, dict[st
     lines: dict[str, dict[str, Any]] = {}
     for line in dicts[1:]:
         case = line.get("case")
-        if not isinstance(case, str) or case in lines:
+        if (
+            not isinstance(case, str)
+            or case in lines
+            or not isinstance(line.get("input_hash"), str)
+            or not isinstance(line.get("output"), dict | None)
+            or not isinstance(line.get("error"), str | None)
+        ):
             raise CaseError(DAMAGED)
         lines[case] = line
     return cast("dict[str, Any]", dicts[0]["run"]), lines

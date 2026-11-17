@@ -16,6 +16,7 @@ from typing import Any, Literal
 from flight_recorder.evals.checks import CheckResult, canonical, run_checks
 
 GRADED = ("pass", "fail", "error")
+RANK = {"pass": 2, "fail": 1, "error": 0}  # an error answered nothing: worse than a wrong answer
 NO_LINE_UNREVIEWED = "no output: run it with --include-unreviewed"
 
 
@@ -121,9 +122,10 @@ def compare(result: SuiteResult, baseline: dict[str, dict[str, str]] | None) -> 
             if old.keys() != now.keys():
                 changes.changed.append(case.id)
             for key in sorted(old.keys() & now.keys()):
-                if old[key] == "pass" and now[key] != "pass":
+                before, after = RANK.get(old[key], 0), RANK[now[key]]
+                if after < before:
                     changes.regressions.append(f"{case.id} {key}")
-                elif old[key] != "pass" and now[key] == "pass":
+                elif after > before:
                     changes.improvements.append(f"{case.id} {key}")
     if baseline is not None:
         changes.removed.extend(sorted(baseline.keys() - {c.id for c in result.cases}))

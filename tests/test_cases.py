@@ -54,7 +54,7 @@ def test_ids_that_match_the_pattern_are_kept(good: str) -> None:
 @pytest.mark.parametrize(
     "bad",
     ["", "../x", "..", "a/b", "a\\b", "/abs", "C:", "-a", "_a", "A", "a.b", "a b", "a" * 65,
-     "a\n", "local"],
+     "a\n", "local", "suite"],
 )  # fmt: skip
 def test_ids_that_could_leave_the_folder_or_take_a_reserved_name_are_refused(bad: str) -> None:
     with pytest.raises(CaseError):
@@ -334,3 +334,9 @@ def test_the_preview_escapes_what_yaml_leaves_raw() -> None:
 
     assert rlo not in text and zwsp not in text
     assert "\\u202e" in text  # as an escape
+
+
+def test_load_refuses_yaml_aliases_which_can_expand_without_bound() -> None:
+    bomb = "a: &a [x, x]\nb: &b [*a, *a]\nc: [*b, *b]\n"
+    with pytest.raises(CaseError, match="aliases"):
+        load(bomb)

@@ -68,7 +68,7 @@ Each command compares its results with a committed baseline, under the rules in 
 *   **Keep unreviewed cases out of the score.** Cases marked `unreviewed: true` are skipped and counted apart. `--include-unreviewed` grades them, but they never enter the baseline.
 *   **Check the harness in CI with no agent calls.** A CI step runs `afr eval grade --suite smoke` on the committed smoke suite.
 *   **Check the grading logic against the triager's grader** on its recorded runs (the agreement check), with the limits stated in that section.
-*   **Keep it explainable.** The run, grade and check modules are about 220 lines, and the CLI and report about 90. This was recounted after the Stage 8 cuts (no reruns, no strict flag, no unused check options) and the Stage 9 contracts.
+*   **Keep it explainable.** The run, grade and check modules were estimated at about 220 lines, and the CLI and report about 90. As built they are about 470 and 190 lines of code (not counting docstrings, comments and blank lines): the Stage 9 validation and error rules, and the pre-merge review's fixes (one case can't stop a run; every bad input exits 2), roughly doubled them. The pre-merge simplicity review found no cut that keeps the behaviour and saves more than about 30 lines.
 
 ## Non-Goals
 
@@ -179,7 +179,7 @@ Paths go through `check_id` and a new `suite_dir` helper beside `case_path` in `
 ```
 
 *   **The header line** holds the facts about the whole run, once:
-    *   `agent_version` is the installed version of the distribution that provides the agent's top-level package, found with `importlib.metadata.packages_distributions()`. For the smoke agent, `flight_recorder` maps to `agent-flight-recorder`. It is `null` when none is found.
+    *   `agent_version` is the installed version of the distribution that provides the agent's top-level package, found with `importlib.metadata.packages_distributions()`, else that package's `__version__`: an editable install (`uv sync`, as for this repo and the triager's adapter) records no package files, so the lookup finds nothing. It is `null` when neither is found.
     *   `git_sha` is the short commit of the git repo holding the suite folder (`git -C <suite folder>`), with `GIT_*` environment variables cleared. It gets `-dirty` when tracked files have uncommitted changes (`git status --porcelain --untracked-files=no` is not empty). It is `null` outside a git repo.
     *   `ran_at` is UTC.
 
@@ -280,8 +280,8 @@ How each state of a case compares with the baseline, and what fails each command
 
 | State | Reported as | `run` fails? | `grade` fails? |
 |---|---|---|---|
-| A check's key was `pass`, is now `fail` or `error` | regression | yes | yes |
-| A check's key was `fail` or `error`, is now `pass` | improvement | no | yes |
+| A check's key got worse (pass, then fail, then error, best first) | regression | yes | yes |
+| A check's key got better | improvement | no | yes |
 | A case in the baseline has keys added, removed or changed (a check was edited) | changed checks | yes, until accepted | yes |
 | A case not in the baseline | new case | no | yes |
 | A case in the baseline whose file is gone | removed case | no | yes |
@@ -389,7 +389,7 @@ The existing `ci.yml` job gets one step after "Pytest", **"Eval harness (no agen
 | A grading bug passes checks it shouldn't. | `grade` fails on any difference, and the smoke suite has checks the agent fails on purpose. |
 | An interrupted run loses the last good outputs. | Atomic replace at the end of the run. |
 | A secret, or a key-tied fingerprint, reaches git in outputs. | Redaction, then `strip_fingerprints`. Non-local outputs are new LLM text going into a public repo, so they are reviewed in the PR like cases. Claude Code suites stay under the git-ignored `local/`. |
-| The agent is arbitrary code running with the user's permissions. | Same as any imported Python. The docs say to run only agents you trust. |
+| The agent is arbitrary code running with the user's permissions. | Same as any imported Python. The docs say to run only agents you trust. Because `suite.yaml` is data, an agent defined in the standard library or builtins is refused (found in the pre-merge review: `agent: subprocess:run` ran a command from YAML alone). Other installed functions can't be told apart from agents; an explicit agent marker is a follow-up. |
 | Large suites: calls run one after another, and `outputs.jsonl` grows with the suite. | Accepted. Suites are tens of cases. A single case can't be rerun on its own; a changed input means rerunning the suite. |
 | The agreement check's data was back-filled and partly re-graded (#14), so truth versions may be mixed. | The consistency step sets those runs apart before comparing. |
 | Eval runs can't be found in the store. | Accepted until the linking issue (see Alternative K). |
@@ -592,8 +592,8 @@ evals/grade.py
   input_hash(case: dict) -> str
   CaseResult(id, outcome, note: str | None, unreviewed: bool, checks: list[CheckResult], error: str | None)
   SuiteResult(cases: list[CaseResult], orphaned: list[str], fields: dict[str, tuple[int, int]])
-  grade_suite(cases: list[dict], header: dict | None, lines: dict[str, dict],
-              *, include_unreviewed: bool) -> SuiteResult
+  grade_suite(cases: list[dict], lines: dict[str, dict],
+              *, include_unreviewed: bool) -> SuiteResult      # grading never reads the header
   Changes(regressions, improvements, changed, new, removed, skipped_in_baseline, stale)  # lists of ids or keys
   compare(result: SuiteResult, baseline: dict | None) -> Changes
   exit_code(changes: Changes, command: Literal["run", "grade"]) -> int

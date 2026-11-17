@@ -207,8 +207,8 @@ How each change against the baseline gates each command:
 
 | What changed | Reported as | `run` fails? | `grade` fails? |
 |---|---|---|---|
-| A check that passed now fails, or the case errors | regression | yes | yes |
-| A check that failed now passes | improvement | no | yes |
+| A check got worse: pass to fail or error, or fail to error | regression | yes | yes |
+| A check got better: error to fail or pass, or fail to pass | improvement | no | yes |
 | A case's checks were edited | changed checks | yes, until accepted | yes |
 | A case not in the baseline | new case | no | yes |
 | A case in the baseline whose file is gone | removed case | no | yes |

@@ -84,6 +84,7 @@ def _evaluate(
     from flight_recorder.evals.grade import StaleError, baseline_from, compare, exit_code
     from flight_recorder.evals.grade import grade_suite as grade_cases
     from flight_recorder.evals.run import (
+        BASELINE,
         load_suite,
         read_baseline,
         read_outputs,
@@ -98,7 +99,11 @@ def _evaluate(
         if command == "run":
             from flight_recorder.redact import default_redactor
 
-            header, lines = run_suite(suite, redactor=default_redactor(),
+            try:
+                redactor = default_redactor()
+            except ValueError as error:  # a bad AFR_REDACTION_KEY
+                raise CaseError(f"redaction key: {error}") from error
+            header, lines = run_suite(suite, redactor=redactor,
                                       include_unreviewed=include_unreviewed,
                                       now=datetime.now(UTC))  # fmt: skip
             write_outputs(suite.folder, header, lines)
@@ -116,16 +121,21 @@ def _evaluate(
                 notes.append(f"not accepted: stale cases ({', '.join(error.ids)}); run the suite")
                 code = 1
             else:
-                notes.append(f"wrote {suite.folder / 'baseline.json'}")
+                notes.append(f"wrote {suite.folder / BASELINE}")
                 code = 0
         elif baseline is None:
             notes.append("no baseline.json yet: rerun with --accept to write one")
     except (CaseError, OSError) as error:
-        message = error.strerror if isinstance(error, OSError) and error.strerror else error
+        message = (
+            f"{error.filename}: {error.strerror}"
+            if isinstance(error, OSError) and error.strerror and error.filename
+            else error
+        )
         out.print(render.text(f"error: {message}"), soft_wrap=True)
         raise typer.Exit(code=2) from None
     if as_json:
-        typer.echo(json.dumps(_as_json(suite, header, result, changes, code), ensure_ascii=False))
+        # ASCII only: no control, bidi or C1 character from an output reaches the terminal
+        typer.echo(json.dumps(_as_json(suite, header, result, changes, code), ensure_ascii=True))
         for note in notes:
             typer.echo(render.clean(note), err=True)
     else:

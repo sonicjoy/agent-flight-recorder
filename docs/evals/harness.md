@@ -11,7 +11,7 @@ Commands, options and exit codes: [docs/cli.md](../cli.md#afr-eval-run-and-afr-e
 
 ## The agent contract
 
-An agent is a Python function, `module:function`, named in the suite's `suite.yaml` (or with `--agent`). It takes a case's `input`, a dict, and returns a dict of fields: a Pydantic model counts. It is imported into the `afr` process, so it must be installed in the same environment, and it runs with your permissions: run only agents you trust.
+An agent is a Python function, `module:function`, named in the suite's `suite.yaml` (or with `--agent`). It takes a case's `input`, a dict, and returns a dict of fields: a Pydantic model counts. It is imported into the `afr` process, so it must be installed in the same environment, and it runs with your permissions: run only agents you trust. Because `suite.yaml` is data, a function defined in Python's standard library (`subprocess:run`, `os:system`, `builtins:eval`) is refused as an agent: otherwise a YAML file alone could choose to run a command. That guard can't tell an agent from any other installed function, so read a `suite.yaml` from someone else like code. What an agent prints goes to stderr, and one case that raises, exits, or answers something that can't be stored gets an error line while the run goes on.
 
 Command agents (JSON on stdin and stdout, with a timeout) come later. So do Claude Code sessions, which need them.
 
@@ -39,7 +39,7 @@ checks:
 
 `afr case new --from-run` writes cases in this format from recorded runs (#59). It also adds `expected`, a note for people, and `unreviewed: true` when `expected` is only what the agent did. Unreviewed cases are skipped and counted apart: their "right answer" is the agent's own earlier output, which would inflate the score. `--include-unreviewed` grades them, but they never enter the baseline.
 
-Every case is checked when the suite loads, before anything runs. A bad file (a `.yml` name, an `id` that isn't its file name, an `input` that isn't a mapping, a check with a missing key) stops the command with exit code 2.
+Every case is checked when the suite loads, before anything runs. A bad file (a `.yml` or `.YAML` name, an `id` that isn't its file name, an `input` that isn't a mapping or that JSON can't hold, a check with a missing key, a YAML alias) stops the command with exit code 2. Check values are compared in the form outputs are stored in, so an unquoted YAML date in a check equals the ISO text an agent's date becomes.
 
 ## The outputs file
 
@@ -78,14 +78,14 @@ Results are kept per check and counted per field, not only per case. Most wrong 
 
 ## Outcomes, the baseline and the gate
 
-Each case gets one outcome: **skipped** (unreviewed, or no checks), **stale**, **error**, **pass** or **fail**.
+Each case gets one outcome: **skipped** (unreviewed, or no checks), **stale**, **error**, **pass** or **fail**. For a check, pass beats fail, which beats error: an error answered nothing at all.
 
 A fixed bar ("95% of cases pass") was turned down. A suite built partly from wrong runs, which is how improvement shows, is red from the first run, and a bar that's always red says nothing. Instead `baseline.json` records each check's result, and every run is compared with it:
 
 | What changed | Reported as | `run` fails? | `grade` fails? |
 |---|---|---|---|
-| A check that passed now fails, or the case errors | regression | yes | yes |
-| A check that failed now passes | improvement | no | yes |
+| A check got worse: pass to fail or error, or fail to error | regression | yes | yes |
+| A check got better: error to fail or pass, or fail to pass | improvement | no | yes |
 | A case's checks were edited | changed checks | yes, until accepted | yes |
 | A case not in the baseline | new case | no | yes |
 | A case in the baseline whose file is gone | removed case | no | yes |

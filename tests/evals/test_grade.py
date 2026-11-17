@@ -147,10 +147,10 @@ def test_check_states(before: str, output: Any, field: str, run: int, grade_: in
     assert (exit_code(changes, "run"), exit_code(changes, "grade")) == (run, grade_)
 
 
-def test_an_error_regresses_every_passing_check() -> None:
+def test_an_error_regresses_every_check_that_answered() -> None:
     a = case("a")
     changes = _changes([a], [line(a, error="X: y")], {"a": {T: "pass", L: "fail"}})
-    assert changes.regressions == [f"a {T}"]
+    assert changes.regressions == sorted([f"a {T}", f"a {L}"])  # fail -> error is worse too
 
 
 def test_a_regression_on_another_field_in_a_failing_case_is_caught() -> None:
@@ -220,3 +220,13 @@ def test_baseline_from_refuses_while_a_case_is_stale() -> None:
     with pytest.raises(StaleError) as raised:
         baseline_from(grade([a, b], [line(a, GOOD)]))
     assert raised.value.ids == ["b"]
+
+
+def test_fail_to_error_is_a_regression_and_error_to_fail_an_improvement() -> None:
+    """grade fails on any difference: a check moving between fail and error is one."""
+    a = case("a")
+    worse = _changes([a], [line(a, error="X: y")], {"a": {T: "pass", L: "fail"}})
+    assert worse.regressions == sorted([f"a {T}", f"a {L}"])
+    better = _changes([a], [line(a, HALF)], {"a": {T: "error", L: "error"}})
+    assert better.improvements == sorted([f"a {T}", f"a {L}"])
+    assert exit_code(better, "grade") == 1
