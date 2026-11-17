@@ -32,6 +32,8 @@ To look at what was recorded: `uv run afr runs list`, `uv run afr runs show last
 
 To search runs by meaning and exact words: `uv run afr embed`, then `uv run afr search "tool timed out"`. See [docs/search.md](docs/search.md).
 
+To run an agent against eval cases: `uv run afr eval run --suite smoke`. See [docs/evals/harness.md](docs/evals/harness.md).
+
 To record Claude Code sessions in a project, run `uv run afr hook install --project <path>` (project-level only). See [docs/claude-code.md](docs/claude-code.md).
 
 Costs come from `src/flight_recorder/pricing.yaml`. A weekly workflow checks its Claude rates against Anthropic's pricing page and opens a PR when they change; run the same check with `uv run afr pricing check`. See [docs/llm-providers.md](docs/llm-providers.md#keeping-claude-prices-current).

@@ -70,7 +70,7 @@ The same steps for any agent, whether or not it has a truth dataset:
 2. **Find failures.** Runs with an error status, or, when the agent knows its truth, runs it graded wrong (`<prefix>.grade` and `<prefix>.grade.<field>`). Otherwise, read runs and label what you see. Search finds runs by topic or decision, not by whether they were right.
 3. **Label.** `afr label` names each failure mode and, optionally, the right answer (#59). That answer is the truth an agent without a dataset never had.
 4. **Write cases.** `afr case new --from-run` turns a labelled run into a YAML case (#59); the analyst does it in batches, one cluster at a time (#22).
-5. **Run the suite.** The harness calls any agent and grades its output with generic checks and a judge rubric (#15, #17). An agent that exports OpenTelemetry records its eval runs too, so step 1 starts again.
+5. **Run the suite.** `afr eval` calls any agent and grades its output with generic checks against a baseline (#15); a judge rubric comes with #17. An agent that exports OpenTelemetry records its eval runs too, so step 1 starts again.
 
 ### Data model (draft)
 
@@ -80,7 +80,7 @@ The same steps for any agent, whether or not it has a truth dataset:
 | `spans` | Tree of steps within a run: kind (agent, llm, tool, step), parent, model, tokens, cost, latency, status, error, redacted input/output, raw attributes |
 | `embeddings` | 384-d vectors for run summaries and failed spans (pgvector HNSW) |
 | `labels` | Failure modes on runs, from you, the judge or the analyst, and optionally the right answer (#59) |
-| `eval_results` | Each eval run: case, score, model, git SHA, time, for pass-rate trends |
+| `eval_results` | Each eval run: case, score, model, git SHA, time, for pass-rate trends. Unused until #34 loads `outputs.jsonl` files into it |
 
 Eval *cases* are YAML files in `evals/cases/`, not database rows, so they are reviewed in PRs like code. Cases from Claude Code sessions go to the git-ignored `evals/cases/local/` (#59).
 
@@ -127,7 +127,7 @@ Write each one up as a short ADR in `docs/decisions/` when you make it. They fee
 4. **Local embeddings.** No extra API key, reproducible results, and free to run in CI and the quickstart.
 5. **Provider-agnostic LLM layer.** Every agent and the judge run on Anthropic or Gemini (or OpenAI, given a key). Provider comparisons become a by-product of the eval suite, and CI needs no paid key. See [LLM providers](llm-providers.md).
 6. **Build the eval harness yourself before using a library**, so eval design is something you can explain end to end, then compare the two honestly.
-7. **Eval cases live in git as YAML**, while results live in the database: cases change through review, results accumulate as history.
+7. **Eval cases live in git as YAML**, while results live in the database: cases change through review, results accumulate as history. Results are files in git (`outputs.jsonl`) until #34 loads them into the database.
 8. **The server makes no LLM calls.** MCP tools return data (runs, similar failures, labels, eval cases), and the calling agent's own model does the explaining. The analyst runs as a local job. So the deployed instance needs no LLM key.
 
 ## Weekly plan
@@ -169,7 +169,7 @@ Estimates are build hours. The learning items come from the 5-week prep plan and
 |---|---|---|
 | Generate a run corpus with real failures | #13 | 1h |
 | Labelling CLI and hand error analysis (50 runs) | #14 | 2.5h |
-| Eval harness from scratch, for any agent | #15 | 2h |
+| Eval harness from scratch, for any agent | #15 | 3.5h |
 | `afr case`: turn a recorded run into an eval case | #59 | 2.5h |
 | Golden eval cases from labelled failures | #16 | 0.5h |
 | LLM-as-judge rubric with agreement check | #17 | 1.5h |
