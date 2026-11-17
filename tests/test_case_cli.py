@@ -36,6 +36,13 @@ TRIAGER = {
     "triager.expected.milestone": "Week 3",
     "triager.grade": "wrong",
 }
+# How the triager records "nothing": span attributes can't hold null, so an empty decision,
+# an empty label list included, is the text "(none)"
+TRIAGER_NONE = {
+    "triager.decided.duplicate_of": "(none)",
+    "triager.decided.labels": "(none)",
+    "triager.decided.milestone": "Week 3",
+}
 
 
 def _record(
@@ -84,6 +91,8 @@ def store(make_database: Callable[[], str]) -> Generator[tuple[str, dict[str, uu
         ids = {
             "triager": _record(session, "trace-tri", attributes=TRIAGER,
                                asked="Triage this issue.\n\nTitle: flaky eval"),
+            "triager_none": _record(session, "trace-tri-none", attributes=TRIAGER_NONE,
+                                    asked="Triage this issue.\n\nTitle: a question"),
             "plain": _record(session, "trace-plain", asked={"question": "sum 2 and 2"},
                              answered="5"),
             "secret": _record(session, "trace-secret", asked=f"deploy with {SECRET}",
@@ -282,6 +291,33 @@ def test_a_free_text_answer_becomes_the_expected_answer(
     assert case["expected"] == {"answer": "4"}
     assert case["checks"] == [{"type": "equals", "field": "answer", "value": "4"}]
     assert "unreviewed" not in case
+
+
+def test_a_recorded_none_is_drafted_as_null_from_decisions_and_typed_answers(
+    db: Session, ids: dict[str, uuid.UUID], cli: Callable[..., Any]
+) -> None:
+    from flight_recorder.evals.cases import draft_case
+
+    unlabelled = draft_case(db, ids["triager_none"], suite="smoke", redactor=REDACTOR).case
+    cli("label", str(ids["triager_none"]), "--mode", "wrong-milestone",
+        "--answer", "milestone=Week 4")  # fmt: skip
+    labelled = draft_case(db, ids["triager_none"], suite="smoke", redactor=REDACTOR).case
+
+    assert unlabelled["expected"] == {"duplicate_of": None, "labels": None, "milestone": "Week 3"}
+    assert labelled["expected"] == {"duplicate_of": None, "labels": None, "milestone": "Week 4"}
+    assert {"type": "equals", "field": "labels", "value": None} in labelled["checks"]
+
+
+def test_a_free_text_answer_of_none_stays_text(
+    db: Session, ids: dict[str, uuid.UUID], cli: Callable[..., Any]
+) -> None:
+    from flight_recorder.evals.cases import draft_case
+
+    cli("label", str(ids["plain"]), "--mode", "bad-sum", "--answer", "(none)")
+
+    case = draft_case(db, ids["plain"], suite="smoke", redactor=REDACTOR).case
+
+    assert case["expected"] == {"answer": "(none)"}
 
 
 def test_a_claude_code_session_is_routed_to_the_local_folder(

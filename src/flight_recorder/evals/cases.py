@@ -2,7 +2,7 @@
 
 Cases go into git, and the repo is public, so the safety rules live here, not in a command:
 
-- suite and case ids match `ID`, can't be `local` or a Windows device name, and the file
+- suite and case ids match `ID`, can't be `local`, `suite` or a Windows device name, and the file
   must resolve inside the cases folder; an existing case is never overwritten;
 - the case is redacted again with today's patterns (a run recorded before a pattern was
   added still holds what it missed), then a redacted value (`[REDACTED:kind:fingerprint]`)
@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 
 ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 LOCAL = "local"  # the git-ignored folder for cases that may hold personal content
+SUITE = "suite"  # suite.yaml holds a suite's settings (afr eval), so no case can be called that
 LOCAL_SOURCES = ("claude_code",)  # a session's prompts and replies are the user's own work
 # Names Windows won't create or check out, whatever the extension
 DEVICES = {"con", "prn", "aux", "nul", *(f"{d}{n}" for d in ("com", "lpt") for n in range(10))}
@@ -72,6 +73,8 @@ def check_id(value: str, what: str) -> str:
                         "starting with a letter or digit")  # fmt: skip
     if value == LOCAL:
         raise CaseError(f"{what} can't be {LOCAL!r}: it's the folder git ignores")
+    if value == SUITE:
+        raise CaseError(f"{what} can't be {SUITE!r}: suite.yaml holds a suite's settings")
     if value in DEVICES:
         raise CaseError(f"{what} can't be {value!r}: Windows reserves it")
     return value
@@ -83,6 +86,15 @@ def case_path(root: Path, suite: str, case_id: str, *, local: bool) -> Path:
     base = root.resolve()
     path = base.joinpath(*([LOCAL] if local else []), check_id(suite, "suite"),
                          check_id(case_id, "case id") + SUFFIX)  # fmt: skip
+    if not path.resolve().is_relative_to(base):
+        raise CaseError(f"{path} resolves outside {base}")
+    return path
+
+
+def suite_dir(root: Path, suite: str, *, local: bool) -> Path:
+    """A suite's folder: `<root>/[local/]<suite>`, inside `root` even after following links."""
+    base = root.resolve()
+    path = base.joinpath(*([LOCAL] if local else []), check_id(suite, "suite"))
     if not path.resolve().is_relative_to(base):
         raise CaseError(f"{path} resolves outside {base}")
     return path
@@ -138,14 +150,20 @@ def faked(case: dict[str, Any]) -> dict[str, Any]:
     return cast("dict[str, Any]", _strings(case, swap))
 
 
-def kept(case: dict[str, Any]) -> dict[str, Any]:
-    """Placeholders kept without their fingerprints, and the case marked as using them
-    (only if it has any)."""
+def strip_fingerprints(value: Any) -> Any:
+    """`value` with each placeholder's fingerprint removed (`[REDACTED:kind]`): the
+    fingerprint ties a value to one person's redaction key. Nothing else changes."""
 
     def bare(text: str) -> str:
         return PLACEHOLDER.sub(lambda m: f"[REDACTED:{m['kind']}]", text)
 
-    out = cast("dict[str, Any]", _strings(case, bare))
+    return _strings(value, bare)
+
+
+def kept(case: dict[str, Any]) -> dict[str, Any]:
+    """Placeholders kept without their fingerprints, and the case marked as using them
+    (only if it has any)."""
+    out = cast("dict[str, Any]", strip_fingerprints(case))
     return out | {"placeholders": True} if _matches(out) else out
 
 
@@ -241,6 +259,14 @@ def _input(asked: Any) -> dict[str, Any]:
     return {"prompt": asked} if isinstance(asked, str) else {"input": asked}
 
 
+def _decoded(fields: dict[str, Any]) -> dict[str, Any]:
+    """Recorded fields with the recorder's "nothing" (`(none)`: span attributes can't hold
+    null) as null, at the top level. Free text and agent output never go through this."""
+    from flight_recorder.payloads import NONE_TEXT
+
+    return {k: None if v == NONE_TEXT else v for k, v in fields.items()}
+
+
 def _as_expected(output: Any) -> dict[str, Any]:
     if output is None or output == "":
         return {}
@@ -317,10 +343,13 @@ def draft_case(
     if answer is not None:
         found = answer.get("fields")
         expected = (
-            cast("dict[str, Any]", found) if found is not None else {"answer": answer.get("text")}
+            _decoded(cast("dict[str, Any]", found))
+            if found is not None
+            else {"answer": answer.get("text")}
         )
     else:
-        expected = decided_fields(run.attributes or {}) or agent_output(session, run, roots)
+        decided = decided_fields(run.attributes or {})
+        expected = _decoded(decided) if decided else agent_output(session, run, roots)
     tags = list(dict.fromkeys(
         label.failure_mode for label in labels_of(session, run.id)
         if label.source == HUMAN and label.span_id is None

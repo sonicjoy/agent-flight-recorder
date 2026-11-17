@@ -1,0 +1,7 @@
+id: smoke-03
+input:
+  title: Error and slow page
+  body: ''
+checks:
+# the agent answers [bug, performance]: label order carries no meaning
+- {type: equals, field: labels, value: [performance, bug]}

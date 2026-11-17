@@ -1,0 +1,7 @@
+id: smoke-01
+input:
+  title: App crash on start
+  body: ''
+checks:
+- {type: equals, field: type, value: bug}
+- {type: equals, field: labels, value: [bug]}

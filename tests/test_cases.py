@@ -24,6 +24,8 @@ from flight_recorder.evals.cases import (
     kept,
     load,
     placeholders,
+    strip_fingerprints,
+    suite_dir,
     write_case,
 )
 from flight_recorder.redact import Redactor
@@ -67,6 +69,42 @@ def test_a_case_path_is_under_the_root_and_local_cases_under_local(tmp_path: Pat
 
     assert shared == root.resolve() / "smoke" / "run-1.yaml"
     assert private == root.resolve() / "local" / "smoke" / "run-1.yaml"
+
+
+def test_a_suite_folder_is_under_the_root_and_local_suites_under_local(tmp_path: Path) -> None:
+    root = tmp_path / "evals" / "cases"
+
+    assert suite_dir(root, "smoke", local=False) == root.resolve() / "smoke"
+    assert suite_dir(root, "smoke", local=True) == root.resolve() / "local" / "smoke"
+    with pytest.raises(CaseError):
+        suite_dir(root, "../x", local=False)
+
+
+def test_a_suite_folder_refuses_a_link_that_leaves_the_root(tmp_path: Path) -> None:
+    root, outside = tmp_path / "cases", tmp_path / "elsewhere"
+    root.mkdir()
+    outside.mkdir()
+    try:
+        (root / "smoke").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        if sys.platform != "win32":
+            pytest.skip("this OS user can't make symlinks")
+        import _winapi  # a junction needs no privilege; resolve() follows it like a link
+
+        _winapi.CreateJunction(str(outside), str(root / "smoke"))
+
+    with pytest.raises(CaseError, match="outside"):
+        suite_dir(root, "smoke", local=False)
+
+
+def test_strip_fingerprints_leaves_bare_placeholders_and_adds_no_marker() -> None:
+    key = REDACTOR.redact("sk-ant-" + "a" * 30).value
+    value = {"labels": [key], "note": f"used {key}"}
+
+    out = strip_fingerprints(value)
+
+    assert out == {"labels": ["[REDACTED:anthropic_key]"], "note": "used [REDACTED:anthropic_key]"}
+    assert "placeholders" not in out
 
 
 def test_a_case_path_refuses_a_root_reached_through_a_link_outside_it(tmp_path: Path) -> None:

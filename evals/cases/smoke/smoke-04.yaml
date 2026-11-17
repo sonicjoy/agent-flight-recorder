@@ -1,0 +1,8 @@
+id: smoke-04
+input:
+  title: Question about setup
+  body: ''
+checks:
+# the agent answers labels: [], which is "nothing" like null
+- {type: equals, field: type, value: null}
+- {type: equals, field: labels, value: null}

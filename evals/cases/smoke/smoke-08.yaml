@@ -1,0 +1,7 @@
+id: smoke-08
+unreviewed: true
+input:
+  title: New idea
+  body: ''
+checks:
+- {type: equals, field: type, value: feature}

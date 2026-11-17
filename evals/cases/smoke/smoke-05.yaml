@@ -1,0 +1,7 @@
+id: smoke-05
+input:
+  title: Timeout talking to API
+  body: ''
+checks:
+# fails on purpose (the agent answers type: null), so the baseline holds a fail
+- {type: one_of, field: type, values: [bug, performance]}
