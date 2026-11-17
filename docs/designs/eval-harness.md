@@ -389,7 +389,7 @@ The existing `ci.yml` job gets one step after "Pytest", **"Eval harness (no agen
 | A grading bug passes checks it shouldn't. | `grade` fails on any difference, and the smoke suite has checks the agent fails on purpose. |
 | An interrupted run loses the last good outputs. | Atomic replace at the end of the run. |
 | A secret, or a key-tied fingerprint, reaches git in outputs. | Redaction, then `strip_fingerprints`. Non-local outputs are new LLM text going into a public repo, so they are reviewed in the PR like cases. Claude Code suites stay under the git-ignored `local/`. |
-| The agent is arbitrary code running with the user's permissions. | Same as any imported Python. The docs say to run only agents you trust. Because `suite.yaml` is data, only a function marked with `@agent` is accepted. The pre-merge review showed why a blocklist fails: `subprocess:run`, then `flight_recorder.cli:app`, then `flight_recorder.store.db:downgrade` (which would drop every table in the store) each got past the refusals added for the one before. CI runs only `grade`, which imports nothing. |
+| The agent is arbitrary code running with the user's permissions. | Same as any imported Python. The docs say to run only agents you trust. Because `suite.yaml` is data, only a function marked with `@agent` is accepted. The pre-merge review showed why a blocklist fails: `subprocess:run`, then `flight_recorder.cli:app`, then `flight_recorder.store.db:downgrade` (which would drop every table in the store) each got past the refusals added for the one before. The mark is checked after the import, and importing runs a module's top-level code, so YAML still chooses which installed module loads; the fix review found no harmful chain, and the docs say to read a `suite.yaml` from someone else. CI runs only `grade`, which imports nothing. |
 | Large suites: calls run one after another, and `outputs.jsonl` grows with the suite. | Accepted. Suites are tens of cases. A single case can't be rerun on its own; a changed input means rerunning the suite. |
 | The agreement check's data was back-filled and partly re-graded (#14), so truth versions may be mixed. | The consistency step sets those runs apart before comparing. |
 | Eval runs can't be found in the store. | Accepted until the linking issue (see Alternative K). |
@@ -398,7 +398,7 @@ The existing `ci.yml` job gets one step after "Pytest", **"Eval harness (no agen
 ## Open Questions
 
 *   **#15's "Done when"** must be edited to match this design before coding, with the new budget (about 220 + 90 lines) and estimate (3.5 hours).
-*   **The triager's adapter (for #16):** the harness calls `module:function` with a case's `input` and expects a dict of fields. The triager probably needs a short adapter in its repo, which also normalises `#` and label order. #16's first live run, about 20 to 30 calls on the owner's key or the Gemini free tier, makes the triager suite's first outputs and baseline.
+*   **The triager's adapter (for #16):** the harness calls `module:function` with a case's `input` and expects a dict of fields. The triager probably needs a short adapter in its repo, marked with `@agent` from `flight_recorder.evals`, which also normalises `#` and label order. #16's first live run, about 20 to 30 calls on the owner's key or the Gemini free tier, makes the triager suite's first outputs and baseline.
 *   **#16 may shrink:** the triager's dataset already holds corrected truth and accepted answers, so its suite could be converted from that instead of drafted run by run. That's #16's decision.
 
 ## Alternatives Considered
@@ -569,7 +569,7 @@ One branch, `15-eval-harness`, and one PR, which closes #15. The work goes in si
     List what moved out: command agents, run linking and tool checks, `judge` (#17), confirmation reruns, and writing `eval_results` (#34).
 *   **Edit issue #16** to say three things:
     *   a suite mixes right and wrong runs;
-    *   the triager needs an adapter that normalises `#` and label order;
+    *   the triager needs an adapter, marked with `@agent`, that normalises `#` and label order;
     *   converting the triager's dataset may replace drafting run by run.
 
 ### Module contracts
