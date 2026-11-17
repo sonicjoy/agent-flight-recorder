@@ -1,0 +1,26 @@
+{
+  "smoke-01": {
+    "labels/fd8a5ca0": "pass",
+    "type/be269afb": "pass"
+  },
+  "smoke-02": {
+    "labels/3773ae0e": "pass",
+    "type/bbb6afcd": "pass"
+  },
+  "smoke-03": {
+    "labels/de470d15": "pass"
+  },
+  "smoke-04": {
+    "labels/b3a0c02d": "pass",
+    "type/1a2a3ad6": "pass"
+  },
+  "smoke-05": {
+    "type/acacb19c": "fail"
+  },
+  "smoke-06": {
+    "labels/f7099305": "fail"
+  },
+  "smoke-07": {
+    "meta.rules/5ce15f5c": "pass"
+  }
+}
