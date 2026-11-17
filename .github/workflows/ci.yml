@@ -60,6 +60,9 @@ jobs:
       - name: Pytest
         run: uv run pytest
 
+      - name: Eval harness (no agent calls)
+        run: uv run afr eval grade --suite smoke
+
   migrations:
     name: Merged migrations unchanged
     if: github.event_name == 'pull_request'

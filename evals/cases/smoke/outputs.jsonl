@@ -1,0 +1,8 @@
+{"run":{"agent":"flight_recorder.evals.example:triage","agent_version":"0.1.0","git_sha":"6c1ac98","model":"rules-v1","ran_at":"2026-11-17T14:01:12Z"}}
+{"case":"smoke-01","error":null,"input_hash":"sha256:a7c68821e5ff1a9cb8de17b10acefabd0ef8c9ddd73301ed243c63fb334c6bf5","output":{"labels":["bug"],"meta":{"rules":1},"type":"bug"}}
+{"case":"smoke-02","error":null,"input_hash":"sha256:c4ce02a07159df0f5535198e745ecff98e4f12eeaae047de3b921739d430f946","output":{"labels":["documentation"],"meta":{"rules":1},"type":"docs"}}
+{"case":"smoke-03","error":null,"input_hash":"sha256:df95ce45678e87df1cd33449eb6b93a12be571c06523aad4f5b95a2b3f7d76c9","output":{"labels":["bug","performance"],"meta":{"rules":2},"type":"bug"}}
+{"case":"smoke-04","error":null,"input_hash":"sha256:1e15ebe5497e30e2db23a25c59a6b753b82dc342ca8e1e3ab1eed8a6019f1f26","output":{"labels":[],"meta":{"rules":0},"type":null}}
+{"case":"smoke-05","error":null,"input_hash":"sha256:1aa76cff17fc99a57e24b302fefb7be604101aba5c14830cab2fbb8bcc03ea49","output":{"labels":["performance"],"meta":{"rules":1},"type":null}}
+{"case":"smoke-06","error":null,"input_hash":"sha256:884111b2f780408feddc3613cf9d1b41d3e7db3153de85a53b0f1680fb7dfc63","output":{"labels":["bug","documentation"],"meta":{"rules":2},"type":"bug"}}
+{"case":"smoke-07","error":null,"input_hash":"sha256:305bb3546798a2d5206a0c36c28ec1684ae4dfce81a82489b2d494159d7515d3","output":{"labels":["documentation","performance"],"meta":{"rules":2},"type":"docs"}}

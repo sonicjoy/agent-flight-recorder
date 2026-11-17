@@ -1,0 +1,4 @@
+# The harness's own suite: a rule-based agent, no model, no key. Its score says nothing about
+# the triager; it exists so CI can check the harness (afr eval grade --suite smoke).
+agent: flight_recorder.evals.example:triage
+model: rules-v1

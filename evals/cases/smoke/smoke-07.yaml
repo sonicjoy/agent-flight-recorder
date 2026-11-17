@@ -1,0 +1,7 @@
+id: smoke-07
+input:
+  title: Slow docs site
+  body: ''
+checks:
+# a dotted path into a nested field
+- {type: equals, field: meta.rules, value: 2}

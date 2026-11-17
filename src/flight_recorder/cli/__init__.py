@@ -8,6 +8,7 @@ import typer
 from flight_recorder import __version__
 from flight_recorder.cli.case import case_app
 from flight_recorder.cli.db import db_app
+from flight_recorder.cli.eval import eval_app
 from flight_recorder.cli.hook import hook_app
 from flight_recorder.cli.label import label, labels_app
 from flight_recorder.cli.pricing import pricing_app
@@ -21,6 +22,7 @@ app = typer.Typer(
 )
 app.add_typer(case_app, name="case")
 app.add_typer(db_app, name="db")
+app.add_typer(eval_app, name="eval")
 app.add_typer(hook_app, name="hook")
 app.add_typer(pricing_app, name="pricing")
 app.add_typer(runs_app, name="runs")

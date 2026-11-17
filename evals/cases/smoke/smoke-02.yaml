@@ -1,0 +1,7 @@
+id: smoke-02
+input:
+  title: Fix typo in README
+  body: ''
+checks:
+- {type: equals, field: type, value: docs}
+- {type: contains, field: labels, value: documentation}

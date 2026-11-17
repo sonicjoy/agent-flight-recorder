@@ -1,0 +1,7 @@
+id: smoke-06
+input:
+  title: Crash in docs build
+  body: ''
+checks:
+# fails on purpose (the agent adds documentation), so the baseline holds a fail
+- {type: not_contains, field: labels, value: documentation}

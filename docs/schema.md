@@ -6,7 +6,7 @@ Every recorded agent run, whatever produced it, lands in one Postgres schema. Th
 runs ─┬─ spans          a tree per run (parent_id)
       ├─ embeddings     run summaries and failed spans, for semantic search (#11)
       ├─ labels         failure modes, from a human, the LLM judge or the analyst (#14, #17, #22)
-      └─ eval_results   one row per eval case per eval run (#15, #19)
+      └─ eval_results   one row per eval case per eval run: unused until #34 loads outputs.jsonl
 ```
 
 ## Running it
@@ -98,6 +98,8 @@ A failure mode on a run, or on one of its spans. `source` is `human`, `judge` or
 
 ### `eval_results`
 One case's result in one eval run (`suite_run_id`), with the model and git SHA. The cases themselves are YAML files in git (plan decision 7). `run_id` links to the recorded run the case produced; it's set to `NULL` if that run is deleted, so results history survives.
+
+**Unused for now.** `afr eval` (#15) writes its results to `outputs.jsonl` files in git, not to this table. #34 loads them, and must decide how they map, because they don't fit one to one: a case has five outcomes (pass, fail, error, stale, skipped) against one `passed` boolean; the outputs header allows `model` and `git_sha` to be missing, where the columns require them; and the header carries no `suite_run_id`.
 
 ## Redaction contract
 

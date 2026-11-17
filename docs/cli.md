@@ -159,7 +159,7 @@ checks:
 ```
 
 - **`expected`** is the run's right answer from its labels (a run keeps one, the last given), by field, or `answer: <text>`. With none, it's what the agent did and the case says `unreviewed: true`: fix it, then delete the line. What the agent did is its decided fields, else its output as recorded: the entry span's output, a Claude Code session's last reply, or for a LangChain run whose entry span recorded none, its structured output as fields (a tool call no tool ran), else what its last model call said, in full.
-- **Types:** `expected` follows the attributes. The triager writes an empty decision as `(none)`, which a case keeps; its output has `null`. Edit it where the harness (#15) compares with the output.
+- **Types:** `expected` follows the attributes. The recorder's "nothing", the text `(none)` (span attributes can't hold null), is written as `null` when it comes from a decided field or a typed answer's field; free text keeps it. `null` matches an agent's `null`, a missing field or `[]` in [`afr eval`](#afr-eval-run-and-afr-eval-grade).
 - **`checks`** is one `equals` per expected field, to edit by hand: free text rarely matches exactly.
 - It prints the whole case first (control characters escaped), then asks `write it?`. Redaction catches secret shapes, not everything personal (home paths, names, hostnames, passwords written in prose), so read it before it goes into git.
 
@@ -167,7 +167,7 @@ checks:
 
 - **Redacted values** (`[REDACTED:kind:fingerprint]`) anywhere in the case, `expected` included, are listed and nothing is written. The case is redacted again first, with today's patterns, so a secret a run recorded before a pattern existed is caught here too. `--fake` swaps each for a fixed fake of its kind (`fake-anthropic-key`): on its own, neither the redactor nor gitleaks takes it for a secret. After a secret's name (`password=fake-secret-assignment`) the redactor still redacts it, as it would any value there. `--keep-placeholders` keeps them as `[REDACTED:kind]`, fingerprint stripped, and marks the case `placeholders: true`.
 - **A Claude Code session** goes to `<root>/local/<suite>/`: its prompts and replies are your own work. `local/` holds a `.gitignore` of its own (`*`), written with the first case, so git ignores it wherever the cases folder is; `evals/cases/local/` is in the repo's `.gitignore` too. Move a case out only after rewriting it by hand.
-- **Ids:** the suite and case id are 1 to 64 of `a-z`, `0-9`, `_` and `-`, starting with a letter or digit; `local` and Windows device names (`con`, `nul`, `com1`, ...) are refused. The file must resolve inside the cases folder, links included, and an existing case is never overwritten.
+- **Ids:** the suite and case id are 1 to 64 of `a-z`, `0-9`, `_` and `-`, starting with a letter or digit; `local`, `suite` (the suite's settings file) and Windows device names (`con`, `nul`, `com1`, ...) are refused. The file must resolve inside the cases folder, links included, and an existing case is never overwritten.
 - YAML is written with `safe_dump`; read cases with `safe_load`.
 
 | Option | |
@@ -178,6 +178,53 @@ checks:
 | `--fake`, `--keep-placeholders` | What to do with redacted values (above) |
 | `--root` | The cases folder (default `evals/cases`) |
 | `--yes` | Write without asking |
+
+## `afr eval run` and `afr eval grade`
+
+Runs an agent against a suite of cases and grades it against a baseline (#15). How it works, and why: [docs/evals/harness.md](evals/harness.md).
+
+```bash
+uv run afr eval run --suite smoke             # call the agent once per case, save outputs.jsonl, grade
+uv run afr eval grade --suite smoke           # grade the saved outputs, calling nothing (what CI runs)
+uv run afr eval run --suite smoke --accept    # keep these results as the new baseline.json
+```
+
+```text
+suite smoke · agent flight_recorder.evals.example:triage 0.1.0 · model rules-v1 · git 6c1ac98 · ran 2026-11-17T14:01:12Z
+5/8 passed · 2 failed · 0 error · 0 stale · 1 skipped
+field       passed  graded
+labels      4       5
+meta.rules  1       1
+type        3       4
+smoke-05 type/acacb19c: expected ["bug", "performance"], got null (wrong value)
+smoke-06 labels/f7099305: expected "documentation", got ["bug", "documentation"] (wrong value)
+smoke-08 (unreviewed): skipped: unreviewed
+```
+
+The suite is `<root>/<suite>/` or `<root>/local/<suite>/`: a `suite.yaml` naming the agent (`agent: module:function`, a function marked with `@agent` from `flight_recorder.evals`; and an optional `model:` label) and one `<id>.yaml` per case. `run` writes `outputs.jsonl` there; `--accept` writes `baseline.json`. Neither command opens the store. The report lists changes against the baseline, each failing check as expected against actual, and agent output escaped like any recorded text.
+
+How each change against the baseline gates each command:
+
+| What changed | Reported as | `run` fails? | `grade` fails? |
+|---|---|---|---|
+| A check got worse: pass to fail or error, or fail to error | regression | yes | yes |
+| A check got better: error to fail or pass, or fail to pass | improvement | no | yes |
+| A case's checks were edited | changed checks | yes, until accepted | yes |
+| A case not in the baseline | new case | no | yes |
+| A case in the baseline whose file is gone | removed case | no | yes |
+| A case in the baseline now skipped | skipped (in baseline) | no | no |
+| A case whose input changed since its output was saved, or with no output | stale | yes | yes |
+
+**Exit codes:** 0 when nothing above fails the command, when `--accept` wrote the baseline, or with no baseline yet and nothing stale (the report says to run `--accept`). 1 when a row fails the command, or `--accept` refused because a case is stale. 2 for usage errors: no such suite, a suite in both folders, a bad `suite.yaml`, agent or case file, a `.yml` file, a damaged `outputs.jsonl`, or a file that can't be written.
+
+| Option | |
+|---|---|
+| `--suite` | The suite folder (required) |
+| `--agent` | `module:function`, instead of `suite.yaml`'s agent (`run` only) |
+| `--root` | The cases folder (default `evals/cases`) |
+| `--include-unreviewed` | Grade cases marked `unreviewed: true` too; they never enter the baseline |
+| `--accept` | Write `baseline.json` from these results (refused while a case is stale) |
+| `--json` | Print one JSON object: `suite`, `header`, `counts`, `fields`, `cases`, `changes`, `exit_code` |
 
 ## Choosing a run
 
