@@ -228,14 +228,16 @@ def test_json_stays_one_ascii_object_whatever_the_agent_prints_or_answers(
 ) -> None:
     def odd(input: dict[str, Any]) -> dict[str, Any]:
         print("progress: 50%")
-        return triage(input) | {"note": "\u009b31m \u202e\u200b"}
+        answer = triage(input)  # a type no check expects, so it's printed as the actual value
+        return answer | {"type": answer["type"] or "\u009b31m \u202e\u200b"}
 
     agents["odd"] = odd
     result = accepted("run", "--agent", "evalclitest:odd", "--json")
-    assert result.exit_code == 0, result.output
     assert result.stdout.isascii()
+    assert "\\u009b31m \\u202e\\u200b" in result.stdout
     report = json.loads(result.stdout)
-    assert report["counts"]["pass"] == 5
+    smoke05 = next(c for c in report["cases"] if c["id"] == "smoke-05")
+    assert smoke05["checks"][0]["actual"] == "\u009b31m \u202e\u200b"
 
 
 def test_a_bad_redaction_key_exits_2(

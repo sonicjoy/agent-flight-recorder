@@ -12,7 +12,7 @@ Cases go into git, and the repo is public, so the safety rules live here, not in
   (`*`), so git ignores it wherever the cases folder is: redaction catches secret shapes,
   not everything personal;
 - `preview` is the case as text safe to print; YAML is written with a safe dumper and read
-  with `safe_load`.
+  with a safe loader that also refuses aliases.
 
 A case is `id`, `from_run`, `tags`, `input`, `expected` and `checks` (#15's format), plus
 `unreviewed: true` when `expected` is only what the agent did, and `placeholders: true`.
@@ -214,6 +214,8 @@ def load(text: str) -> dict[str, Any]:
         case = yaml.load(text, Loader=_NoAliases)  # a SafeLoader subclass
     except yaml.YAMLError as error:
         raise CaseError(f"not a case: {error}") from error
+    except RecursionError as error:
+        raise CaseError("not a case: nested too deep") from error
     if not isinstance(case, dict):
         raise CaseError("not a case: expected a mapping")
     return cast("dict[str, Any]", case)

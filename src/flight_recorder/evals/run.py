@@ -12,6 +12,7 @@ import builtins
 import contextlib
 import copy
 import importlib
+import inspect
 import json
 import os
 import subprocess
@@ -136,7 +137,10 @@ def import_agent(spec: str) -> Callable[[dict[str, Any]], Any]:
         raise CaseError(f"{module_name} has no {function!r}")
     if not callable(agent):
         raise CaseError(f"{spec} isn't callable")
-    # suite.yaml is data, so it mustn't be able to pick a gadget like subprocess:run
+    # suite.yaml is data, so it mustn't be able to pick a gadget: a command-line app (a Typer
+    # or click object), a class, a partial, or a function from the standard library
+    if not (inspect.isfunction(agent) or inspect.ismethod(agent)):
+        raise CaseError(f"{spec} is a {type(agent).__name__}, not a function: wrap it in one")
     home = str(getattr(agent, "__module__", None) or "").split(".")[0]
     if home in sys.stdlib_module_names or home == builtins.__name__ or not home:
         raise CaseError(f"{spec} is defined in {home or 'no module'}, not an agent's module")
@@ -184,13 +188,21 @@ def git_sha(folder: Path) -> str | None:
     return f"{sha}-dirty" if git("status", "--porcelain", "--untracked-files=no") else sha
 
 
+def _described(error: BaseException) -> str:
+    try:
+        return f"{type(error).__name__}: {error}"
+    except Exception:  # an exception whose __str__ raises
+        return f"{type(error).__name__}: (no message)"
+
+
 def _call(agent: Callable[[dict[str, Any]], Any], case: dict[str, Any]) -> tuple[Any, str | None]:
     """`(output, error)` for one case. The agent gets a copy of the input as loaded."""
-    try:  # what the agent prints mustn't mix with a report or --json on stdout
-        with contextlib.redirect_stdout(sys.stderr):
-            answer = agent(copy.deepcopy(case["input"]))
-    except (Exception, SystemExit) as error:  # arbitrary code; one case failing isn't the run
-        return None, f"{type(error).__name__}: {error}"
+    try:
+        answer = agent(copy.deepcopy(case["input"]))
+    except KeyboardInterrupt:
+        raise
+    except BaseException as error:  # arbitrary code (SystemExit, CancelledError...): one case
+        return None, _described(error)
     try:
         output = convert(answer)
     except ValueError as error:  # "output not JSON: <type>"
@@ -202,6 +214,14 @@ def _call(agent: Callable[[dict[str, Any]], Any], case: dict[str, Any]) -> tuple
     return cast("dict[str, Any]", output), None
 
 
+def _line(agent: Callable[[dict[str, Any]], Any], case: dict[str, Any], redactor: Redactor):
+    """One case's redacted line, checked to be storable as write_outputs will store it."""
+    output, error = _call(agent, case)
+    safe = strip_fingerprints(redactor.redact({"output": output, "error": error}).value)
+    canonical(safe).encode("utf-8")  # a lone surrogate converts, but can't be written
+    return cast("dict[str, Any]", safe)
+
+
 def run_suite(
     suite: Suite, *, redactor: Redactor, include_unreviewed: bool, now: datetime
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
@@ -209,7 +229,8 @@ def run_suite(
     case. A secret in an output becomes `[REDACTED:kind]`, with no fingerprint."""
     if not suite.agent:
         raise CaseError("no agent: set agent in suite.yaml or pass --agent")
-    agent = import_agent(suite.agent)
+    with contextlib.redirect_stdout(sys.stderr):  # a print at import mustn't reach stdout
+        agent = import_agent(suite.agent)
     header = {
         "agent": suite.agent,
         "agent_version": agent_version(suite.agent),
@@ -221,13 +242,15 @@ def run_suite(
     for case in suite.cases:
         if (case.get("unreviewed") is True and not include_unreviewed) or not case["checks"]:
             continue
-        output, error = _call(agent, case)
+        # the one place every case passes: whatever goes wrong in it, short of Ctrl-C, costs
+        # that case an error line, never the run (and what the agent prints goes to stderr)
         try:
-            safe = strip_fingerprints(redactor.redact({"output": output, "error": error}).value)
-            canonical(safe)  # storable, as write_outputs will need
-        except (RecursionError, ValueError):
-            failed = {"output": None, "error": "output not storable: nested too deep"}
-            safe = strip_fingerprints(redactor.redact(failed).value)
+            with contextlib.redirect_stdout(sys.stderr):
+                safe = _line(agent, case, redactor)
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
+            safe = {"output": None, "error": f"output not storable: {type(error).__name__}"}
         lines[case["id"]] = {"case": case["id"], "input_hash": input_hash(case)} | safe
     return header, lines
 
@@ -252,7 +275,9 @@ def read_outputs(folder: Path) -> tuple[dict[str, Any] | None, dict[str, dict[st
         return None, {}
     try:
         rows: list[Any] = [json.loads(r) for r in path.read_text(encoding="utf-8").splitlines()]
-    except (OSError, UnicodeDecodeError, ValueError) as error:
+        for row in rows:  # what grade prints must be writable text: no lone surrogates
+            canonical(row).encode("utf-8")
+    except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise CaseError(DAMAGED) from error
     dicts = [cast("dict[str, Any]", r) if isinstance(r, dict) else {} for r in rows]
     if not dicts or not isinstance(dicts[0].get("run"), dict):

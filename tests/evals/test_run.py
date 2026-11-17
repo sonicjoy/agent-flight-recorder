@@ -391,7 +391,7 @@ def test_no_answer_an_agent_gives_stops_the_run(root: Path, agents: dict[str, An
     assert lines["cyclic"]["error"] == "output not JSON: nested too deep"
     assert lines["deep"]["error"] == "output not JSON: nested too deep"
     assert lines["exit"]["error"] == "SystemExit: 0"
-    assert lines["near"]["error"] is None or "nested too deep" in lines["near"]["error"]
+    assert lines["near"]["error"] in (None, "output not storable: RecursionError")
     write_outputs(root / "s", header, lines)  # every line can be stored
     assert read_outputs(root / "s")[1].keys() == lines.keys()
 
@@ -408,7 +408,7 @@ def test_what_an_agent_prints_goes_to_stderr(
 
 @pytest.mark.parametrize("spec", ["subprocess:run", "os:system", "builtins:eval", "json:loads"])
 def test_an_agent_from_the_standard_library_is_refused(spec: str) -> None:
-    with pytest.raises(CaseError, match="not an agent's module"):
+    with pytest.raises(CaseError, match=r"not an agent's module|not a function"):
         import_agent(spec)
 
 
@@ -477,6 +477,105 @@ def test_a_yaml_date_in_a_check_compares_as_the_text_an_output_holds(
     ],
 )
 def test_an_outputs_line_of_the_wrong_shape_is_damage(tmp_path: Path, line: str) -> None:
+    (tmp_path / "outputs.jsonl").write_text('{"run":{}}\n' + line + "\n", encoding="utf-8")
+    with pytest.raises(CaseError, match=r"outputs\.jsonl is damaged"):
+        read_outputs(tmp_path)
+
+
+def test_no_failure_inside_one_case_stops_the_run(root: Path, agents: dict[str, Any]) -> None:
+    """The property at the one place every case passes: anything short of Ctrl-C."""
+    import asyncio
+
+    class Unprintable(Exception):
+        def __str__(self) -> str:
+            raise RuntimeError("no")
+
+    def bad(input: dict[str, Any]) -> Any:
+        title = input["title"]
+        if title == "surrogate":
+            return {"type": "\ud83d"}
+        if title == "raised_surrogate":
+            raise ValueError("\ud83d")
+        if title == "unprintable":
+            raise Unprintable
+        if title == "cancelled":
+            raise asyncio.CancelledError
+        return {"type": "bug"}
+
+    agents["bad2"] = bad
+    names = ("surrogate", "raised_surrogate", "unprintable", "cancelled")
+    for name in names:
+        write(root / "s", f"{name}.yaml", case(name))
+    header, lines = run(root, agent="evalagents:bad2")
+    assert lines["a"]["output"] == {"type": "bug"}
+    assert lines["surrogate"]["error"] == "output not storable: UnicodeEncodeError"
+    assert lines["raised_surrogate"]["error"] == "output not storable: UnicodeEncodeError"
+    assert lines["unprintable"]["error"] == "Unprintable: (no message)"
+    assert lines["cancelled"]["error"].startswith("CancelledError")
+    write_outputs(root / "s", header, lines)
+    assert read_outputs(root / "s")[1].keys() == lines.keys()
+
+
+def test_ctrl_c_still_stops_the_run(root: Path, agents: dict[str, Any]) -> None:
+    def interrupted(input: dict[str, Any]) -> Any:
+        raise KeyboardInterrupt
+
+    agents["interrupted"] = interrupted
+    with pytest.raises(KeyboardInterrupt):
+        run(root, agent="evalagents:interrupted")
+
+
+def test_a_print_while_the_agent_imports_goes_to_stderr(
+    root: Path, agents: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    import importlib.abc
+    import importlib.util
+
+    class Finder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+        def find_spec(self, name: str, path: Any, target: Any = None) -> Any:
+            return importlib.util.spec_from_loader(name, self) if name == "evalloud" else None
+
+        def exec_module(self, module: types.ModuleType) -> None:
+            exec("print('loading...')\ndef agent(input):\n    return {'type': 'bug'}\n",
+                 module.__dict__)  # fmt: skip
+
+    finder = Finder()
+    sys.meta_path.insert(0, finder)
+    try:
+        run(root, agent="evalloud:agent")
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop("evalloud", None)
+    out, err = capsys.readouterr()
+    assert "loading..." not in out
+    assert "loading..." in err
+
+
+@pytest.mark.parametrize(
+    "spec", ["flight_recorder.cli:app", "flight_recorder.evals.run:Suite", "evalagents:partial"]
+)
+def test_an_agent_that_isnt_a_function_is_refused(spec: str, agents: dict[str, Any]) -> None:
+    import functools
+
+    agents["partial"] = functools.partial(lambda input, x: {}, x=1)
+    with pytest.raises(CaseError, match="not a function"):
+        import_agent(spec)
+
+
+def test_deep_nesting_in_a_case_or_an_outputs_line_is_a_case_error(root: Path) -> None:
+    (root / "s" / "c.yaml").write_text("x: " + "[" * 5000 + "]" * 5000 + "\n", encoding="utf-8")
+    with pytest.raises(CaseError, match="nested too deep"):
+        load_suite(root, "s")
+    folder = root / "deep"
+    folder.mkdir()
+    deep = '{"run":{}}\n{"case":"a","input_hash":"x","error":null,"output":' + '{"n":' * 5000
+    (folder / "outputs.jsonl").write_text(deep + "1" + "}" * 5001 + "\n", encoding="utf-8")
+    with pytest.raises(CaseError, match=r"outputs\.jsonl is damaged"):
+        read_outputs(folder)
+
+
+def test_an_outputs_line_holding_a_lone_surrogate_is_damage(tmp_path: Path) -> None:
+    line = '{"case":"a","input_hash":"x","error":null,"output":{"t":"\\ud83d"}}'
     (tmp_path / "outputs.jsonl").write_text('{"run":{}}\n' + line + "\n", encoding="utf-8")
     with pytest.raises(CaseError, match=r"outputs\.jsonl is damaged"):
         read_outputs(tmp_path)
