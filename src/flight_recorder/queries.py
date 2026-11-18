@@ -206,8 +206,10 @@ def _resolve(session: Session, ref: str, now: datetime) -> RunSummary:
         lines = [f"{s.run.id} {s.run.started_at:%Y-%m-%d %H:%M} {s.run.name or ''}" for s in shown]
         more = len(error.matches) - len(shown)
         capped = len(error.matches) >= PREFIX_MATCHES  # resolve_run stops counting there
-        tail = [f"and {'at least ' if capped else ''}{more} more"] if more > 0 else []
-        raise QueryError("; ".join([f"{error}; use more of the id", *lines, *tail])) from None
+        least = "at least " if capped else ""
+        head = f"{ref!r} matches {least}{len(error.matches)} runs; use more of the id"
+        tail = [f"and {least}{more} more"] if more > 0 else []
+        raise QueryError("; ".join([head, *lines, *tail])) from None
     (summary,) = summaries_of(session, [run], now)
     return summary
 

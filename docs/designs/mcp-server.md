@@ -316,7 +316,8 @@ All tools are read-only and synchronous; the server has one local client. Parame
     | `StoreBehind` | "the store needs `afr db upgrade`, or this server is older than the store: restart it" |
     | `QueryError`: a bad argument, a run not found (with "give at least 4 characters of the id" when the reference is shorter) or ambiguous | its own message |
     | `ModelNotDownloaded` | "the embedding model isn't downloaded; run `afr embed` once" |
-    | The 10 s statement timeout: SQLAlchemy `OperationalError` whose `.orig` is psycopg's `QueryCanceled`, checked before the unreachable case | "the store took too long to answer (over 10 s)" |
+    | The 10 s statement timeout: SQLAlchemy `OperationalError` whose `.orig` is psycopg's `QueryCanceled`, checked before the unreachable case | "the store took too long to answer (over 10s)" |
+    | Any other `OperationalError` during a call (usually a connection lost mid-call) | the CLI's "can't reach the run store…", with the traceback on stderr |
 
     Anything else is logged to stderr with its traceback and becomes "unexpected error: <class name>". No recorded text goes into an error message without `safe()`.
 

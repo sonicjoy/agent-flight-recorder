@@ -101,7 +101,8 @@ def test_an_ambiguous_reference_lists_the_matches(
     from flight_recorder.store.read import AmbiguousRunError
 
     ids = [
-        record(session, f"trace-{i}", [span("root", None, 0)], name=f"run {i}") for i in range(7)
+        record(session, f"trace-{i}", [span("root", None, 0)], name=f"run {i}\x1b")
+        for i in range(7)
     ]
     runs = [session.get(Run, run_id) for run_id in ids]
 
@@ -116,6 +117,14 @@ def test_an_ambiguous_reference_lists_the_matches(
     assert "'abcd' matches 7 runs; use more of the id" in message
     assert sum(str(run_id) in message for run_id in ids) == queries.MAX_MATCHES
     assert "and 2 more" in message and "at least" not in message
+
+    many = [r for r in runs if r is not None] * 3  # 21: past resolve_run's cap of 20
+    monkeypatch.setattr(queries, "resolve_run", lambda _s, ref: (_ for _ in ()).throw(
+        AmbiguousRunError(ref, many[:20])))  # fmt: skip
+    with pytest.raises(QueryError) as capped:
+        explain_run(session, "abcd", NOW)
+    assert "'abcd' matches at least 20 runs" in str(capped.value)
+    assert "and at least 15 more" in str(capped.value)
 
 
 def test_one_error_is_one_failure_with_its_path_and_input(session: Session) -> None:
@@ -196,7 +205,7 @@ def _cut(out: dict[str, Any]) -> dict[str, int]:
 
 
 def test_a_huge_run_stays_under_budget_and_says_what_it_left_out(session: Session) -> None:
-    long = "" + "y" * 1_000
+    long = "\x1b" + "y" * 1_000
     spans = [span("root", None, 0, kind="agent", name="agent")]
     for i in range(8):  # 8 failures, each at the bottom of a deep chain
         parent = "root"
@@ -210,7 +219,7 @@ def test_a_huge_run_stays_under_budget_and_says_what_it_left_out(session: Sessio
     run_id = record(session, "trace-1", spans, attributes=attributes)
     others = [record(session, f"trace-o{i}", [span("root", None, 0)]) for i in range(5)]
     for i in range(12):
-        label(session, run_id, f"mode-{i}", ("" * 100 + "note ") * 20)
+        label(session, run_id, f"mode-{i}", ("\x1b" * 100 + "note ") * 20)
         if i < 3:
             for other in others:
                 label(session, other, f"mode-{i}")
@@ -257,6 +266,9 @@ def test_explain_run_trims_in_its_stated_order(
         label(session, run_id, f"mode-{i}", "note")
         label(session, other, f"mode-{i}")
     _ordered(session, run_id)
+    first = session.query(Label).filter_by(run_id=run_id, failure_mode="mode-0").one()
+    set_answer(session, first.id, {"fields": {f"a{i}": "x" for i in range(3)}}, REDACTOR)
+    session.flush()
     full = explain_run(session, str(run_id), NOW)
     assert sum(len(g["runs"]) for g in full["same_mode_runs"]) == 3 and full["cut"] == [
         "1 modes' other runs left out"
@@ -271,14 +283,32 @@ def test_explain_run_trims_in_its_stated_order(
     least = explain_run(session, str(run_id), NOW)
     assert least["same_mode_runs"] == [] and least["labels"] == [] and least["refused"] == []
     assert len(least["failures"]) == 1 and least["decisions"] == {}
+    assert least["right_answer"] == {"fields": {}}
     assert _cut(least) == {
         queries.SAME_MODE: 3,
         queries.LABELS: 4,
         queries.REFUSED: 2,
         queries.FAILURES: 2,
         queries.DECISIONS: 3,
+        queries.ANSWER_FIELDS: 3,
         queries.MODES_UNCHECKED: 1,
     }
+
+    # Step the budget down: each kind is trimmed only once the kinds before it are gone
+    trimmed: list[str] = []
+    for budget in range(size(full) - 1, 10, -40):
+        monkeypatch.setattr(queries, "MAX_RESULT_CHARS", budget)
+        for kind in _cut(explain_run(session, str(run_id), NOW)):
+            if kind != queries.MODES_UNCHECKED and kind not in trimmed:
+                trimmed.append(kind)
+    assert trimmed == [
+        queries.SAME_MODE,
+        queries.LABELS,
+        queries.REFUSED,
+        queries.FAILURES,
+        queries.DECISIONS,
+        queries.ANSWER_FIELDS,
+    ]
 
 
 def test_recorded_identifiers_are_capped_so_the_budget_holds(session: Session) -> None:

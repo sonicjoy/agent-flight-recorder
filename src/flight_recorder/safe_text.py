@@ -93,8 +93,9 @@ def map_strings(
 
 
 CUT_PLACEHOLDER = re.compile(r"\[REDACTED:(?P<kind>[a-z0-9_]+):[0-9a-f]*\Z")
-"""A placeholder cut inside its fingerprint at the end of a text (a run name is cut to 80
-characters after the hook redacted it; a field to 32 KB)."""
+"""A placeholder cut inside its fingerprint at the very end of a text: a run name is cut to
+80 characters after the hook redacted it. Not a field the hook cut at 32 KB: that cut ends in
+`...[truncated N chars]`, so its fingerprint stays (MCP results are capped far before it)."""
 
 
 def strip_text(text: str) -> str:
