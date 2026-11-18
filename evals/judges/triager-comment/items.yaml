@@ -1,7 +1,8 @@
 # The judge's agreement set (docs/designs/llm-judge.md). Corpus items picked by a seeded
 # rule (seed 1717: one run per triager case, 12 whose decision names a duplicate
 # or regression and 11 that don't); broken items are minimal edits of runs from other
-# cases. Grades were written blind on a shuffled sheet: a first pass by Claude, then reviewed
+# cases; the 5 holdout items (h-*) were copied and graded by the owner after the last rubric
+# revision. Grades were written blind on a shuffled sheet: a first pass by Claude, then reviewed
 # and accepted by the owner, before any judge run.
 items:
 - id: r-9bb35d0f
@@ -765,3 +766,111 @@ items:
   targets: suggests-not-settles
   author: claude
   note: 'from 6600cc0e: settles the duplicate'
+- id: h-1
+  tag: holdout
+  item:
+    comment: 'Thanks for the report. I’m tagging this as a UI/evals dashboard deliverable for Week 5 (“Replay
+      UI and launch”). It should surface run cost, failure trends, and eval pass rates, and seems related
+      to the existing replay/dashboard effort but not identical to any eval harness task. Maintainers:
+      please confirm there’s no exact duplicate with current dashboard/replay tickets, and whether this
+      could be a regression of an earlier removed/unfinished metrics view. Confidence is moderate (0.76).'
+    title: Metrics dashboard
+    decision:
+      labels:
+      - ui
+      - evals
+      milestone: 'Week 5: Replay UI and launch'
+      duplicate_of: null
+      regression_of: null
+      confidence: 0.76
+      rationale: This is a dashboard/UI deliverable that surfaces run cost, failure trends, and eval pass
+        rates. It overlaps with the existing replay/dashboard work, but it is not the same as the eval
+        harness issue; no exact duplicate was found, so I’d keep it as its own UI item in Week 5.
+  grade: pass
+  note: "holdout run ae3497d3; owner: Duplicate and regression are left for maintainers (\"please confirm there's no exact duplicate\", \"could be a regression\"). \"Not identical\" denies a match; it does not declare one. UI, evals, and Week 5 (\"Replay UI and launch\") are the decision's labels and milestone. No issue numbers."
+- id: h-2
+  tag: holdout
+  item:
+    comment: 'Triage: This issue covers the core database schema, migrations, and local Postgres setup
+      for traces. It has been labeled as `recorder` and assigned to the Week 2: Recorder core milestone.
+      Please note that this might overlap with existing database initialization tasks or represent a regression
+      from recent migration changes; maintainers may want to confirm these aspects.'
+    title: Trace schema, migrations and local Postgres
+    decision:
+      labels:
+      - recorder
+      milestone: 'Week 2: Recorder core'
+      duplicate_of: null
+      regression_of: null
+      confidence: 1.0
+      rationale: Core database schema and local setup for traces, part of the Week 2 recorder core work.
+  grade: pass
+  note: "holdout run 9df12ef7; owner: Overlap and regression are hedged (\"might overlap\", \"represent a regression\", \"maintainers may want to confirm\"). The comment names only the `recorder` label and the Week 2: Recorder core milestone, both in the decision."
+- id: h-3
+  tag: holdout
+  item:
+    comment: 'Looks substantially the same as issue #23: both cover analyst clustering failures and converting
+      them into draft eval cases, including review/acceptance of the drafted cases as part of the workflow.
+      The added `afr analyse --since 7d` sounds like an implementation detail within that same feature.
+      Suggest maintainer confirm whether this PR/issue truly matches #23’s scope (especially around any
+      new clustering behavior or newly required eval cases) before proceeding.'
+    title: 'Analyst agent: cluster failures and draft eval cases'
+    decision:
+      labels:
+      - analyst
+      - evals
+      milestone: 'Week 4: Analyst, MCP and deploy'
+      duplicate_of: '23'
+      regression_of: null
+      confidence: 0.88
+      rationale: 'This is substantially the same work as issue 23: both are about the analyst clustering
+        failures and turning them into draft eval cases, with review/acceptance of drafted cases as part
+        of the workflow. The added `afr analyse --since 7d` command is an implementation detail of that
+        same feature rather than a separate concern.'
+  grade: pass
+  note: "holdout run 71cad404; owner: \"Looks substantially the same as issue #23\" and \"Suggest maintainer confirm whether this \u2026 truly matches #23\" are hedged, not \"this is a duplicate\" or a close. #23 is duplicate_of. No other issue number, and no label or milestone, is named."
+- id: h-4
+  tag: holdout
+  item:
+    comment: Labeling this issue as a stretch goal for the demo agent under the Week 1 milestone, as porting
+      the triager to the Agents SDK aligns with our initial foundation and demonstration phase. Please
+      note that I haven't checked for duplicates or regressions here; maintainers might want to double-check
+      if an existing migration issue or recent regression is already tracking this SDK port.
+    title: Port the triager to an Agents SDK
+    decision:
+      labels:
+      - demo-agent
+      - stretch
+      milestone: 'Week 1: Demo agent and foundations'
+      duplicate_of: null
+      regression_of: null
+      confidence: 0.95
+      rationale: Porting the demo triager agent to another SDK is a demo-agent task marked as a stretch
+        goal in the plan, and since stretch labels require a milestone, it belongs in Week 1 where the
+        demo agent and foundations were built.
+  grade: pass
+  note: "holdout run 9042de8f; owner: It says duplicates and regressions were not checked and asks maintainers to double-check. Stretch, demo agent, and Week 1 are in the decision. No issue numbers. \"Migration issue\" is a topic."
+- id: h-5
+  tag: holdout
+  item:
+    comment: "Thanks for opening this suggestion. Comparing our custom evaluation harness with established\
+      \ tools like promptfoo and DeepEval would be a great addition to the project documentation. \n\n\
+      I am labeling this as a stretch goal and adding it to the Week 3: Evals and guardrails milestone,\
+      \ as it aligns well with our ongoing evaluation harness work. \n\n*(Note: Please review to confirm\
+      \ this does not overlap with any existing evaluation comparisons or regressions currently on your\
+      \ radar.)*"
+    title: Compare the harness with promptfoo or DeepEval
+    decision:
+      labels:
+      - evals
+      - stretch
+      milestone: 'Week 3: Evals and guardrails'
+      duplicate_of: null
+      regression_of: null
+      confidence: 0.95
+      rationale: This issue compares the custom eval harness with existing tools like promptfoo or DeepEval
+        after building the harness. It belongs in Week 3 alongside the rest of the eval harness work,
+        and as a comparison/stretch or documentation task, it benefits from the eval label and stretch
+        label.
+  grade: pass
+  note: "holdout run 701ac62a; owner: Overlap and regressions appear only inside \"please review to confirm\". Stretch and Week 3: Evals and guardrails are in the decision. Promptfoo, DeepEval, and \"project documentation\" are topics, not issue numbers, labels, or milestones."
