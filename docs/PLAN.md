@@ -178,7 +178,7 @@ Estimates are build hours. The learning items come from the 5-week prep plan and
 | Evals in CI | #19 | 1h |
 | Compare with promptfoo or DeepEval | #20 | 0.5h |
 
-The golden suite lives in the triager's repo (`evals/cases/triager/`, run with `afr eval`; see [the harness doc](evals/harness.md#the-first-real-suite)). #17, #18, #19 and #21 build on that suite, so #19's live CI run and its API key belong to the triager's workflow, not this repo's. Their issue texts predate the suite and need updating before they start: the adapter returns no comment for #17 to judge, records no trace for #18's redaction check, and pins one OpenAI model where #19 names Gemini and #21 compares providers.
+The golden suite lives in the triager's repo (`evals/cases/triager/`, run with `afr eval`; see [the harness doc](evals/harness.md#the-first-real-suite)). #17, #18, #19 and #21 build on that suite, so #19's live CI run and its API key belong to the triager's workflow, not this repo's. Their issue texts were updated for the suite on 18 November. Each one says what it needs first: the adapter returns no comment yet for #17 to judge or for #18's redaction check, and every case pins one OpenAI model, so #19 needs a Gemini-pinned suite and #21 runs one suite per model.
 
 **Learning (about 1.5h):** Hamel Husain's "Your AI Product Needs Evals" and Eugene Yan's "Task-Specific LLM Evals". Read them before the error analysis; starting on the week 2 weekend works well.
 
