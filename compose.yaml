@@ -1,10 +1,7 @@
-# Local Postgres with pgvector for the recorder, and optionally the ingest API in a container.
-#   docker compose up -d                  Postgres only, for `uv run afr ...` (as before)
-#   uv run afr db upgrade                 create the tables
-#   docker compose --profile api up -d --build
-#                                         also migrate the tables and serve the API in a
-#                                         container on 127.0.0.1:4318 (instead of `afr serve`)
-#   docker compose --profile api down     stop all of it (plain `down` leaves the API running)
+# The recorder locally: Postgres with pgvector, a one-off migration, and the ingest API.
+#   docker compose up -d --build   all three; the API on 127.0.0.1:4318 (--build after code changes)
+#   docker compose up -d db        Postgres only, to run `uv run afr serve` yourself on 4318
+#   docker compose down            stop it all; the data stays in the afr-db volume
 # Port 5433 on the host, so it doesn't clash with a locally installed Postgres on 5432.
 # There is no MCP service: the MCP server runs on your machine over stdio (#24).
 services:
@@ -26,7 +23,6 @@ services:
 
   # One-off: bring the tables up to date, then exit. The API waits for it.
   migrate:
-    profiles: [api]
     build: .
     command: ["afr", "db", "upgrade"]
     environment: &api-env
@@ -36,7 +32,6 @@ services:
         condition: service_healthy
 
   api:
-    profiles: [api]
     build: .
     environment:
       <<: *api-env

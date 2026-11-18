@@ -12,15 +12,14 @@ runs ─┬─ spans          a tree per run (parent_id)
 ## Running it
 
 ```bash
-docker compose up -d       # Postgres 16 with pgvector, on 127.0.0.1:5433
+docker compose up -d db    # Postgres 16 with pgvector, on 127.0.0.1:5433 (`up -d` adds the API)
 uv run afr db upgrade      # apply migrations (AFR_DATABASE_URL, default: the compose database)
 uv run afr db current      # show the current revision
 uv run afr db revision -m "add x" --rev-id 0003   # generate a migration after changing a model
-docker compose down        # stop Postgres; the data stays in the afr-db volume
-                           # (add --profile api if you started the API container)
+docker compose down        # stop Postgres (and the API); the data stays in the afr-db volume
 ```
 
-`docker compose --profile api down -v` **deletes the volume and every recorded run** (the profile also stops an API container, if one runs). Use it only to start from nothing on purpose.
+`docker compose down -v` **deletes the volume and every recorded run**. Use it only to start from nothing on purpose.
 
 Tests that need the database skip when it isn't running. In CI they run against a Postgres service container, with `AFR_REQUIRE_DB=1` so they can't silently skip. Tests never touch the `afr` database: each test session creates throwaway `afr_test_*` databases and drops them afterwards.
 

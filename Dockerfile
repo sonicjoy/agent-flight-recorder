@@ -1,4 +1,4 @@
-# The recorder's ingest API (`afr serve`), for `docker compose --profile api` and Cloud Run (#27).
+# The recorder's ingest API (`afr serve`), for `docker compose up` and Cloud Run (#27).
 # The MCP server isn't in this image: it runs on the user's machine over stdio (#24).
 #
 # Base images are pinned by digest and at least two weeks old (python 3.12.15-slim-bookworm
