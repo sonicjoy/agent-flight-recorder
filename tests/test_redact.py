@@ -665,7 +665,10 @@ def test_key_file_is_generated_once_and_reused(
 
 
 @pytest.mark.parametrize("last", ["-", "_"])
-@pytest.mark.parametrize("context", ["{}", "Authorization: Bearer {}", "AFR_API_KEY={}"])
+@pytest.mark.parametrize(
+    "context",
+    ["{}", "Authorization: Bearer {}", "AFR_API_KEY={}", "Authorization=Bearer%20{}"],
+)
 def test_the_recorders_own_keys_are_named_wherever_they_appear(
     redactor: Redactor, last: str, context: str
 ) -> None:

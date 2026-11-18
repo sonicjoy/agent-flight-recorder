@@ -8,6 +8,7 @@ import secrets
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from starlette.routing import Route
@@ -49,7 +50,7 @@ def test_good_hash_lists_are_accepted(text: str) -> None:
 
 
 def test_a_repeated_entry_is_counted() -> None:
-    assert len(ApiKeys.parse(f"{HASHES},{HASHES}")) == 2
+    assert len(ApiKeys.parse(f"{HASHES},{HASHES}").digests) == 2
 
 
 DIGEST = hashlib.sha256(KEY.encode()).hexdigest()
@@ -89,35 +90,40 @@ def test_only_a_configured_key_matches() -> None:
 
 def test_keys_turn_auth_on_wherever_it_listens() -> None:
     for host, insecure, cloud in [("127.0.0.1", False, False), ("0.0.0.0", True, True)]:
-        mode = auth_mode(HASHES, host, insecure, cloud)
+        mode = auth_mode(HASHES, host, insecure=insecure, on_cloud_run=cloud)
         assert mode.auth is not None and mode.reason == "1 key"
-    assert auth_mode(f"{HASHES},{entry('t', OTHER)}", "0.0.0.0", False, True).reason == "2 keys"
+    assert (
+        auth_mode(
+            f"{HASHES},{entry('t', OTHER)}", "0.0.0.0", insecure=False, on_cloud_run=True
+        ).reason
+        == "2 keys"
+    )
 
 
 def test_an_empty_secret_never_means_no_keys() -> None:
     for host in ("127.0.0.1", "0.0.0.0"):
         with pytest.raises(AuthConfigError, match="set but empty"):
-            auth_mode("", host, True, False)
+            auth_mode("", host, insecure=True, on_cloud_run=False)
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
 def test_loopback_without_keys_is_open_as_before(host: str) -> None:
-    mode = auth_mode(None, host, False, True)
+    mode = auth_mode(None, host, insecure=False, on_cloud_run=True)
     assert mode.auth is None and mode.reason == "loopback, no keys configured"
 
 
 def test_beyond_loopback_without_keys_is_refused() -> None:
     with pytest.raises(AuthConfigError, match=r"refusing to listen on 0.0.0.0 without API keys"):
-        auth_mode(None, "0.0.0.0", False, False)
+        auth_mode(None, "0.0.0.0", insecure=False, on_cloud_run=False)
 
 
 def test_the_opt_out_is_refused_on_cloud_run() -> None:
     with pytest.raises(AuthConfigError, match="refused on Cloud Run"):
-        auth_mode(None, "0.0.0.0", True, True)
+        auth_mode(None, "0.0.0.0", insecure=True, on_cloud_run=True)
 
 
 def test_the_opt_out_serves_a_local_container_with_a_warning() -> None:
-    mode = auth_mode(None, "0.0.0.0", True, False)
+    mode = auth_mode(None, "0.0.0.0", insecure=True, on_cloud_run=False)
     assert mode.auth is None
     assert "unauthenticated on all interfaces" in mode.reason
 
@@ -221,8 +227,10 @@ def test_the_key_is_never_echoed_or_logged(caplog: pytest.LogCaptureFixture) -> 
 
 @pytest.fixture
 def serve_env(clean_env: pytest.MonkeyPatch, tmp_path: Path) -> pytest.MonkeyPatch:
-    """No .env, no Cloud Run, and serve stops before the database or the server starts."""
+    """No .env, no Cloud Run, a scratch AFR_HOME (serve loads the redaction key from it), and
+    serve stops before the database or the server starts."""
     clean_env.chdir(tmp_path)
+    clean_env.setenv("AFR_HOME", str(tmp_path / "afr-home"))
     clean_env.delenv("K_SERVICE", raising=False)
 
     def started(*_: object, **__: object) -> None:
@@ -251,8 +259,34 @@ def test_serve_refuses_to_start_open(
     assert message in result.output
 
 
-def test_serve_with_keys_listens_beyond_loopback(serve_env: pytest.MonkeyPatch) -> None:
-    serve_env.setenv("AFR_API_KEY_HASHES", HASHES)
+@pytest.mark.parametrize(
+    ("hashes", "printed", "status"), [(HASHES, "auth: on (1 key)", 401)], ids=["keyed"]
+)
+def test_serve_runs_the_app_with_the_mode_it_printed(
+    serve_env: pytest.MonkeyPatch, tmp_path: Path, hashes: str, printed: str, status: int
+) -> None:
+    """The app `serve` starts enforces what it announced: a request without a key gets 401."""
+    serve_env.setenv("AFR_API_KEY_HASHES", hashes)
+    served: list[FastAPI] = []
+    serve_env.setattr("flight_recorder.store.db.make_engine", lambda *_: NO_DB)
+    serve_env.setattr("flight_recorder.store.db.pending_migrations", lambda *_: [])
+    serve_env.setattr("uvicorn.run", lambda app, **_: served.append(app))
+
     result = CliRunner().invoke(cli, ["serve", "--host", "0.0.0.0"])
-    assert "auth: on (1 key)" in result.output
-    assert isinstance(result.exception, AssertionError)  # it went on to open the database
+
+    assert result.exit_code == 0 and printed in result.output
+    (app,) = served
+    response = TestClient(app, base_url="http://127.0.0.1:4318").post(
+        "/v1/claude-code/events", json={"events": []}
+    )
+    assert response.status_code == status
+    assert (tmp_path / "afr-home" / "redaction.key").exists()  # the key came from the scratch home
+
+
+def test_every_route_is_http_so_the_guard_sees_it() -> None:
+    """The guard is HTTP middleware: Starlette passes WebSocket connections straight past it.
+    A route of another kind must not be added without a guard that covers it."""
+    app = create_app(NO_DB, REDACTOR, auth=KEYED)
+    assert all(isinstance(route, Route) for route in app.routes), [
+        type(route).__name__ for route in app.routes if not isinstance(route, Route)
+    ]

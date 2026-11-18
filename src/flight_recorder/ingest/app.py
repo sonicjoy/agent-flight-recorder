@@ -239,9 +239,9 @@ def create_app(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         """Runs before an endpoint reads the body, so a refused caller costs nothing."""
-        if request.url.path in OPEN_PATHS:
+        if request.scope["path"] in OPEN_PATHS:  # what the router matches, not the Host-built URL
             return await call_next(request)
-        if auth is not None:  # not truthiness: ApiKeys has a length
+        if auth is not None:
             token = _bearer(request.headers.get("authorization", ""))
             if token is None or not auth.match(token):
                 return _refused()

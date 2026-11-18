@@ -55,9 +55,6 @@ class ApiKeys:
             found |= hmac.compare_digest(digest, stored)
         return found
 
-    def __len__(self) -> int:
-        return len(self.digests)
-
 
 @dataclass(frozen=True)
 class Mode:
@@ -65,12 +62,13 @@ class Mode:
     reason: str  # what `serve` prints in brackets after "auth: on" or "auth: off"
 
 
-def auth_mode(hashes: str | None, host: str, insecure: bool, on_cloud_run: bool) -> Mode:
+def auth_mode(hashes: str | None, host: str, *, insecure: bool, on_cloud_run: bool) -> Mode:
     """Whether the server may start, and with auth or without. `hashes` is None only when
     AFR_API_KEY_HASHES is absent: an empty value is an error, never "no keys"."""
     if hashes is not None:
         keys = ApiKeys.parse(hashes)
-        return Mode(keys, "1 key" if len(keys) == 1 else f"{len(keys)} keys")
+        count = len(keys.digests)
+        return Mode(keys, "1 key" if count == 1 else f"{count} keys")
     if host in LOOPBACK_BINDS:
         return Mode(None, "loopback, no keys configured")
     if not insecure:

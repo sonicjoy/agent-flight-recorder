@@ -128,6 +128,8 @@ def test_an_unavailable_recorder_keeps_events(tmp_path: Path) -> None:
         busy.close()
 
     assert [e["hook"]["tool_use_id"] for e in spooled(tmp_path)] == ["t1"]
+    log = (tmp_path / "hook.log").read_text(encoding="utf-8")
+    assert "recorder unreachable (HTTPError); spooled 1" in log
 
 
 def test_a_spool_line_that_is_not_an_event_is_skipped(tmp_path: Path, recorder: Recorder) -> None:
@@ -331,8 +333,9 @@ def test_the_api_key_is_sent_only_when_set(tmp_path: Path, recorder: Recorder) -
     assert recorder.auth == [f"Bearer {API_KEY}", None]
 
 
-def test_a_refused_key_keeps_the_events_and_says_why(tmp_path: Path) -> None:
-    refusing = Recorder(status=401)
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_refused_key_keeps_the_events_and_says_why(tmp_path: Path, status: int) -> None:
+    refusing = Recorder(status=status)
     try:
         run(event(1), keyed(tmp_path, refusing.url))
     finally:
@@ -340,7 +343,7 @@ def test_a_refused_key_keeps_the_events_and_says_why(tmp_path: Path) -> None:
 
     assert [e["hook"]["tool_use_id"] for e in spooled(tmp_path)] == ["t1"]
     log = (tmp_path / "hook.log").read_text(encoding="utf-8")
-    assert "recorder refused the API key (HTTP 401); check AFR_API_KEY; spooled 1" in log
+    assert f"recorder refused the API key (HTTP {status}); check AFR_API_KEY; spooled 1" in log
     assert API_KEY not in log
 
 
@@ -351,6 +354,17 @@ def test_the_key_is_not_sent_over_plain_http_to_another_host(tmp_path: Path) -> 
     assert [e["hook"]["tool_use_id"] for e in spooled(tmp_path)] == ["t1"]
     log = (tmp_path / "hook.log").read_text(encoding="utf-8")
     assert "AFR_HOOK_URL must be https to send the API key; spooled 1" in log
+
+
+def test_a_full_spool_says_what_it_dropped_when_the_url_is_not_https(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(client, "MAX_SPOOL_BYTES", 400)  # a few events
+    url = "http://recorder.example:4318/v1/claude-code/events"
+    for n in range(6):
+        run(event(n), keyed(tmp_path, url))
+
+    assert "spool full: dropped" in (tmp_path / "hook.log").read_text(encoding="utf-8")
 
 
 def test_a_redirect_does_not_carry_the_key(tmp_path: Path) -> None:

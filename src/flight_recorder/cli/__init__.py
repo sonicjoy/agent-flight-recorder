@@ -107,7 +107,7 @@ def serve(
     from flight_recorder.ingest.auth import AuthConfigError, auth_mode
     from flight_recorder.redact import default_redactor
     from flight_recorder.settings import Settings
-    from flight_recorder.store.db import make_engine, pending_migrations
+    from flight_recorder.store.db import database_url, make_engine, pending_migrations
 
     # Decide on auth before touching the database: a missing secret is reported first.
     try:
@@ -119,19 +119,21 @@ def serve(
     secret = settings.api_key_hashes
     hashes = secret.get_secret_value() if secret is not None else None  # "" stays "": refused
     try:
-        mode = auth_mode(hashes, host, settings.insecure_no_auth, "K_SERVICE" in os.environ)
+        mode = auth_mode(
+            hashes, host, insecure=settings.insecure_no_auth, on_cloud_run="K_SERVICE" in os.environ
+        )
     except AuthConfigError as error:
         typer.echo(f"error: {error}", err=True)
         raise typer.Exit(code=2) from None
     typer.echo(f"auth: {'on' if mode.auth is not None else 'off'} ({mode.reason})")
 
-    engine = make_engine()
+    engine = make_engine(database_url(settings))
     try:
         if pending_migrations(engine):
             typer.echo("error: the database isn't up to date; run `afr db upgrade` first", err=True)
             raise typer.Exit(code=1)
         typer.echo(f"ingest: POST http://{host}:{port}/v1/traces (OTLP protobuf or JSON)")
-        app_ = create_app(engine, default_redactor(), auth=mode.auth)
+        app_ = create_app(engine, default_redactor(settings), auth=mode.auth)
         uvicorn.run(app_, host=host, port=port, log_level="info")
     finally:
         engine.dispose()  # close pooled connections on every way out

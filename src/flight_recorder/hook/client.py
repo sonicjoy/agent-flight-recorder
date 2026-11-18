@@ -81,8 +81,6 @@ DEFAULT_URL = "http://127.0.0.1:4318/v1/claude-code/events"
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 DROP_STATUSES = {400, 413, 422}  # the events themselves were refused; others are setup
 KEY_STATUSES = {401, 403}  # a missing or wrong AFR_API_KEY: setup, so the events wait
-KEY_REFUSED = "recorder refused the API key"
-INSECURE_URL = "AFR_HOOK_URL must be https to send the API key"
 MAX_CHUNKS_PER_HOOK = 10  # a big backlog drains over several hooks, keeping its progress
 PATH_KEYS = ("transcript_path", "agent_transcript_path")  # local paths the server doesn't use
 TURN_END = {
@@ -328,7 +326,7 @@ def _insecure(config: HookConfig) -> bool:
 
 
 def _post(
-    url: str, events: list[dict[str, Any]], timeout: float, api_key: str | None = None
+    url: str, events: list[dict[str, Any]], timeout: float, api_key: str | None
 ) -> dict[str, Any]:
     body = json.dumps({"events": events}).encode()
     request = urllib.request.Request(
@@ -457,8 +455,13 @@ def _deliver(config: HookConfig, events: list[dict[str, Any]], name: str) -> Non
     """Send the backlog (async events only) and these events; spool whatever didn't get
     through. SessionEnd sends only its first event, alone, and spools any other parts."""
     if _insecure(config):  # a key must not cross the network in clear: keep the events
-        _spool(config.home, events)
-        _log(config.home, f"{INSECURE_URL}; spooled {len(events)} ({name})")
+        dropped = _spool(config.home, events)
+        _log(
+            config.home,
+            f"AFR_HOOK_URL must be https to send the API key; spooled {len(events)} ({name})",
+        )
+        if dropped:
+            _log(config.home, f"spool full: dropped the {dropped} oldest events")
         return
     sync = name in SYNC_EVENTS
     try:
@@ -473,10 +476,10 @@ def _deliver(config: HookConfig, events: list[dict[str, Any]], name: str) -> Non
     limit = 1 if sync else MAX_CHUNKS_PER_HOOK
     sent = rejected = refused = cut = 0
     reasons: set[str] = set()
-    failure = ""
+    reason = ""  # why the rest wasn't sent, as hook.log says it
     for number, chunk in enumerate(chunks):
-        if number == limit:  # leave the rest for the next hook
-            failure = "deferred"
+        if number == limit:
+            reason = "left for the next hook"
             break
         try:
             reply = _post(config.url, chunk, timeout, config.api_key)
@@ -485,15 +488,12 @@ def _deliver(config: HookConfig, events: list[dict[str, Any]], name: str) -> Non
             sent += len(chunk)
             _log(config.home, f"recorder refused {len(chunk)} events ({error}); dropped")
             continue
-        except urllib.error.HTTPError as error:  # 404, 421, 5xx, a refused key: keep the rest
-            failure = (
-                f"{KEY_REFUSED} (HTTP {error.code}); check AFR_API_KEY"
-                if error.code in KEY_STATUSES
-                else type(error).__name__
-            )
-            break
-        except Exception as error:  # down, timed out: keep the rest for next time
-            failure = type(error).__name__
+        except Exception as error:  # down, timed out, 404, 421, 5xx, a refused key: keep the rest
+            code = error.code if isinstance(error, urllib.error.HTTPError) else None
+            if code in KEY_STATUSES:
+                reason = f"recorder refused the API key (HTTP {code}); check AFR_API_KEY"
+            else:
+                reason = f"recorder unreachable ({type(error).__name__})"
             break
         sent += len(chunk)
         rejected += _count(reply.get("rejected"))
@@ -505,12 +505,6 @@ def _deliver(config: HookConfig, events: list[dict[str, Any]], name: str) -> Non
     unsent = pending[sent:]
     if unsent:
         dropped = _spool(config.home, unsent)
-        if failure == "deferred":
-            reason = "left for the next hook"
-        elif failure.startswith(KEY_REFUSED):
-            reason = failure
-        else:
-            reason = f"recorder unreachable ({failure})"
         _log(config.home, f"{reason}; spooled {len(unsent)} ({name})")
         if dropped:
             _log(config.home, f"spool full: dropped the {dropped} oldest events")
