@@ -1,6 +1,6 @@
 # LLM providers
 
-Every agent and the LLM judge get their model from one setting, so the same code runs on any supported provider.
+Every agent gets its model from one setting, so the same code runs on any supported provider. The LLM judge pins its model in its rubric instead (#17), so saved verdicts always come from the model the rubric names.
 
 ## Choosing a model
 
@@ -9,7 +9,7 @@ A model is named by a spec, `<provider>:<model>`:
 | Setting | Default | Used for |
 |---|---|---|
 | `AFR_LLM_MODEL` | `anthropic:claude-sonnet-5-5` | Agents |
-| `AFR_LLM_CHEAP_MODEL` | `anthropic:claude-haiku-5-5` | LLM judge, bulk work |
+| `AFR_LLM_CHEAP_MODEL` | `anthropic:claude-haiku-5-5` | Bulk work |
 
 Provider names are LangChain's, so a spec maps straight onto `init_chat_model`:
 
@@ -25,7 +25,8 @@ In code:
 from flight_recorder.llm import chat_model
 
 llm = chat_model()  # AFR_LLM_MODEL
-judge = chat_model(cheap=True)  # AFR_LLM_CHEAP_MODEL
+cheap = chat_model(cheap=True)  # AFR_LLM_CHEAP_MODEL
+judge = chat_model(rubric["model"])  # the judge: its rubric's model
 gemini = chat_model("google_genai:gemini-3.5-flash-lite")
 ```
 

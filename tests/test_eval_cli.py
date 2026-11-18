@@ -15,6 +15,8 @@ from typing import Any
 
 import pytest
 import yaml
+from judge_fixtures import items as judge_items
+from judge_fixtures import rubric as judge_rubric
 from typer.testing import CliRunner
 
 from flight_recorder.cli import app
@@ -248,3 +250,114 @@ def test_a_bad_redaction_key_exits_2(
     result = afr("run")
     assert result.exit_code == 2
     assert "AFR_REDACTION_KEY must be at least" in result.output
+
+
+# --- the LLM judge's commands (#17, docs/designs/llm-judge.md) ----------------------------
+
+
+def _judge_files(tmp_path: Path, items: list[dict[str, Any]] | None = None) -> list[str]:
+    (tmp_path / "items.yaml").write_text(
+        yaml.safe_dump({"items": judge_items() if items is None else items}), encoding="utf-8"
+    )
+    (tmp_path / "rubric.yaml").write_text(yaml.safe_dump(judge_rubric()), encoding="utf-8")
+    return ["--items", str(tmp_path / "items.yaml"), "--rubric", str(tmp_path / "rubric.yaml")]
+
+
+@pytest.fixture
+def judge_cli(clean_env: pytest.MonkeyPatch, tmp_path: Path) -> Callable[..., Any]:
+    clean_env.setenv("AFR_HOME", str(tmp_path / "home"))
+    clean_env.setenv("COLUMNS", "200")
+    clean_env.setenv("AFR_DATABASE_URL", "postgresql+psycopg://afr:afr@127.0.0.1:1/afr")
+    clean_env.chdir(tmp_path)  # no .env: no key is found, and no store is reachable
+
+    def invoke(command: str, *args: str) -> Any:
+        return runner.invoke(app, ["eval", command, "--root", str(tmp_path / "cases"), *args])
+
+    return invoke
+
+
+def test_judge_suite_writes_the_suite(judge_cli: Callable[..., Any], tmp_path: Path) -> None:
+    result = judge_cli("judge-suite", "--suite", "j", *_judge_files(tmp_path))
+
+    assert result.exit_code == 0, result.output
+    names = sorted(p.name for p in (tmp_path / "cases" / "j").iterdir())
+    assert names == ["b-1.yaml", "r-0001.yaml", "suite.yaml"]
+
+
+def test_judge_suite_lists_every_bad_item(judge_cli: Callable[..., Any], tmp_path: Path) -> None:
+    bad = [{"id": "x", "tag": "nope", "item": {}, "grade": "maybe"},
+           {"id": "y", "tag": "corpus", "item": {}, "grade": "pass"}]  # fmt: skip
+
+    result = judge_cli("judge-suite", "--suite", "j", *_judge_files(tmp_path, bad))
+
+    assert result.exit_code == 1
+    assert "x: tag must be" in result.output and "y: item must be" in result.output
+    assert not (tmp_path / "cases" / "j").exists()
+
+
+def test_judge_suite_refuses_bad_files_and_a_local_twin(
+    judge_cli: Callable[..., Any], tmp_path: Path
+) -> None:
+    files = _judge_files(tmp_path)
+    missing = judge_cli("judge-suite", "--suite", "j", "--items", str(tmp_path / "none.yaml"),
+                        "--rubric", files[3])  # fmt: skip
+    (tmp_path / "bad.yaml").write_text("model: m\n", encoding="utf-8")
+    bad_rubric = judge_cli("judge-suite", "--suite", "j", "--items", files[1],
+                           "--rubric", str(tmp_path / "bad.yaml"))  # fmt: skip
+    (tmp_path / "cases" / "local" / "j").mkdir(parents=True)
+    twin = judge_cli("judge-suite", "--suite", "j", *files)
+
+    assert (missing.exit_code, bad_rubric.exit_code, twin.exit_code) == (2, 2, 2)
+    assert "local" in twin.output
+
+
+def _outputs(folder: Path, grades: dict[str, str | None]) -> None:
+    from flight_recorder.evals.grade import input_hash
+    from flight_recorder.evals.run import load_suite, write_outputs
+
+    suite = load_suite(folder.parent, folder.name)
+    lines = {}
+    for case in suite.cases:
+        if case["id"] in grades:
+            grade = grades[case["id"]]
+            lines[case["id"]] = {"case": case["id"], "input_hash": input_hash(case),
+                                 "output": None if grade is None else {"grade": grade},
+                                 "error": "boom" if grade is None else None}  # fmt: skip
+    write_outputs(folder, {"agent": "flight_recorder.evals.judge:judge"}, lines)
+
+
+def test_agreement_prints_the_table_and_exits_0_when_complete(
+    judge_cli: Callable[..., Any], tmp_path: Path
+) -> None:
+    odd = {"id": "odd", "tag": "corpus", "grade": "pass",
+           "item": {"comment": "c", "title": "t", "decision": {}}}  # fmt: skip
+    judge_cli("judge-suite", "--suite", "j", *_judge_files(tmp_path, judge_items(odd)))
+    _outputs(tmp_path / "cases" / "j", {"r-0001": "pass", "b-1": "pass", "odd": "maybe"})
+
+    result = judge_cli("agreement", "--suite", "j", "--field", "grade")
+
+    assert result.exit_code == 0, result.output
+    for column in ("rows", "agree", "kappa", "catch", "hand fail / judge pass"):
+        assert column in result.output
+    assert "left out odd: value not pass or fail" in result.output
+
+
+def test_agreement_exits_1_when_a_case_is_stale_or_errored(
+    judge_cli: Callable[..., Any], tmp_path: Path
+) -> None:
+    judge_cli("judge-suite", "--suite", "j", *_judge_files(tmp_path))
+    _outputs(tmp_path / "cases" / "j", {"r-0001": None})  # b-1 has no output: stale
+
+    result = judge_cli("agreement", "--suite", "j", "--field", "grade")
+
+    assert result.exit_code == 1
+    assert "left out b-1: stale" in result.output and "left out r-0001: error" in result.output
+
+
+def test_agreement_exits_2_with_no_outputs(judge_cli: Callable[..., Any], tmp_path: Path) -> None:
+    judge_cli("judge-suite", "--suite", "j", *_judge_files(tmp_path))
+
+    result = judge_cli("agreement", "--suite", "j", "--field", "grade")
+
+    assert result.exit_code == 2
+    assert "no outputs.jsonl" in result.output
