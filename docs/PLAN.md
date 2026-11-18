@@ -52,7 +52,7 @@ flowchart LR
   API["FastAPI ingest<br/>normalise → redact"] --> DB[("Postgres + pgvector<br/>runs · spans · embeddings<br/>labels · eval results")]
   DB --> CLI["CLI<br/>list · replay · label · search · case"]
   DB --> AN["Analyst agent<br/>(LangGraph)"]
-  DB --> MCP["MCP server<br/>(FastMCP)"]
+  DB --> MCP["MCP server<br/>(local, stdio)"]
   DB --> UI["Replay UI<br/>(React + TS)"]
   CLI -->|writes cases| EV
   AN -->|drafts cases| EV["Eval suite<br/>harness · judge · red-team"]
@@ -95,7 +95,7 @@ src/flight_recorder/
   cli/         `afr` commands
   evals/       harness, judge
   analyst/     LangGraph analyst agent
-  mcp/         FastMCP server
+  mcp_server.py  MCP server for Claude Code (stdio)
 evals/cases/              the harness's smoke suite (YAML); local/ is git-ignored.
                           The triager's golden suite lives in its own repo
 ui/                       React + TypeScript (Vite)
@@ -114,7 +114,7 @@ docs/                     plan, schema, evals write-ups, decisions/
 | Tracing | OpenTelemetry (OTLP/HTTP); OTel GenAI and OpenInference attributes |
 | Embeddings | fastembed with bge-small, run locally |
 | Evals | Own harness, then a comparison with promptfoo or DeepEval |
-| MCP | FastMCP |
+| MCP | The `mcp` SDK's MCPServer (FastMCP renamed in 2.x), local over stdio |
 | UI | React, TypeScript, Vite |
 | Deploy | Docker, Terraform, Cloud Run, Cloud SQL, Secret Manager |
 
@@ -129,7 +129,7 @@ Write each one up as a short ADR in `docs/decisions/` when you make it. They fee
 5. **Provider-agnostic LLM layer.** Every agent and the judge run on Anthropic or Gemini (or OpenAI, given a key). Provider comparisons become a by-product of the eval suite, and CI needs no paid key. See [LLM providers](llm-providers.md).
 6. **Build the eval harness yourself before using a library**, so eval design is something you can explain end to end, then compare the two honestly.
 7. **Eval cases live in git as YAML**, while results live in the database: cases change through review, results accumulate as history. Results are files in git (`outputs.jsonl`) until #34 loads them into the database.
-8. **The server makes no LLM calls.** MCP tools return data (runs, similar failures, labels, eval cases), and the calling agent's own model does the explaining. The analyst runs as a local job. So the deployed instance needs no LLM key.
+8. **The server makes no LLM calls.** MCP tools return data (runs, their failures, labels, and runs with the same labelled mode; similar failures by embedding and eval cases come later), and the calling agent's own model does the explaining. The analyst runs as a local job. So the deployed instance needs no LLM key.
 
 ## Weekly plan
 
@@ -195,7 +195,7 @@ This is the heaviest week (about 20h with reading, so week 4 starts later), and 
 | Evaluate the analyst as the second agent, against your labels | #23 | 1.5h |
 | MCP server | #24 | 1.5h |
 | API key auth before deploy | #25 | 0.5h |
-| Containerise the API and MCP server | #26 | 0.5h |
+| Containerise the API (the MCP server runs locally over stdio, #24) | #26 | 0.5h |
 | Deploy with Terraform to Cloud Run and Cloud SQL | #27 | 2.5h |
 | Record the recorder's own agents (needed by #23; it covers the judge too, which #17 defers here) | #28 | 0.5h |
 

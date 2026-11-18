@@ -3,14 +3,13 @@
 Everything recorded is untrusted text: a tool's output or a fetched page can hold terminal
 escape codes (clear the screen, set the window title), right-to-left overrides that
 disguise text, invisible characters that hide words from a reader (but not from a model),
-or Rich markup. `clean` shows those as visible escapes, and recorded text only ever
-reaches the terminal as `rich.text.Text`, never as markup.
+or Rich markup. `clean` (from `safe_text`) shows those as visible escapes, and recorded
+text only ever reaches the terminal as `rich.text.Text`, never as markup.
 """
 
 from __future__ import annotations
 
 import json
-import unicodedata
 from collections import Counter
 from collections.abc import Sequence
 from datetime import datetime, timedelta
@@ -24,34 +23,10 @@ from rich.text import Text
 from rich.tree import Tree
 
 from flight_recorder.payloads import DECIDED, cut, flat, value_text
+from flight_recorder.safe_text import clean
 
 if TYPE_CHECKING:
     from flight_recorder.store.read import RunSummary, SpanNode
-
-KEPT = frozenset("\n\t")
-HIDDEN = frozenset(("Cc", "Cf", "Zl", "Zp", "Co", "Cn"))
-"""Control and format characters (bidi overrides, zero-width, tags), line and paragraph
-separators, private-use and unassigned code points: shown as escapes."""
-FILLERS = frozenset(chr(c) for c in (0x115F, 0x1160, 0x3164, 0xFFA0))
-"""Hangul fillers: letters that render blank."""
-
-
-def _selector(char: str) -> bool:
-    code = ord(char)
-    return 0xFE00 <= code <= 0xFE0F or 0xE0100 <= code <= 0xE01EF
-
-
-def _hidden(value: str, i: int) -> bool:
-    """Whether the character at `i` would hide something. A variation selector is fine
-    once after an ordinary character (that's how emoji pick their style); a run of them,
-    or a supplementary one, can carry hidden bytes."""
-    char = value[i]
-    if char in KEPT:
-        return False
-    if _selector(char):
-        return ord(char) > 0xFFFF or i == 0 or _selector(value[i - 1])
-    return char in FILLERS or unicodedata.category(char) in HIDDEN
-
 
 STATE_STYLE = {
     "ok": "green",
@@ -72,20 +47,6 @@ CONTENT_CHARS = 4_000
 def console() -> Console:
     """A console that never reads markup, emoji codes or highlights in plain strings."""
     return Console(markup=False, emoji=False, highlight=False)
-
-
-def _escape(char: str) -> str:
-    code = ord(char)
-    if code < 0x100:
-        return f"\\x{code:02x}"
-    return f"\\u{code:04x}" if code < 0x10000 else f"\\U{code:08x}"
-
-
-def clean(value: str) -> str:
-    """Recorded text made safe to print: control and invisible characters (but newlines
-    and tabs) become visible escapes such as `\\x1b`, `\\u202e` and `\\U000e0041`."""
-    value = value.replace("\r\n", "\n")
-    return "".join(_escape(c) if _hidden(value, i) else c for i, c in enumerate(value))
 
 
 def text(value: object, style: str = "") -> Text:

@@ -30,11 +30,11 @@ from flight_recorder.evals.cases import (
     CaseError,
     check_id,
     load,
-    strip_fingerprints,
     suite_dir,
 )
 from flight_recorder.evals.checks import canonical, convert, validate
 from flight_recorder.evals.grade import input_hash
+from flight_recorder.safe_text import strip_fingerprints
 
 if TYPE_CHECKING:
     from flight_recorder.redact import Redactor

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "afr": {
+      "command": "uv",
+      "args": ["run", "--frozen", "afr-mcp"]
+    }
+  }
+}

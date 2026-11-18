@@ -16,6 +16,7 @@ dependencies = [
     "langchain-anthropic>=1.7.10",
     "langchain-google-genai>=4.4.3",
     "langchain-openai>=1.7.4",
+    "mcp>=2.3.0,<3",
     "opentelemetry-proto>=1.45.1",
     "pgvector>=0.5.1",
     "psycopg[binary]>=3.3.8",
@@ -29,6 +30,7 @@ dependencies = [
 
 [project.scripts]
 afr = "flight_recorder.cli:app"
+afr-mcp = "flight_recorder.mcp_server:main"
 
 [build-system]
 requires = ["uv_build>=0.13.7,<0.14.0"]
@@ -36,8 +38,10 @@ build-backend = "uv_build"
 
 [tool.uv]
 # Dependencies must be at least two weeks old. Temporary holds, set 12 Nov 2026: hf-xet 1.8.0
-# (30 Oct) and filelock 4.2.9 (4 Nov) were newer. Remove each once its release is two weeks old.
-exclude-newer-package = { hf-xet = "2026-10-29T00:00:00Z", filelock = "2026-10-29T00:00:00Z" }
+# (30 Oct) and filelock 4.2.9 (4 Nov) were newer. Set 18 Nov 2026 with mcp (#24): sse-starlette
+# 3.7.0 (7 Nov) and python-multipart 0.0.34 (16 Nov) were newer. Remove each once its release is
+# two weeks old.
+exclude-newer-package = { hf-xet = "2026-10-29T00:00:00Z", filelock = "2026-10-29T00:00:00Z", sse-starlette = "2026-11-04T00:00:00Z", python-multipart = "2026-11-04T00:00:00Z" }
 
 [tool.uv.build-backend]
 module-name = "flight_recorder"
