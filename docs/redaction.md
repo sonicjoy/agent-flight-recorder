@@ -41,6 +41,7 @@ Checked in this order; the first match wins.
 | `aws_access_key` | `AKIA...`, `ASIA...` (20 characters) | |
 | `aws_secret_key` | 40-character secret after `aws...secret...=` | Needs that context; a bare 40-character string is left to `high_entropy` |
 | `gcp_api_key` | `AIza` + 35 characters | |
+| `afr_api_key` | `afr_` + 43 URL-safe characters: the recorder's own API keys ([ingest.md](ingest.md#api-keys)) | Comes before `bearer_token` and `secret_assignment`, so a key after `Bearer` or `AFR_API_KEY=` is named `afr_api_key` |
 | `gcp_oauth_token` | `ya29.` tokens | |
 | `jwt` | `eyJ...eyJ...signature` | |
 | `bearer_token` | After `Bearer`, `Basic` or `Token` | |

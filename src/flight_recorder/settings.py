@@ -47,6 +47,16 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("AFR_REDACTION_KEY"),
         description="Key for redaction fingerprints; unset means <AFR_HOME>/redaction.key.",
     )
+    api_key_hashes: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("AFR_API_KEY_HASHES"),
+        description="Comma-separated name:sha256hex entries; set means the API requires keys.",
+    )
+    insecure_no_auth: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("AFR_INSECURE_NO_AUTH"),
+        description="Serve beyond loopback without keys; local containers only.",
+    )
     afr_home: Path = Field(
         default_factory=lambda: Path.home() / ".afr",
         validation_alias=AliasChoices("AFR_HOME"),

@@ -41,6 +41,7 @@ def secrets_by_kind() -> dict[str, str]:
         + "IA"
         + "".join(_rng.choice(string.ascii_uppercase + string.digits) for _ in range(16)),
         "gcp_api_key": "AI" + "za" + random_text(35, TOKEN),
+        "afr_api_key": "afr" + "_" + random_text(43, TOKEN),
         "gcp_oauth_token": "ya" + "29." + random_text(40, TOKEN),
         "jwt": "eyJ"
         + random_text(20, TOKEN)

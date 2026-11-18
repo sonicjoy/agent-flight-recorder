@@ -596,7 +596,8 @@ def _client_counts(event: Mapping[str, Any]) -> dict[str, int]:
     """What the hook redacted before sending, per pattern.
 
     Only known pattern names are kept, and counts are clamped: the keys are stored as they
-    come (they aren't redacted), and anything local can post to the API until #25.
+    come (they aren't redacted), and a caller with a valid API key, or any local process when
+    the recorder runs without keys, can post to the API.
     """
     counts = event.get("client_redactions")
     if not isinstance(counts, dict):

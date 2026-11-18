@@ -42,7 +42,7 @@ def store(make_database: Callable[[], str]) -> Generator[Engine]:
 
 @pytest.fixture
 def client(store: Engine) -> TestClient:
-    return TestClient(create_app(store, REDACTOR), base_url="http://127.0.0.1:4318")
+    return TestClient(create_app(store, REDACTOR, auth=None), base_url="http://127.0.0.1:4318")
 
 
 def post(client: TestClient, body: bytes, kind: str = PROTOBUF, **headers: str) -> Any:
@@ -252,7 +252,7 @@ def test_an_unreachable_database_is_a_503_so_the_exporter_retries() -> None:
     )  # nothing listens on port 1
     try:
         response = post(
-            TestClient(create_app(engine, REDACTOR), base_url="http://127.0.0.1:4318"),
+            TestClient(create_app(engine, REDACTOR, auth=None), base_url="http://127.0.0.1:4318"),
             protobuf(record(triage_run())),
         )
     finally:
@@ -338,13 +338,6 @@ def test_refused_requests_store_nothing(
 
 def test_health(client: TestClient) -> None:
     assert client.get("/healthz").json() == {"status": "ok"}
-
-
-def test_serve_refuses_a_public_interface(clean_env: pytest.MonkeyPatch) -> None:
-    result = CliRunner().invoke(cli, ["serve", "--host", "0.0.0.0"])
-
-    assert result.exit_code == 2
-    assert "no authentication" in result.output
 
 
 def test_serve_refuses_an_unmigrated_database(

@@ -67,7 +67,7 @@ def store(make_database: Callable[[], str]) -> Generator[Engine]:
 
 @pytest.fixture
 def client(store: Engine) -> TestClient:
-    return TestClient(create_app(store, REDACTOR), base_url="http://127.0.0.1:4318")
+    return TestClient(create_app(store, REDACTOR, auth=None), base_url="http://127.0.0.1:4318")
 
 
 def failing_for(error: Exception, monkeypatch: pytest.MonkeyPatch) -> None:

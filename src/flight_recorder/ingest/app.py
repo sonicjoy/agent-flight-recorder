@@ -11,8 +11,9 @@ a batch is never refused for one bad item. An error nobody expected (a bug, or a
 behind on migrations) is logged, without data, and also gets a 503: the item is kept by
 the caller, not lost, until the cause is fixed.
 
-No authentication yet (#25): serve on 127.0.0.1 only. Requests must also name a loopback
-host, so a web page can't reach the API through DNS rebinding.
+With API keys configured (`afr serve` decides at startup, ingest/auth.py), every route but
+/healthz needs `Authorization: Bearer <key>`. Without them the API serves loopback only, and
+requests must name a loopback host, so a web page can't reach it through DNS rebinding.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from sqlalchemy.exc import TimeoutError as PoolTimeout
 from starlette.concurrency import run_in_threadpool
 
 from flight_recorder.ingest import otlp
+from flight_recorder.ingest.auth import ApiKeys
 from flight_recorder.ingest.claude_code import EventError, apply_event, items_over_limit
 from flight_recorder.ingest.mapping import MappingError, map_trace, traces
 from flight_recorder.redact import Redactor
@@ -203,15 +205,47 @@ def _host(header: str) -> str:
     return header.rsplit(":", 1)[0] if header.count(":") == 1 or "]:" in header else header
 
 
+OPEN_PATHS = frozenset({"/healthz"})
+
+
+def _bearer(header: str) -> str | None:
+    """The token from `Authorization: Bearer <token>`; the scheme is case-insensitive."""
+    scheme, _, token = header.partition(" ")
+    token = token.strip()
+    if scheme.lower() != "bearer" or not token or any(c.isspace() for c in token):
+        return None
+    return token
+
+
+def _refused() -> Response:
+    return JSONResponse(
+        {"error": "missing or invalid API key"},
+        status_code=401,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
 def create_app(
-    engine: Engine, redactor: Redactor, *, allowed_hosts: frozenset[str] = LOOPBACK_HOSTS
+    engine: Engine,
+    redactor: Redactor,
+    *,
+    auth: ApiKeys | None,  # required: forgetting it must not leave the server open
+    allowed_hosts: frozenset[str] = LOOPBACK_HOSTS,
 ) -> FastAPI:
     app = FastAPI(title="Agent Flight Recorder ingest", docs_url=None, redoc_url=None)
 
     @app.middleware("http")
-    async def loopback_only(  # pyright: ignore[reportUnusedFunction]
+    async def guard(  # pyright: ignore[reportUnusedFunction]
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
+        """Runs before an endpoint reads the body, so a refused caller costs nothing."""
+        if request.scope["path"] in OPEN_PATHS:  # what the router matches, not the Host-built URL
+            return await call_next(request)
+        if auth is not None:
+            token = _bearer(request.headers.get("authorization", ""))
+            if token is None or not auth.match(token):
+                return _refused()
+            return await call_next(request)  # a key is the access control; Host is the client's
         if _host(request.headers.get("host", "").lower()) not in allowed_hosts:
             return JSONResponse(
                 {"error": "requests must be addressed to a loopback host"}, status_code=421

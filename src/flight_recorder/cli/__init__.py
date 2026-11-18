@@ -87,36 +87,53 @@ def llm_ping(
     typer.echo(f"latency: {elapsed:.2f}s")
 
 
-LOOPBACK = ("127.0.0.1", "localhost", "::1")
-
-
 @app.command()
 def serve(
-    host: Annotated[str, typer.Option(help="Interface to listen on; loopback only for now.")] = (
-        "127.0.0.1"
-    ),
+    host: Annotated[
+        str,
+        typer.Option(
+            help="Interface to listen on; beyond loopback needs API keys (docs/ingest.md)."
+        ),
+    ] = "127.0.0.1",
     port: Annotated[int, typer.Option(help="4318 is the standard OTLP/HTTP port.")] = 4318,
 ) -> None:
     """Run the ingest API: OTLP/HTTP traces on POST /v1/traces."""
+    import os
+
     import uvicorn
+    from pydantic import ValidationError
 
     from flight_recorder.ingest.app import create_app
+    from flight_recorder.ingest.auth import AuthConfigError, auth_mode
     from flight_recorder.redact import default_redactor
-    from flight_recorder.store.db import make_engine, pending_migrations
+    from flight_recorder.settings import Settings
+    from flight_recorder.store.db import database_url, make_engine, pending_migrations
 
-    if host not in LOOPBACK:
-        typer.echo(
-            f"error: refusing to listen on {host}: the ingest API has no authentication "
-            "yet (#25). Use 127.0.0.1.",
-            err=True,
+    # Decide on auth before touching the database: a missing secret is reported first.
+    try:
+        settings = Settings()
+    except ValidationError as error:
+        fields = sorted({str(e["loc"][0]) for e in error.errors(include_input=False) if e["loc"]})
+        typer.echo(f"error: invalid setting: {', '.join(fields)}", err=True)
+        raise typer.Exit(code=2) from None
+    secret = settings.api_key_hashes
+    hashes = secret.get_secret_value() if secret is not None else None  # "" stays "": refused
+    try:
+        mode = auth_mode(
+            hashes, host, insecure=settings.insecure_no_auth, on_cloud_run="K_SERVICE" in os.environ
         )
-        raise typer.Exit(code=2)
-    engine = make_engine()
+    except AuthConfigError as error:
+        typer.echo(f"error: {error}", err=True)
+        raise typer.Exit(code=2) from None
+    typer.echo(f"auth: {'on' if mode.auth is not None else 'off'} ({mode.reason})")
+
+    engine = make_engine(database_url(settings))
     try:
         if pending_migrations(engine):
             typer.echo("error: the database isn't up to date; run `afr db upgrade` first", err=True)
             raise typer.Exit(code=1)
         typer.echo(f"ingest: POST http://{host}:{port}/v1/traces (OTLP protobuf or JSON)")
-        uvicorn.run(create_app(engine, default_redactor()), host=host, port=port, log_level="info")
+        app_ = create_app(engine, default_redactor(settings), auth=mode.auth)
+        uvicorn.run(app_, host=host, port=port, log_level="info")
     finally:
         engine.dispose()  # close pooled connections on every way out
