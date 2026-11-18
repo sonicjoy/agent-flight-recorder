@@ -257,9 +257,12 @@ def test_explain_run_trims_in_its_stated_order(
     session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     spans = [span("root", None, 0, kind="agent", name="agent")]
-    spans += [span(f"e{i}", "root", 1 + i, status="error", error=f"boom {i}") for i in range(3)]
-    spans += [span(f"r{i}", "root", 10 + i, kind="tool", status="rejected") for i in range(2)]
-    attributes = {f"triager.decided.f{i}": "v" for i in range(3)}
+    # every item is longer than the budget's step below, so one step drops at most one item
+    spans += [span(f"e{i}", "root", 1 + i, status="error", error=f"boom {i} " + "e" * 80)
+              for i in range(3)]  # fmt: skip
+    spans += [span(f"r{i}", "root", 10 + i, kind="tool", status="rejected", name="r" * 60)
+              for i in range(2)]  # fmt: skip
+    attributes = {f"triager.decided.f{i}": "v" * 60 for i in range(3)}
     run_id = record(session, "trace-1", spans, attributes=attributes)
     other = record(session, "trace-2", [span("root", None, 0)])
     for i in range(4):
@@ -267,7 +270,7 @@ def test_explain_run_trims_in_its_stated_order(
         label(session, other, f"mode-{i}")
     _ordered(session, run_id)
     first = session.query(Label).filter_by(run_id=run_id, failure_mode="mode-0").one()
-    set_answer(session, first.id, {"fields": {f"a{i}": "x" for i in range(3)}}, REDACTOR)
+    set_answer(session, first.id, {"fields": {f"a{i}": "x" * 60 for i in range(3)}}, REDACTOR)
     session.flush()
     full = explain_run(session, str(run_id), NOW)
     assert sum(len(g["runs"]) for g in full["same_mode_runs"]) == 3 and full["cut"] == [
@@ -296,7 +299,7 @@ def test_explain_run_trims_in_its_stated_order(
 
     # Step the budget down: each kind is trimmed only once the kinds before it are gone
     trimmed: list[str] = []
-    for budget in range(size(full) - 1, 10, -40):
+    for budget in range(size(full) - 1, 10, -20):
         monkeypatch.setattr(queries, "MAX_RESULT_CHARS", budget)
         for kind in _cut(explain_run(session, str(run_id), NOW)):
             if kind != queries.MODES_UNCHECKED and kind not in trimmed:
