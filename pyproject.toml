@@ -70,7 +70,7 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers -m 'not smoke'"
 markers = [
     "smoke: real calls to LLM providers; run with `pytest -m smoke` (skipped without keys)",
-    "db: needs Postgres (`docker compose up -d`); skipped without it unless AFR_REQUIRE_DB is set",
+    "db: needs Postgres (`docker compose up -d db`); skipped without it unless AFR_REQUIRE_DB is set",
 ]
 
 [dependency-groups]

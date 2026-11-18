@@ -103,7 +103,7 @@ def open_store(*, readonly: bool = True) -> Generator[Session]:
             behind = pending_migrations(engine)
         except OperationalError as error:
             typer.echo(
-                "error: can't reach the run store; is Postgres running (`docker compose up -d`)?",
+                "error: can't reach the run store; is Postgres up (`docker compose up -d db`)?",
                 err=True,
             )
             raise typer.Exit(code=2) from error
