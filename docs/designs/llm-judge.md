@@ -233,7 +233,7 @@ A test (the sync test) checks two things: the committed `evals/cases/comment-jud
 `afr eval agreement --suite S --field F [--root R]`, keyless:
 
 1.  Load the suite and grade its saved outputs as `afr eval grade` does: `load_suite`, `read_outputs`, `grade_suite`. Staleness and errors are decided there, once. With no `outputs.jsonl` at all, it exits 2: there is nothing to measure.
-2.  For each case graded `pass` or `fail` that has exactly one `equals` check on `F`, take that check's `expected` (the hand grade) and `actual` from its result. Values other than `pass` and `fail` are left out.
+2.  For each case graded `pass` or `fail` whose only check is an `equals` check on `F`, take that check's `expected` (the hand grade) and `actual` from its result. Values other than `pass` and `fail` are left out.
 3.  For all counted cases, and again for each case tag, compute:
     *   the four confusion counts and `n`;
     *   percent agreement;
@@ -432,7 +432,7 @@ The PR order is in "Estimate and pull requests" above.
     *   **`VERSION`:** imported from `flight_recorder.evals.judge_suite` (below). Raise it when the prompt, the reply schema or the grading rule changes.
     *   **`validate_input(input)`:** calls `judge_suite.check_input(input)` (rules below), then checks that `model` passes `llm.parse_spec`. It raises `ValueError` naming the first problem.
     *   **`verdict_model(criteria)`:** builds a pydantic model with `pydantic.create_model`:
-        *   for each id, a field named `c_<id with - replaced by _>`, typed `Literal["pass", "fail"]`, with `alias=<id>`, required;
+        *   for each id, a field named by its position (`c0`, `c1`, …; amended in review: ids such as `a-b` and `a_b` would otherwise collide), typed `Literal["pass", "fail"]`, with `alias=<id>`, required;
         *   a required `reason: str`.
     *   **`escape(text)`:** replaces `&` with `&amp;` first, then `<` with `&lt;` and `>` with `&gt;`.
     *   **`build_messages(input)`:**
@@ -515,13 +515,13 @@ The PR order is in "Estimate and pull requests" above.
 *   **Type / Scope:** CLI. Two commands with lazy imports, as in the other eval commands. Neither imports `flight_recorder.llm` or `flight_recorder.evals.judge`.
 *   **Proposed Changes:**
     *   **`afr eval judge-suite --items PATH --rubric PATH --suite NAME [--root R]`:**
-        1.  `folder = cases.suite_dir(root, suite, local=False)`. If `cases.suite_dir(root, suite, local=True)` exists, exit 2 (`load_suite` would refuse the pair).
+        1.  `folder = cases.suite_dir(root, suite, local=False)`. If `cases.suite_dir(root, suite, local=True)` exists, exit 2 (`load_suite` would refuse the pair). Amended in review: also exit 2 when the folder holds another suite (a `suite.yaml` naming another agent, or cases with no `suite.yaml`), when there are no items, or when the rubric's model isn't `<provider>:<model>` with a known provider, or anything in a case input can't be stored as JSON, so nothing that fails later is written and no other suite's cases are deleted. Files are written beside their target and swapped in.
         2.  Load both files, then `build_suite`, then `write_suite`. Nothing is written or deleted until everything has been checked.
         3.  Exit 0 after writing. Exit 1 on `ItemsError`, printing every (id, problem). Exit 2 on `CaseError` or `OSError` (a missing or unreadable file, bad YAML, the wrong shape, an invalid rubric).
     *   **`afr eval agreement --suite NAME --field F [--root R]`:**
         1.  `load_suite`, then `read_outputs`. When the header is `None` (no `outputs.jsonl`), print `error: no outputs.jsonl: run the suite` and exit 2. This departs from `afr eval grade`, which reports every case stale; there is nothing to measure.
         2.  `grade_suite(cases, lines, include_unreviewed=False)`, then `pairs_from` and `agreement` for the overall row and each tag.
-        3.  Print a `rich.table.Table` with the columns `rows`, `n`, `agree`, `kappa`, `catch`, `pass`, `both pass`, `both fail`, `hand pass / judge fail`, `hand fail / judge pass`. The first row is `all`, then one row per tag in sorted order. Percentages and rates print with one decimal, kappa with two, and `None` as `n/a`. Then list each left-out case and its reason.
+        3.  Print a `rich.table.Table` with the columns `rows`, `n`, `agree`, `kappa`, `catch`, `pass`, `both pass`, `both fail`, `hand pass / judge fail`, `hand fail / judge pass`. The first row is `all`, then one row per tag in sorted order, labelled `tag <name>` (amended in review, so a tag called `all` can't pass for the overall row; tags that aren't text are ignored). Percentages and rates print with one decimal, kappa with two, and `None` as `n/a`. Then list each left-out case and its reason.
         4.  Exit 1 if `incomplete(left_out)`, otherwise 0, whatever else was left out. Exit 2 on `CaseError` or `OSError`, as `_evaluate` handles them.
 
 #### 5. `tests/evals/test_judge.py` (Create, PR A)

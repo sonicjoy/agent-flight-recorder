@@ -126,13 +126,7 @@ def _evaluate(
         elif baseline is None:
             notes.append("no baseline.json yet: rerun with --accept to write one")
     except (CaseError, OSError) as error:
-        message = (
-            f"{error.filename}: {error.strerror}"
-            if isinstance(error, OSError) and error.strerror and error.filename
-            else error
-        )
-        out.print(render.text(f"error: {message}"), soft_wrap=True)
-        raise typer.Exit(code=2) from None
+        raise _fail(out, error) from None
     if as_json:
         # ASCII only: no control, bidi or C1 character from an output reaches the terminal
         typer.echo(json.dumps(_as_json(suite, header, result, changes, code), ensure_ascii=True))
@@ -253,6 +247,7 @@ def judge_suite(
     from flight_recorder.evals.judge_suite import (
         ItemsError,
         build_suite,
+        check_target,
         load_items,
         load_rubric,
         write_suite,
@@ -263,6 +258,7 @@ def judge_suite(
         folder = suite_dir(root, suite, local=False)
         if suite_dir(root, suite, local=True).exists():
             raise CaseError(f"suite {suite!r} also exists under local/: keep one")
+        check_target(folder)  # before reading anything: refuse fast
         files = build_suite(load_items(items), load_rubric(rubric))
         write_suite(folder, files)
     except ItemsError as error:
@@ -306,7 +302,7 @@ def agreement(
     table = Table("rows", "n", "agree", "kappa", "catch", "pass", "both pass", "both fail",
                   "hand pass / judge fail", "hand fail / judge pass", box=None,
                   pad_edge=False)  # fmt: skip
-    for name, rows in [("all", pairs), *sorted(by_tag.items())]:
+    for name, rows in [("all", pairs), *((f"tag {t}", r) for t, r in sorted(by_tag.items()))]:
         a = measure(rows)
         kappa = "n/a" if a.kappa is None else f"{a.kappa:.2f}"
         table.add_row(render.text(name), str(a.n), _rate(a.percent), kappa, _rate(a.catch_rate),

@@ -175,3 +175,51 @@ def test_a_missing_key_is_an_error(clean_env: pytest.MonkeyPatch, tmp_path: Path
 
 def test_the_harness_accepts_the_judge_as_an_agent() -> None:
     assert import_agent("flight_recorder.evals.judge:judge") is judge
+
+
+def test_the_judge_refuses_a_stale_case_before_calling_the_model(fake: Any) -> None:
+    model = fake(verdicts(**BOTH_PASS))
+
+    with pytest.raises(ValueError, match="judge_version"):
+        judge(judge_input(judge_version=0))
+
+    assert model.specs == [] and model.messages == []
+
+
+def test_ids_that_differ_only_by_dash_or_underscore_stay_apart(fake: Any) -> None:
+    criteria = [{"id": "a-b", "pass": "p", "fail": "f"}, {"id": "a_b", "pass": "p", "fail": "f"}]
+    value = judge_input()
+    value["rubric"] = value["rubric"] | {"criteria": criteria, "examples": []}
+    fake(verdicts(**{"a-b": "pass", "a_b": "fail"}))
+
+    out = judge(value)
+
+    assert len(verdict_model(criteria).model_fields) == 3
+    assert out["criteria"] == {"a-b": "pass", "a_b": "fail"} and out["grade"] == "fail"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        _rubric_change(colour="red"),
+        _rubric_change(criteria=[{"id": "a", "pass": 1, "fail": "f"}], examples=[]),
+        _rubric_change(examples=[{"item": {}, "reason": "r",
+                                  "criteria": {"suggests-not-settles": "yes",
+                                               "only-decision-references": "pass"}}]),
+    ],
+)  # fmt: skip
+def test_more_bad_rubrics_are_refused(bad: dict[str, Any]) -> None:
+    with pytest.raises(ValueError):
+        validate_input(bad)
+
+
+def test_a_verdict_is_taken_only_from_its_own_criterions_key() -> None:
+    criteria = [{"id": "c1", "pass": "p", "fail": "f"}, {"id": "c2", "pass": "p", "fail": "f"}]
+    schema = verdict_model(criteria)
+
+    with pytest.raises(ValueError):  # c2 left out: never filled from a position name
+        schema.model_validate({"c1": "pass", "reason": "r"})
+    with pytest.raises(ValueError):
+        verdict_model(rubric()["criteria"]).model_validate(
+            {"c0": "pass", "c1": "pass", "reason": "r"}
+        )

@@ -11,10 +11,12 @@ applies again before each call.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, cast
 
 from flight_recorder.evals.cases import ID, SUFFIX, CaseError, check_id, dump, load
+from flight_recorder.evals.grade import input_hash
 
 VERSION = 1
 """The judge's version, copied into every case input: raise it when the prompt, the reply
@@ -28,6 +30,9 @@ ITEM_KEYS = ("id", "tag", "item", "grade", "targets", "author", "note")
 TAGS = ("corpus", "broken", "holdout")
 GRADES = ("pass", "fail")
 RESERVED = "reason"  # the reply's own field: no criterion can be called that
+# flight_recorder.llm.PROVIDERS, repeated so this module never loads LangChain (a test keeps
+# the two equal): a spec the judge would refuse is caught when the suite is written
+PROVIDERS = ("anthropic", "google_genai", "openai")
 
 
 class ItemsError(ValueError):
@@ -52,6 +57,10 @@ def check_input(input: Any) -> None:
         raise ValueError(f"judge_version must be {VERSION}, got {version!r}: regenerate the suite")
     if not _text(data["model"]):
         raise ValueError("model must be text")
+    provider, colon, model = data["model"].strip().partition(":")
+    if not colon or not model or provider not in PROVIDERS:
+        raise ValueError(f"model {data['model']!r} must be <provider>:<model>, the provider "
+                         f"one of {', '.join(PROVIDERS)}")  # fmt: skip
     check_rubric(data["rubric"])
     if not isinstance(data["item"], dict):
         raise ValueError("item must be a mapping")
@@ -110,8 +119,8 @@ def check_rubric(rubric: Any) -> list[str]:
 
 def load_rubric(path: Path) -> dict[str, Any]:
     """The rubric file: model, instructions, criteria and optional examples. Raises CaseError."""
-    rubric = load(_read(path))
-    unknown = sorted(set(rubric) - set(RUBRIC_FILE_KEYS))
+    rubric = _load(path)
+    unknown = sorted(map(str, set(rubric) - set(RUBRIC_FILE_KEYS)))
     missing = [k for k in ("model", "instructions", "criteria") if k not in rubric]
     if unknown or missing:
         raise CaseError(f"{path.name}: unknown keys {unknown}, missing keys {missing}")
@@ -120,18 +129,20 @@ def load_rubric(path: Path) -> dict[str, Any]:
 
 def load_items(path: Path) -> list[dict[str, Any]]:
     """The items file, `{items: [...]}`. Raises CaseError for any other shape."""
-    data = load(_read(path))
+    data = _load(path)
     items = data.get("items")
     if set(data) != {"items"} or not isinstance(items, list):
         raise CaseError(f"{path.name}: must hold only `items:`, a list")
     return cast("list[dict[str, Any]]", items)
 
 
-def _read(path: Path) -> str:
+def _load(path: Path) -> dict[str, Any]:
     try:
-        return path.read_text(encoding="utf-8")
+        return load(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError) as error:
         raise CaseError(f"{path.name}: can't read it: {error}") from error
+    except CaseError as error:
+        raise CaseError(f"{path.name}: {error}") from error
 
 
 def _item_problems(raw: Any, ids: list[str], seen: set[str]) -> tuple[str, list[str]]:
@@ -151,7 +162,7 @@ def _item_problems(raw: Any, ids: list[str], seen: set[str]) -> tuple[str, list[
         if name in seen:
             problems.append("id repeats")
         seen.add(name)
-    if unknown := sorted(set(entry) - set(ITEM_KEYS)):
+    if unknown := sorted(map(str, set(entry) - set(ITEM_KEYS))):
         problems.append(f"unknown keys {unknown}")
     if entry.get("tag") not in TAGS:
         problems.append(f"tag must be one of {', '.join(TAGS)}")
@@ -171,6 +182,10 @@ def _item_problems(raw: Any, ids: list[str], seen: set[str]) -> tuple[str, list[
     for key in ("author", "note"):
         if key in entry and not _text(entry[key]):
             problems.append(f"{key} must be text")
+    try:
+        input_hash({"input": item})  # as load_suite will hash it
+    except ValueError as error:  # the harness couldn't hash or store it
+        problems.append(f"item can't be stored as JSON ({error})")
     return label, problems
 
 
@@ -190,8 +205,12 @@ def build_suite(items: list[dict[str, Any]], rubric: dict[str, Any]) -> dict[str
         ids = check_rubric(part)
         check_input({"judge_version": VERSION, "model": rubric["model"], "rubric": part,
                      "item": {}})  # fmt: skip
+        # as load_suite will hash it: no NaN, no lone surrogate in the model or the rubric
+        input_hash({"input": {"model": rubric["model"], "rubric": part}})
     except ValueError as error:
         raise CaseError(f"rubric: {error}") from error
+    if not items:
+        raise CaseError("no items: a judge suite needs at least one")
     problems: list[tuple[str, str]] = []
     seen: set[str] = set()
     for raw in items:
@@ -211,13 +230,35 @@ def build_suite(items: list[dict[str, Any]], rubric: dict[str, Any]) -> dict[str
     return files
 
 
+def check_target(folder: Path) -> None:
+    """Refuses a folder that holds another kind of suite: writing would delete its cases.
+    Raises CaseError."""
+    settings = folder / f"suite{SUFFIX}"
+    if not settings.exists():
+        if any(folder.glob(f"*{SUFFIX}")):
+            raise CaseError(f"{folder} holds cases but no suite.yaml: not a judge suite")
+        return
+    agent = _load(settings).get("agent")
+    if agent != AGENT:
+        raise CaseError(f"{folder} is a suite for {agent!r}, not the judge: pick another --suite")
+
+
 def write_suite(folder: Path, files: dict[str, str]) -> None:
-    """Writes every file (replacing what's there) and deletes the folder's other case files.
-    outputs.jsonl is left alone, and no baseline.json is ever written: the suite never gates."""
+    """Writes every file (replacing what's there) and deletes the folder's other case files,
+    after `check_target`, so no other suite's cases are ever deleted. outputs.jsonl is left
+    alone, and no baseline.json is ever written: the suite never gates. Each file is written
+    beside its target, to a new file, and swapped in, so no link is ever written through."""
+    check_target(folder)
     folder.mkdir(parents=True, exist_ok=True)
     for name, text in files.items():
-        with (folder / name).open("w", encoding="utf-8", newline="\n") as file:
-            file.write(text)
+        partial = folder / f".{name}.{os.getpid()}.tmp"
+        partial.unlink(missing_ok=True)
+        try:
+            with partial.open("x", encoding="utf-8", newline="\n") as file:
+                file.write(text)
+            os.replace(partial, folder / name)
+        finally:
+            partial.unlink(missing_ok=True)
     for stray in folder.glob(f"*{SUFFIX}"):
         if stray.name not in files:
             stray.unlink()

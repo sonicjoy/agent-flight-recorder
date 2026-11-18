@@ -337,7 +337,7 @@ def test_agreement_prints_the_table_and_exits_0_when_complete(
     result = judge_cli("agreement", "--suite", "j", "--field", "grade")
 
     assert result.exit_code == 0, result.output
-    for column in ("rows", "agree", "kappa", "catch", "hand fail / judge pass"):
+    for column in ("rows", "agree", "kappa", "catch", "hand fail / judge pass", "tag corpus"):
         assert column in result.output
     assert "left out odd: value not pass or fail" in result.output
 

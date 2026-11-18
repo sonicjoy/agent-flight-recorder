@@ -8,10 +8,11 @@ from typing import Any
 
 import pytest
 import yaml
-from judge_fixtures import items, rubric
+from judge_fixtures import ITEM, items, rubric
 
 from flight_recorder.evals.cases import CaseError
 from flight_recorder.evals.judge_suite import (
+    AGENT,
     VERSION,
     ItemsError,
     build_suite,
@@ -70,6 +71,7 @@ def test_a_rubric_the_judge_would_refuse_is_an_error_not_bad_items() -> None:
 def test_writing_replaces_files_deletes_stray_cases_and_keeps_outputs(tmp_path: Path) -> None:
     folder = tmp_path / "j"
     folder.mkdir()
+    (folder / "suite.yaml").write_text(f"agent: {AGENT}\n", encoding="utf-8")
     (folder / "old.yaml").write_text("id: old\n", encoding="utf-8")
     (folder / "outputs.jsonl").write_text("{}\n", encoding="utf-8")
     (folder / "b-1.yaml").write_text("stale\n", encoding="utf-8")
@@ -112,3 +114,126 @@ def test_building_a_suite_never_loads_the_llm_layer() -> None:
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
 
     assert out.stdout.strip() == "False"
+
+
+@pytest.mark.parametrize(
+    ("changes", "problem"),
+    [
+        ({"item": ITEM | {"decision": "dup"}}, "item must be"),
+        ({"author": 3}, "author must be text"),
+        ({"note": ["x"]}, "note must be text"),
+        ({"item": ITEM | {"decision": {"x": float("nan")}}}, "can't be stored as JSON"),
+        ({1: "x", "colour": "red"}, "unknown keys"),
+    ],
+)
+def test_each_item_rule_is_enforced(changes: dict[Any, Any], problem: str) -> None:
+    with pytest.raises(ItemsError) as caught:
+        build_suite([items()[0] | changes], rubric())
+
+    assert any(problem in p for _, p in caught.value.problems)
+
+
+def test_no_items_is_refused() -> None:
+    with pytest.raises(CaseError, match="no items"):
+        build_suite([], rubric())
+
+
+def test_a_model_spec_the_judge_would_refuse_is_caught_when_writing() -> None:
+    from flight_recorder.evals.judge_suite import PROVIDERS
+    from flight_recorder.llm import PROVIDERS as LLM_PROVIDERS
+
+    assert set(PROVIDERS) == set(LLM_PROVIDERS)
+    for bad in ("claude-haiku", "nope:model", "anthropic:"):
+        with pytest.raises(CaseError, match="rubric"):
+            build_suite(items(), rubric() | {"model": bad})
+
+
+def test_a_file_error_names_the_file(tmp_path: Path) -> None:
+    (tmp_path / "rubric.yaml").write_text("model: [unclosed\n", encoding="utf-8")
+
+    with pytest.raises(CaseError, match=r"rubric\.yaml"):
+        load_rubric(tmp_path / "rubric.yaml")
+
+
+def test_another_kind_of_suite_is_never_overwritten(tmp_path: Path) -> None:
+    from flight_recorder.evals.judge_suite import check_target
+
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "suite.yaml").write_text("agent: flight_recorder.evals.example:triage\n",
+                                      encoding="utf-8")  # fmt: skip
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    (loose / "case-1.yaml").write_text("id: case-1\n", encoding="utf-8")
+    judged = tmp_path / "judged"
+    write_suite(judged, build_suite(items(), rubric()))
+
+    for folder in (other, loose):
+        with pytest.raises(CaseError):
+            check_target(folder)
+    check_target(judged)
+    check_target(tmp_path / "new")
+
+
+def test_a_link_in_a_case_files_place_is_replaced_not_written_through(tmp_path: Path) -> None:
+    folder, target = tmp_path / "j", tmp_path / "outside.txt"
+    folder.mkdir()
+    (folder / "suite.yaml").write_text(f"agent: {AGENT}\n", encoding="utf-8")
+    target.write_text("keep\n", encoding="utf-8")
+    try:
+        (folder / "b-1.yaml").symlink_to(target)
+    except OSError:
+        pytest.skip("this system can't create symbolic links")
+
+    write_suite(folder, build_suite(items(), rubric()))
+
+    assert target.read_text(encoding="utf-8") == "keep\n"
+    assert not (folder / "b-1.yaml").is_symlink()
+
+
+def test_writing_never_deletes_another_suites_cases(tmp_path: Path) -> None:
+    folder = tmp_path / "other"
+    folder.mkdir()
+    (folder / "suite.yaml").write_text(
+        "agent: flight_recorder.evals.example:triage\n", encoding="utf-8"
+    )
+    (folder / "keep-me.yaml").write_text("id: keep-me\n", encoding="utf-8")
+
+    with pytest.raises(CaseError):
+        write_suite(folder, build_suite(items(), rubric()))
+
+    assert (folder / "keep-me.yaml").exists()
+
+
+def test_a_rubric_example_that_isnt_json_is_refused() -> None:
+    bad = rubric()
+    bad["examples"][0]["item"] = {"x": float("nan")}
+
+    with pytest.raises(CaseError, match="rubric"):
+        build_suite(items(), bad)
+
+
+def test_odd_keys_in_a_file_are_an_error_not_a_crash(tmp_path: Path) -> None:
+    (tmp_path / "r.yaml").write_text("1: x\ncolour: red\nmodel: m\n", encoding="utf-8")
+
+    with pytest.raises(CaseError, match="unknown keys"):
+        load_rubric(tmp_path / "r.yaml")
+
+
+@pytest.mark.parametrize(
+    "where",
+    ["example", "instructions", "model", "item"],
+)
+def test_a_lone_surrogate_is_refused_as_load_suite_would(where: str) -> None:
+    bad, entries = rubric(), items()
+    if where == "example":
+        bad["examples"][0]["reason"] = "\ud800"
+    elif where == "instructions":
+        bad["instructions"] = "grade \ud800"
+    elif where == "model":
+        bad["model"] = "anthropic:haiku\ud800"
+    else:
+        entries[0]["item"]["comment"] = "\ud800"
+
+    with pytest.raises((CaseError, ItemsError)):
+        build_suite(entries, bad)

@@ -38,18 +38,15 @@ def validate_input(input: Any) -> None:
     parse_spec(input["model"])  # ModelSpecError is a ValueError
 
 
-def _field(criterion_id: str) -> str:
-    return "c_" + criterion_id.replace("-", "_")
-
-
 def verdict_model(criteria: list[dict[str, str]]) -> type[BaseModel]:
     """The reply's schema: one required pass or fail per criterion (named by its id through an
     alias), and a required reason."""
-    fields: dict[str, Any] = {
-        _field(c["id"]): (Literal["pass", "fail"], Field(alias=c["id"])) for c in criteria
+    fields: dict[str, Any] = {  # named by position: ids such as a-b and a_b stay apart
+        f"c{i}": (Literal["pass", "fail"], Field(alias=c["id"])) for i, c in enumerate(criteria)
     }
     fields["reason"] = (str, Field(description="One short explanation of the verdicts."))
-    return create_model("Verdict", __config__=ConfigDict(populate_by_name=True), **fields)
+    # filled by alias only: a reply key that happens to match a position name (c0) fills nothing
+    return create_model("Verdict", __config__=ConfigDict(populate_by_name=False), **fields)
 
 
 def escape(text: str) -> str:

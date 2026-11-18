@@ -246,9 +246,9 @@ uv run afr eval agreement --suite comment-judge --field grade
 | `--suite` | The suite folder to write (required) |
 | `--root` | The cases folder (default `evals/cases`) |
 
-**Exit codes (`judge-suite`):** 0 after writing. 1 when items are invalid (a bad or repeated id, an unknown key, a tag or grade not allowed, a malformed item, an unknown `targets`), listing every one; nothing is written. 2 for a missing or malformed file, a rubric the judge would refuse, or the suite also existing under `local/`.
+**Exit codes (`judge-suite`):** 0 after writing. 1 when items are invalid (a bad or repeated id, an unknown key, a tag or grade not allowed, a malformed item, an unknown `targets`), listing every one; nothing is written. 2 for a missing or malformed file, no items, a rubric the judge would refuse (including a model spec with an unknown provider), a folder that holds another suite (its `suite.yaml` names another agent, or it has cases but no `suite.yaml`), or the suite also existing under `local/`.
 
-`agreement` grades the saved outputs as `grade` does, then prints one row for all counted cases and one per case tag: `n`, percent agreement, Cohen's kappa (`n/a` when nothing is counted or both raters used one and the same class), the catch rate (hand-graded failures the judge also failed), the pass rate, and the four counts. Then it lists every case left out and why: stale, error, skipped, no single `equals` check on the field, or a value not `pass` or `fail`.
+`agreement` grades the saved outputs as `grade` does, then prints one row for all counted cases (`all`) and one per case tag (`tag <name>`; tags that aren't text are ignored): `n`, percent agreement, Cohen's kappa (`n/a` when nothing is counted or both raters used one and the same class), the catch rate (hand-graded failures the judge also failed), the pass rate, and the four counts. Then it lists every case left out and why: stale, error, skipped, no single `equals` check on the field, or a value not `pass` or `fail`.
 
 | Option (`agreement`) | |
 |---|---|

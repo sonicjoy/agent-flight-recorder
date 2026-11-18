@@ -8,7 +8,7 @@ class, so the catch rate is how many hand-graded failures the judge also failed.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from flight_recorder.evals.grade import SuiteResult
@@ -76,8 +76,10 @@ def pairs_from(
             left_out.append((case.id, "value not pass or fail"))
             continue
         pairs.append(pair)
-        for tag in dict.fromkeys(by_id[case.id].get("tags") or []):
-            by_tag.setdefault(str(tag), []).append(pair)
+        tags: Any = by_id[case.id].get("tags")
+        listed: list[Any] = cast("list[Any]", tags) if isinstance(tags, list) else []
+        for tag in dict.fromkeys(t for t in listed if isinstance(t, str)):  # each tag once
+            by_tag.setdefault(tag, []).append(pair)
     return pairs, by_tag, left_out
 
 

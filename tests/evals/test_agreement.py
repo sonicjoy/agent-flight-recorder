@@ -93,3 +93,29 @@ def test_pairs_are_split_by_tag_and_left_out_cases_say_why() -> None:
     assert incomplete(left_out)
     assert incomplete([("err", "error")]) and incomplete([("stale", "stale")])
     assert not incomplete([("skip", "skipped"), ("odd", "value not pass or fail")])
+
+
+def test_only_a_single_equals_check_on_the_field_counts() -> None:
+    cases = [
+        _case("other-field", P, [], checks=[{"type": "equals", "field": "x", "value": P}]),
+        _case("other-type", P, [], checks=[{"type": "one_of", "field": "grade", "values": [P]}]),
+    ]
+    lines = {str(c["id"]): _line(c, {"grade": P, "x": P}) for c in cases}
+
+    pairs, _, left_out = pairs_from(grade_suite(cases, lines, include_unreviewed=False), cases,
+                                    "grade")  # fmt: skip
+
+    assert pairs == []
+    assert {r for _, r in left_out} == {"no single equals check on grade"}
+
+
+def test_a_tag_counts_once_and_odd_tags_are_ignored() -> None:
+    cases = [_case("a", P, ["corpus", "corpus"]), _case("b", P, "corpus"),  # type: ignore[arg-type]
+             _case("c", P, [{"x": 1}, "broken"])]  # type: ignore[list-item]  # fmt: skip
+    lines = {str(c["id"]): _line(c, {"grade": P}) for c in cases}
+
+    pairs, by_tag, _ = pairs_from(grade_suite(cases, lines, include_unreviewed=False), cases,
+                                  "grade")  # fmt: skip
+
+    assert len(pairs) == 3
+    assert by_tag == {"corpus": [(P, P)], "broken": [(P, P)]}
