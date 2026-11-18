@@ -20,7 +20,7 @@ docker compose down        # stop Postgres; the data stays in the afr-db volume
                            # (add --profile api if you started the API container)
 ```
 
-`docker compose down -v` **deletes the volume and every recorded run**. Use it only to start from nothing on purpose.
+`docker compose --profile api down -v` **deletes the volume and every recorded run** (the profile also stops an API container, if one runs). Use it only to start from nothing on purpose.
 
 Tests that need the database skip when it isn't running. In CI they run against a Postgres service container, with `AFR_REQUIRE_DB=1` so they can't silently skip. Tests never touch the `afr` database: each test session creates throwaway `afr_test_*` databases and drops them afterwards.
 

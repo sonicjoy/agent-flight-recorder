@@ -76,7 +76,7 @@ docker compose --profile api up -d --build   # Postgres, a one-off `afr db upgra
 docker compose --profile api down            # stop all of it; the data stays (plain `down` leaves the API running)
 ```
 
-The `api` profile keeps plain `docker compose up -d` as it was, Postgres only, so `uv run afr serve` can still use port 4318. The container sets `AFR_INSECURE_NO_AUTH=1` and publishes its port on `127.0.0.1` only; never publish it on all interfaces. Its redaction key comes from `AFR_REDACTION_KEY` in your shell when you run `up`, otherwise from its own `afr-home` volume, so export the hook's key first if placeholders from both should match. `.dockerignore` is an allowlist (`pyproject.toml`, `uv.lock`, `README.md`, `src/`) that also drops any `.env`, `.env.*` or `*.key` file inside `src/`, so a developer's keys don't ship in the image.
+The `api` profile keeps plain `docker compose up -d` as it was, Postgres only, so `uv run afr serve` can still use port 4318. The container sets `AFR_INSECURE_NO_AUTH=1` and publishes its port on `127.0.0.1` only; never publish it on all interfaces. Its redaction key comes from `AFR_REDACTION_KEY` in your shell or the repo's `.env` when you run `up` (empty counts as unset), otherwise from its own `afr-home` volume, so export the hook's key first if placeholders from both should match. `.dockerignore` is an allowlist (`pyproject.toml`, `uv.lock`, `README.md`, `src/`) that also drops any `.env`, `.env.*` or `*.key` file inside `src/`, so a developer's keys don't ship in the image.
 
 ## What happens to a request
 

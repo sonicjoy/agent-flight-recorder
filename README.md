@@ -40,7 +40,7 @@ To record Claude Code sessions in a project, run `uv run afr hook install --proj
 
 Costs come from `src/flight_recorder/pricing.yaml`. A weekly workflow checks its Claude rates against Anthropic's pricing page and opens a PR when they change; run the same check with `uv run afr pricing check`. See [docs/llm-providers.md](docs/llm-providers.md#keeping-claude-prices-current).
 
-`docker compose down` stops Postgres and keeps the data (`docker compose --profile api down` if you started the API container too); `docker compose down -v` deletes it. The schema, how traces map onto it, and the rules for changing it without losing data: [docs/schema.md](docs/schema.md).
+`docker compose down` stops Postgres and keeps the data (`docker compose --profile api down` if you started the API container too); `docker compose --profile api down -v` deletes it (with `--profile api`, so an API container started with the profile goes too). The schema, how traces map onto it, and the rules for changing it without losing data: [docs/schema.md](docs/schema.md).
 
 Checks (the same ones CI runs on every pull request):
 

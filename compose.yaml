@@ -40,8 +40,9 @@ services:
     build: .
     environment:
       <<: *api-env
-      # Passed through only when set in your shell at `up`: placeholders match the hook's only if
-      # both use the same key. Unset, the container makes its own in the afr-home volume.
+      # Passed through only when set at `up`, in your shell or the repo's .env: placeholders match
+      # the hook's only if both use the same key. Unset or empty, the container makes its own in
+      # the afr-home volume.
       AFR_REDACTION_KEY:
       # No API keys locally: the container listens on all of its interfaces, so this opt-out
       # is required, and safe only because the port below is published on 127.0.0.1 alone.
