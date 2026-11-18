@@ -61,6 +61,16 @@ def root_failures(roots: list[SpanNode]) -> list[SpanNode]:
     ]
 
 
+def refused_calls(roots: list[SpanNode]) -> list[SpanNode]:
+    """Rejected spans (refused permission), in time order. A refused call's permission wait
+    is rejected too: list the call once, not its wait."""
+    return [
+        n
+        for n in _all(roots)
+        if n.status == "rejected" and not (n.parent is not None and n.parent.status == "rejected")
+    ]
+
+
 def _cap(lines: list[str]) -> str:
     return "\n".join(line for line in lines if line)[:MAX_CHARS]
 
@@ -142,12 +152,7 @@ def documents(session: Session, run: Run, state: str) -> list[Document]:
     nodes = _all(roots)
     asked, answered = conversation(session, run, roots)
     failures = root_failures(roots)
-    # A refused call's permission wait is rejected too: list the call once, not its wait
-    refused = [
-        n
-        for n in nodes
-        if n.status == "rejected" and not (n.parent is not None and n.parent.status == "rejected")
-    ]
+    refused = refused_calls(roots)
     tools = Counter(n.name for n in nodes if n.kind == "tool")
     agent = run.agent or run.source
     name = flat_text(run.name, NAME_CHARS)

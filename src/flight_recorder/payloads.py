@@ -37,6 +37,12 @@ def _strings(value: Any) -> Iterator[str]:
             yield from _strings(item)
 
 
+def recorded_text(value: Any) -> str:
+    """A recorded value as text: its strings, depth first, one per line, each with its own
+    newlines kept (a stack trace stays readable). Not cut: the caller caps it after cleaning."""
+    return "\n".join(s for s in _strings(value) if s.strip())
+
+
 def flat_text(value: Any, limit: int) -> str:
     """A recorded value as one line of plain text, cut to `limit` characters."""
     return cut(" ".join(flat(s) for s in _strings(value) if s.strip()), limit)

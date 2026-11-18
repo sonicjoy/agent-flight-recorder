@@ -52,7 +52,7 @@ flowchart LR
   API["FastAPI ingest<br/>normalise → redact"] --> DB[("Postgres + pgvector<br/>runs · spans · embeddings<br/>labels · eval results")]
   DB --> CLI["CLI<br/>list · replay · label · search · case"]
   DB --> AN["Analyst agent<br/>(LangGraph)"]
-  DB --> MCP["MCP server<br/>(FastMCP)"]
+  DB --> MCP["MCP server<br/>(local, stdio)"]
   DB --> UI["Replay UI<br/>(React + TS)"]
   CLI -->|writes cases| EV
   AN -->|drafts cases| EV["Eval suite<br/>harness · judge · red-team"]
@@ -70,7 +70,7 @@ The same steps for any agent, whether or not it has a truth dataset:
 2. **Find failures.** Runs with an error status, or, when the agent knows its truth, runs it graded wrong (`<prefix>.grade` and `<prefix>.grade.<field>`). Otherwise, read runs and label what you see. Search finds runs by topic or decision, not by whether they were right.
 3. **Label.** `afr label` names each failure mode and, optionally, the right answer (#59). That answer is the truth an agent without a dataset never had.
 4. **Write cases.** `afr case new --from-run` turns a labelled run into a YAML case (#59); the analyst does it in batches, one cluster at a time (#22).
-5. **Run the suite.** `afr eval` calls any agent and grades its output with generic checks against a baseline (#15); a judge rubric comes with #17. An agent that exports OpenTelemetry records its eval runs too, so step 1 starts again.
+5. **Run the suite.** `afr eval` calls any agent and grades its output with generic checks against a baseline (#15); an LLM judge, itself evaluated with `afr eval`, comes with #17. An agent that exports OpenTelemetry records its eval runs too, so step 1 starts again.
 
 ### Data model (draft)
 
@@ -95,7 +95,7 @@ src/flight_recorder/
   cli/         `afr` commands
   evals/       harness, judge
   analyst/     LangGraph analyst agent
-  mcp/         FastMCP server
+  mcp_server.py  MCP server for Claude Code (stdio)
 evals/cases/              the harness's smoke suite (YAML); local/ is git-ignored.
                           The triager's golden suite lives in its own repo
 ui/                       React + TypeScript (Vite)
@@ -114,7 +114,7 @@ docs/                     plan, schema, evals write-ups, decisions/
 | Tracing | OpenTelemetry (OTLP/HTTP); OTel GenAI and OpenInference attributes |
 | Embeddings | fastembed with bge-small, run locally |
 | Evals | Own harness, then a comparison with promptfoo or DeepEval |
-| MCP | FastMCP |
+| MCP | The `mcp` SDK's MCPServer (FastMCP renamed in 2.x), local over stdio |
 | UI | React, TypeScript, Vite |
 | Deploy | Docker, Terraform, Cloud Run, Cloud SQL, Secret Manager |
 
@@ -129,7 +129,7 @@ Write each one up as a short ADR in `docs/decisions/` when you make it. They fee
 5. **Provider-agnostic LLM layer.** Every agent and the judge run on Anthropic or Gemini (or OpenAI, given a key). Provider comparisons become a by-product of the eval suite, and CI needs no paid key. See [LLM providers](llm-providers.md).
 6. **Build the eval harness yourself before using a library**, so eval design is something you can explain end to end, then compare the two honestly.
 7. **Eval cases live in git as YAML**, while results live in the database: cases change through review, results accumulate as history. Results are files in git (`outputs.jsonl`) until #34 loads them into the database.
-8. **The server makes no LLM calls.** MCP tools return data (runs, similar failures, labels, eval cases), and the calling agent's own model does the explaining. The analyst runs as a local job. So the deployed instance needs no LLM key.
+8. **The server makes no LLM calls.** MCP tools return data (runs, their failures, labels, and runs with the same labelled mode; similar failures by embedding and eval cases come later), and the calling agent's own model does the explaining. The analyst runs as a local job. So the deployed instance needs no LLM key.
 9. **API keys are hashes in one pinned secret.** SHA-256 hashes of random keys, one key per caller, in one Secret Manager secret pinned to a version; revoking one means a new version and a redeploy. Local use needs no key, and `afr serve` refuses to listen beyond loopback without keys ([design](designs/api-key-auth.md)).
 
 ## Weekly plan
@@ -174,16 +174,17 @@ Estimates are build hours. The learning items come from the 5-week prep plan and
 | Eval harness from scratch, for any agent | #15 | 3.5h |
 | `afr case`: turn a recorded run into an eval case | #59 | 2.5h |
 | Triager golden suite from its dataset | #16 | 3.5h |
-| LLM-as-judge rubric with agreement check | #17 | 1.5h |
+| LLM judge as an agent under test, with agreement | #17 | 3.5h |
 | Red-team set: prompt injection and secret leaks | #18 | 1h |
 | Evals in CI | #19 | 1h |
-| Compare with promptfoo or DeepEval | #20 | 0.5h |
 
-The golden suite lives in the triager's repo (`evals/cases/triager/`, run with `afr eval`; see [the harness doc](evals/harness.md#the-first-real-suite)). #17, #18, #19 and #21 build on that suite, so #19's live CI run and its API key belong to the triager's workflow, not this repo's. Their issue texts were updated for the suite on 18 November. Each one says what it needs first: the adapter returns no comment yet for #17 to judge or for #18's redaction check, and every case pins one OpenAI model, so #19 needs a Gemini-pinned suite and #21 runs one suite per model.
+The golden suite lives in the triager's repo (`evals/cases/triager/`, run with `afr eval`; see [the harness doc](evals/harness.md#the-first-real-suite)). #18, #19 and #21 build on that suite, so #19's live CI run and its API key belong to the triager's workflow, not this repo's. Their issue texts were updated for the suite on 18 November. Each one says what it needs first: #18 needs the triager adapter to return its comment (`meta.comment`) for its redaction check, and every case pins one OpenAI model, so #19 needs a Gemini-pinned suite and #21 runs one suite per model.
+
+#17 grades triager comments copied from the store's corpus, with a judge suite in this repo, so it changes nothing in the triager. It grew from 1.5h to 3.5h: a judge is worth only its measured agreement, and hand grades, a holdout and kappa can't fit in 1.5h (see [the design](designs/llm-judge.md#estimate-and-pull-requests)). #20 moved to Week 5's stretch tasks to pay for part of it.
 
 **Learning (about 1.5h):** Hamel Husain's "Your AI Product Needs Evals" and Eugene Yan's "Task-Specific LLM Evals". Read them before the error analysis; starting on the week 2 weekend works well.
 
-This is the heaviest week (about 18.5h with reading), and week 4 is about 11h: both are over the 9h budget, so expect to use the cut list. The error analysis is the part to protect, since everything after it depends on it.
+This is the heaviest week (about 20h with reading, so week 4 starts later), and week 4 is about 11h: both are over the 9h budget, so expect to use the cut list. The error analysis is the part to protect, since everything after it depends on it.
 
 ### Week 4 · 23–29 Nov · Analyst, MCP and deploy
 
@@ -195,9 +196,9 @@ This is the heaviest week (about 18.5h with reading), and week 4 is about 11h: b
 | Evaluate the analyst as the second agent, against your labels | #23 | 1.5h |
 | MCP server | #24 | 1.5h |
 | API key auth before deploy | #25 | 1.5h |
-| Containerise the API and MCP server | #26 | 0.5h |
+| Containerise the API (the MCP server runs locally over stdio, #24) | #26 | 0.5h |
 | Deploy with Terraform to Cloud Run and Cloud SQL | #27 | 2.5h |
-| Record the recorder's own agents (needed by #23, and by #17 in week 3, so do the judge's part with #17) | #28 | 0.5h |
+| Record the recorder's own agents (needed by #23; it covers the judge too, which #17 defers here) | #28 | 0.5h |
 
 **Optional:** dbt basics on BigQuery, a weekend extra that's not part of this repo.
 
@@ -213,6 +214,7 @@ This is the heaviest week (about 18.5h with reading), and week 4 is about 11h: b
 | Demo GIF or 2-minute video | #32 | 0.5h |
 | Launch checklist and go public | #33 | 0.5h |
 | *Stretch:* provider comparison on the golden set | #21 | 0.5h |
+| *Stretch:* compare the harness with promptfoo or DeepEval | #20 | 0.5h |
 | *Stretch:* metrics dashboard | #34 | 2h |
 
 **Outside the repo:** publish the write-up (for example "What I learned from reading 500 agent runs"), add a Projects section to your CVs, and update LinkedIn.
@@ -223,7 +225,7 @@ Cut in this order:
 
 1. Metrics dashboard (#34)
 2. Provider comparison (#21)
-3. Comparison with promptfoo or DeepEval (#20), the week 3 fallback
+3. Comparison with promptfoo or DeepEval (#20), stretch
 4. The analyst's own eval suite (#23), keeping its cluster agreement and accepted-case numbers; the any-agent claim then rests on the design and the analyst's metrics
 5. Terraform falls back to a documented `gcloud run deploy`, though keep Terraform if at all possible since job ads ask for it
 6. The replay UI shrinks to a run list plus a timeline, with no span detail panel
