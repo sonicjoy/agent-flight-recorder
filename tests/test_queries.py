@@ -118,7 +118,7 @@ def test_an_ambiguous_reference_lists_the_matches(
     assert sum(str(run_id) in message for run_id in ids) == queries.MAX_MATCHES
     assert "and 2 more" in message and "at least" not in message
 
-    many = [r for r in runs if r is not None] * 3  # 21: past resolve_run's cap of 20
+    many = [r for r in runs if r is not None] * 3  # 21 runs; resolve_run stops at its cap, 20
     monkeypatch.setattr(queries, "resolve_run", lambda _s, ref: (_ for _ in ()).throw(
         AmbiguousRunError(ref, many[:20])))  # fmt: skip
     with pytest.raises(QueryError) as capped:
