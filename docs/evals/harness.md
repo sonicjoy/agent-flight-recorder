@@ -149,6 +149,40 @@ The issue triager's golden suite (#16) is the first suite with a real agent behi
 - **The first baseline** comes from one live run on 17 November: 15 cases, no errors, 5 of 15 passing. Per field: `labels` 8 of 15, `milestone` 12, `duplicate_of` 13, `regression_of` 12. Labels are the weak field: extra labels on #3 and #9, a missed label on #28 (`stretch`, with two extra areas) and #30 (`infra`), the wrong area on #4, s50 and s62. Regressions are still missed (s47, s61, s62), and s47 linked #1 as a duplicate instead of a regression. Control #9 failed this time by adding labels, after two right runs: most likely the noise above, though one run can't show it. The failures are kept in the baseline, so a later change that fixes s47 shows as an improvement.
 - **What the review caught.** The design first had a run that returned no decision answer `null` in every field. The harness reads `null`, missing and `[]` as one "nothing", so such a run passed every check whose truth is empty: 1 to 3 of 4 checks for an answer of nothing, depending on the case. The adapter now returns `"(no decision)"`, which no check accepts. Any grader that treats empty as equal to empty needs the agent's failure to be something no check can match.
 
+## The LLM judge and its agreement
+
+Some things `equals` can't grade, such as how a comment is worded. The judge (#17) is a model that grades one item against a rubric and answers `pass` or `fail` with a reason. It is an agent under test like any other: `flight_recorder.evals.judge:judge`, run by `afr eval run`. A judge is only worth its agreement with a person, so that is measured before anything relies on it. The design is [docs/designs/llm-judge.md](../designs/llm-judge.md); the commands are in [docs/cli.md](../cli.md#afr-eval-judge-suite-and-afr-eval-agreement).
+
+**What was measured.** The rubric in [`evals/judges/triager-comment/`](../../evals/judges/triager-comment/rubric.yaml) grades a triager comment on two criteria: a duplicate or regression is suggested, not stated as decided (`suggests-not-settles`), and the comment names no issue number, label or milestone outside the decision (`only-decision-references`). The agreement set is 33 items: 23 corpus comments, and 10 edited to break one criterion each. Each has a hand grade, committed before the first judge run. The suite `comment-judge` has one case per item with the hand grade as its only check, so its pass rate is the percent agreement, and `afr eval agreement` adds Cohen's kappa (agreement with chance agreement removed). The target was kappa 0.6 overall.
+
+**Results,** on 18 Nov 2026, judge model `openai:gpt-5.4-mini`:
+
+| Rubric | Run | n | Agree | Kappa | Hand pass, judge fail | Hand fail, judge pass |
+|---|---|---|---|---|---|---|
+| Revision 0 | 1 | 33 | 81.8% | 0.63 | 5 | 1 |
+| Revision 0 | 2 | 33 | 78.8% | 0.58 | 6 | 1 |
+| Revision 0 | 3 | 33 | 84.8% | 0.69 | 4 | 1 |
+| Revision 0 | 4 | 33 | 84.8% | 0.69 | 4 | 1 |
+| Revision 1 | 1 | 33 | 93.9% | 0.86 | 0 | 2 |
+| Revision 1 | 2 | 33 | 93.9% | 0.87 | 1 | 1 |
+| Revision 1 | 3 (holdout run) | 33 | 90.9% | 0.80 | 1 | 2 |
+| Revision 1 | holdout | 5 | 80.0% | 0.00 | 1 | 0 |
+
+- **Revision 0 sat on the target and wasn't stable.** Its first two runs gave 5 different verdicts on the same 33 items; over all four runs, 9 items got both verdicts. The judge was too strict. It failed comments for mentioning topics that aren't issue numbers, labels or milestones, and it read "looks like a duplicate of #20, could you confirm" as a settled duplicate. It also passed "This is a regression of #46." in all four runs: the examples only showed duplicates.
+- **Revision 1 changed wording and examples only,** the one revision made of the three allowed. It says that hedged or conditional wording is a suggestion, that only issue numbers, labels and milestones are references, and that the rationale is part of the decision. It adds a stated-regression example and a hedged-duplicate one, both invented. Wrong fails dropped from 4 to 6 per run to 0 or 1, and the stated regression is caught in every run.
+- **Revision 1 still flips.** Its first two runs differ on 4 items, and over three runs 5 items got both verdicts. Three of those are edited items whose extra issue number or milestone the judge missed in one or two runs, after catching them in every revision 0 run. Fewer wrong fails came with more missed failures: 9 of 10 edited items caught per run under revision 0, 8 or 9 under revision 1.
+- **Real failures:** only 2 of the 23 corpus comments fail by hand, both on `suggests-not-settles`. The judge failed both in all seven runs. Two is too few to call a catch rate.
+- **The holdout** is 5 corpus runs drawn at random before any judge run, graded and judged once after revision 1. All 5 pass by hand, so its kappa of 0.00 says nothing (one grader used a single class), and the judge wrongly failed one: it took "migration issue" for a reference, the mistake revision 1 was written to stop.
+
+**Limits.**
+
+- **Small.** With 33 items kappa's interval is about ±0.3. The holdout's 5 items, all passes, test only how often the judge wrongly fails a good comment, and one item is 20 points.
+- **Tuned.** Revision 1 was written after reading revision 0's disagreements on these 33 items, so its 0.80 to 0.87 flatters it. The holdout is the only number no rubric edit has seen.
+- **One grader, with help.** The agreement set's hand grades are a first pass by Claude that the owner reviewed and accepted without changes; the holdout's are the owner's. Borderline calls (a paraphrased milestone, "listed as duplicate_of #30") were decided once and applied to every item.
+- **The model isn't the design's.** The design named `anthropic:claude-haiku-5-5`; no Anthropic credit was available, as for the [corpus](corpus.md). `gpt-5.4-mini` also wrote most of the comments it judges. A judge can favour its own family's writing; here its errors were mostly too strict.
+- **Not a gate.** The suite has no `baseline.json`, and CI never runs it. With verdicts that flip on 4 of 33 items between runs, judge a change twice and believe only what both runs say.
+- **Four runs of revision 0, not two.** Runs 3 and 4 happened by mistake: revision 1's rubric file didn't parse, so the suite was still revision 0's when it ran. They are kept as two more measurements.
+
 ## Limits
 
 - **No timeout.** A hung agent hangs the run. Suites are tens of hand-run calls; command agents will bring a timeout.
