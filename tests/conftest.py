@@ -38,7 +38,7 @@ def admin() -> Generator[Engine]:
             pass
     except OperationalError:
         where = make_url(SERVER_URL).render_as_string()
-        message = f"No Postgres at {where}: start it with `docker compose up -d`"
+        message = f"No Postgres at {where}: start it with `docker compose up -d db`"
         if os.environ.get("AFR_REQUIRE_DB"):
             pytest.fail(message)
         pytest.skip(message)

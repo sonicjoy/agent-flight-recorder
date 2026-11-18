@@ -21,10 +21,11 @@ Requires [uv](https://docs.astral.sh/uv/), Python 3.12+ and Docker (for the run 
 uv sync                          # create .venv and install dependencies
 uv run pre-commit install        # run checks on every commit
 cp .env.example .env             # then fill in your keys
-docker compose up -d             # Postgres 16 + pgvector on 127.0.0.1:5433
-uv run afr db upgrade            # create or update the tables; existing data is kept
-uv run afr serve                 # record OTLP traces on http://127.0.0.1:4318/v1/traces
+docker compose up -d --build     # Postgres on 127.0.0.1:5433, the tables migrated, and the
+                                 # API recording OTLP traces on http://127.0.0.1:4318/v1/traces
 ```
+
+To run the API yourself instead (`uv run afr serve`, same port), start Postgres alone with `docker compose up -d db` and create the tables with `uv run afr db upgrade`. See [docs/ingest.md](docs/ingest.md#in-a-container).
 
 Any OpenTelemetry-instrumented agent can send traces to `afr serve`: set `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318`. See [docs/ingest.md](docs/ingest.md).
 
@@ -38,7 +39,7 @@ To record Claude Code sessions in a project, run `uv run afr hook install --proj
 
 Costs come from `src/flight_recorder/pricing.yaml`. A weekly workflow checks its Claude rates against Anthropic's pricing page and opens a PR when they change; run the same check with `uv run afr pricing check`. See [docs/llm-providers.md](docs/llm-providers.md#keeping-claude-prices-current).
 
-`docker compose down` stops Postgres and keeps the data; `docker compose down -v` deletes it. The schema, how traces map onto it, and the rules for changing it without losing data: [docs/schema.md](docs/schema.md).
+`docker compose down` stops it all and keeps the data; `docker compose down -v` deletes it. The schema, how traces map onto it, and the rules for changing it without losing data: [docs/schema.md](docs/schema.md).
 
 Checks (the same ones CI runs on every pull request):
 

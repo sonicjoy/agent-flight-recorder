@@ -67,6 +67,17 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST -H "Content-Type: application/j
 
 **Revoking a key.** Remove its entry in a new version of the secret and redeploy. When deployed, the secret is pinned to a version, never `latest`: Cloud Run reads `latest` each time an instance starts, so a bad edit would stop the running service at its next cold start.
 
+## In a container
+
+`Dockerfile` builds the API alone (the MCP server runs on your machine over stdio): a uv-built virtual environment on `python:3.12.15-slim-bookworm` (pinned by digest), run as a non-root user. It starts `afr serve --host 0.0.0.0 --port ${PORT:-4318}`, so Cloud Run's `PORT` works, and a container needs API keys (`AFR_API_KEY_HASHES`) or the local opt-out to start ([API keys](#api-keys)).
+
+```bash
+docker compose up -d --build   # Postgres, a one-off `afr db upgrade`, then the API
+docker compose down            # stop it all; the data stays
+```
+
+Every `up` runs the migration first, so the store is brought up to date before the API starts. To run `uv run afr serve` yourself on the same port, start Postgres alone: `docker compose up -d db`. The container sets `AFR_INSECURE_NO_AUTH=1` and publishes its port on `127.0.0.1` only; never publish it on all interfaces. Its redaction key comes from `AFR_REDACTION_KEY` in your shell or the repo's `.env` when you run `up` (empty counts as unset), otherwise from its own `afr-home` volume, so export the hook's key first if placeholders from both should match. `.dockerignore` is an allowlist (`pyproject.toml`, `uv.lock`, `README.md`, `src/`) that also drops any `.env`, `.env.*` or `*.key` file inside `src/`, so a developer's keys don't ship in the image.
+
 ## What happens to a request
 
 1. **Decode.** Protobuf, or OTLP/JSON with its hex ids converted.

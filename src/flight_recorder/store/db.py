@@ -21,7 +21,7 @@ def database_url(settings: Settings | None = None) -> str:
 
 
 CONNECT_TIMEOUT = 3  # seconds: the CLI and the MCP server fail fast when Postgres is down
-UNREACHABLE = "can't reach the run store; is Postgres running (`docker compose up -d`)?"
+UNREACHABLE = "can't reach the run store; is Postgres up (`docker compose up -d db`)?"
 
 
 class StoreUnreachable(Exception):
