@@ -26,6 +26,8 @@ uv run afr db upgrade            # create or update the tables; existing data is
 uv run afr serve                 # record OTLP traces on http://127.0.0.1:4318/v1/traces
 ```
 
+Or run the API in a container instead of `afr serve`: `docker compose --profile api up -d --build` migrates the tables and serves on `127.0.0.1:4318` ([docs/ingest.md](docs/ingest.md#in-a-container)).
+
 Any OpenTelemetry-instrumented agent can send traces to `afr serve`: set `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318`. See [docs/ingest.md](docs/ingest.md).
 
 To look at what was recorded: `uv run afr runs list`, `uv run afr runs show last` and `uv run afr replay last`. See [docs/cli.md](docs/cli.md).

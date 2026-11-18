@@ -1,0 +1,18 @@
+# The image needs pyproject.toml, uv.lock, README.md and src/ only.
+# .env above all: it can hold provider keys and set the API's auth mode (docs/ingest.md).
+.env
+.env.*
+.afr/
+.git/
+.github/
+.venv/
+.review/
+.claude/
+.codegraph/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+docs/
+evals/
+scripts/
+tests/

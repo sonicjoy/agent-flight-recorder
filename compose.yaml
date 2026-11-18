@@ -1,7 +1,10 @@
-# Local Postgres with pgvector for the recorder.
-#   docker compose up -d      start it
-#   uv run afr db upgrade     create the tables
+# Local Postgres with pgvector for the recorder, and optionally the ingest API in a container.
+#   docker compose up -d                  Postgres only, for `uv run afr ...` (as before)
+#   uv run afr db upgrade                 create the tables
+#   docker compose --profile api up -d    also migrate the tables and serve the API in a
+#                                         container on 127.0.0.1:4318 (instead of `afr serve`)
 # Port 5433 on the host, so it doesn't clash with a locally installed Postgres on 5432.
+# There is no MCP service: the MCP server runs on your machine over stdio (#24).
 services:
   db:
     image: pgvector/pgvector:0.8.6-pg16
@@ -19,5 +22,37 @@ services:
       timeout: 3s
       retries: 30
 
+  # One-off: bring the tables up to date, then exit. The API waits for it.
+  migrate:
+    profiles: [api]
+    build: .
+    command: ["afr", "db", "upgrade"]
+    environment: &api-env
+      AFR_DATABASE_URL: postgresql+psycopg://afr:afr@db:5432/afr
+      # Placeholders match the hook's only if both use the same key: export it before `up`.
+      # Unset, the container makes its own in the afr-home volume.
+      AFR_REDACTION_KEY: ${AFR_REDACTION_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    profiles: [api]
+    build: .
+    environment:
+      <<: *api-env
+      # No API keys locally: the container listens on all of its interfaces, so this opt-out
+      # is required, and safe only because the port below is published on 127.0.0.1 alone.
+      # Never set it where the port is reachable from a network (it's refused on Cloud Run).
+      AFR_INSECURE_NO_AUTH: "1"
+    ports:
+      - "127.0.0.1:4318:4318"
+    volumes:
+      - afr-home:/home/afr/.afr
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
 volumes:
   afr-db:
+  afr-home:
