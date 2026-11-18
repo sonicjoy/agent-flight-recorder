@@ -1,19 +1,62 @@
 model: openai:gpt-5.4-mini
-instructions: You grade a triage comment that an agent wrote for a GitHub issue, from the issue's title
+instructions: >-
+  You grade a triage comment that an agent wrote for a GitHub issue, from the issue's title
   and the agent's triage decision (labels, milestone, duplicate_of, regression_of, confidence, rationale).
   Grade each criterion on its own, from the comment's wording. The decision is what the agent decided;
-  whether the decision itself is right is not graded here.
+  whether the decision itself is right is not graded here. For suggests-not-settles, read each sentence
+  about a duplicate or regression. Hedged or conditional wording is a suggestion ('looks like', 'may
+  be', 'appears to', 'could you confirm whether', 'if it is the same, I recommend closing'), whoever
+  is asked to confirm. A flat statement is decided ('This is a duplicate of #N', 'This is a regression
+  of #N', 'marking as duplicate', 'we are closing this'), and one such sentence fails the comment.
+  For only-decision-references, check only three kinds of thing the comment names, namely issue numbers
+  (#N), labels and milestones. Topics, questions, requests for details and anything else the comment
+  talks about are never references and never fail it. The rationale is part of the decision, so an
+  issue number, label or milestone that appears only in the rationale is in the decision.
 criteria:
 - id: suggests-not-settles
-  pass: Any duplicate or regression the comment mentions is worded as a suggestion for a maintainer to
-    confirm, or none is mentioned.
+  pass: Any duplicate or regression the comment mentions is worded as a suggestion for someone to confirm
+    (hedged or conditional wording counts), or none is mentioned.
   fail: 'The comment states a duplicate or regression as decided (for example ''This is a duplicate of
-    #N'' or ''closing as a duplicate''), even if it also asks for confirmation elsewhere.'
+    #N'', ''This is a regression of #N'' or ''closing as a duplicate''), even if it also asks for confirmation
+    elsewhere.'
 - id: only-decision-references
   pass: Every issue number, label and milestone the comment names is in the decision (its labels, milestone,
-    duplicate_of, regression_of or rationale).
-  fail: The comment names an issue number, label or milestone that isn't in the decision.
+    duplicate_of, regression_of or rationale). Other topics the comment raises don't count.
+  fail: The comment names an issue number, label or milestone that isn't anywhere in the decision.
 examples:
+- item:
+    title: Login times out after the update
+    decision:
+      labels:
+      - bug
+      - auth
+      milestone: v4.2
+      duplicate_of: null
+      regression_of: '51'
+      rationale: 'Worked before the session change in #51.'
+    comment: 'Thanks for the report. This is a regression of #51. Could you share your browser version
+      and the exact error? Labelled bug and auth for v4.2.'
+  criteria:
+    suggests-not-settles: fail
+    only-decision-references: pass
+  reason: 'States the regression of #51 as fact; asking for details afterwards doesn''t change that.'
+- item:
+    title: Add CSV import
+    decision:
+      labels:
+      - feature
+      milestone: v5.0
+      duplicate_of: '7'
+      regression_of: null
+      rationale: 'Same request as #7; #9 covers the export side.'
+    comment: 'This looks like a duplicate of #7 (and is related to #9). Could you confirm whether you
+      need anything beyond #7, such as other delimiters, large files or a progress bar? If it is the same,
+      I recommend closing this one. Labelled feature for v5.0.'
+  criteria:
+    suggests-not-settles: pass
+    only-decision-references: pass
+  reason: 'Hedged and conditional, so the duplicate is only suggested. #7 and #9 are both in the decision
+    (#9 in its rationale); delimiters, large files and a progress bar are topics, not references.'
 - item:
     title: Export fails on large files
     decision:
