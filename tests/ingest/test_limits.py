@@ -69,7 +69,9 @@ def store(make_database: Callable[[], str]) -> Generator[Engine]:
 @pytest.mark.db
 def test_a_full_chunk_of_turn_ends_is_applied_within_the_send_timeout(store: Engine) -> None:
     """Measured, not estimated: the chunk the hook would send, against the real app."""
-    app = TestClient(create_app(store, Redactor(b"k" * 32)), base_url="http://127.0.0.1:4318")
+    app = TestClient(
+        create_app(store, Redactor(b"k" * 32), auth=None), base_url="http://127.0.0.1:4318"
+    )
     events = [stop(n, client.EVENT_ITEMS) for n in range(20)]
     [first, *_] = client._chunks(events)  # pyright: ignore[reportPrivateUsage]
     assert len(json.dumps({"events": first})) < otlp.MAX_BODY_BYTES
@@ -93,7 +95,9 @@ def timed(app: TestClient, events: list[dict[str, Any]]) -> float:
 def test_a_chunk_of_the_biggest_parts_finishes_within_its_estimate(store: Engine) -> None:
     """The recorder redacts and stores every byte: full parts take longer than their items
     alone say (two of 2 MB took 2.1 to 2.4 s against 1.66 s estimated)."""
-    app = TestClient(create_app(store, Redactor(b"k" * 32)), base_url="http://127.0.0.1:4318")
+    app = TestClient(
+        create_app(store, Redactor(b"k" * 32), auth=None), base_url="http://127.0.0.1:4318"
+    )
     events = [stop(n, client.EVENT_ITEMS, chars=14_000) for n in range(4)]
     assert all(len(json.dumps(e)) <= client.EVENT_BYTES for e in events)
     [first, *_] = client._chunks(events)  # pyright: ignore[reportPrivateUsage]
@@ -109,7 +113,9 @@ def test_a_chunk_of_the_biggest_parts_finishes_within_its_estimate(store: Engine
 def test_a_chunk_takes_no_longer_late_in_a_long_session(store: Engine) -> None:
     """A Claude Code session is one run, applied an event at a time: an event's work must
     not grow with the spans already stored (50 events took 3.1 s in a 50,000-span run)."""
-    app = TestClient(create_app(store, Redactor(b"k" * 32)), base_url="http://127.0.0.1:4318")
+    app = TestClient(
+        create_app(store, Redactor(b"k" * 32), auth=None), base_url="http://127.0.0.1:4318"
+    )
     hook = {"session_id": "s", "prompt_id": "p0"}
     timed(
         app,
@@ -170,7 +176,9 @@ def test_no_tool_or_permission_event_reads_the_whole_session(store: Engine) -> N
     EXPLAIN ANALYZE, reads a few rows of a 60,000-span session, not all of them. A
     PermissionRequest finds its tool, and a tool's end or a refusal its permission wait,
     by what they are rather than by id: those lookups scanned the session."""
-    app = TestClient(create_app(store, Redactor(b"k" * 32)), base_url="http://127.0.0.1:4318")
+    app = TestClient(
+        create_app(store, Redactor(b"k" * 32), auth=None), base_url="http://127.0.0.1:4318"
+    )
     hook = {"session_id": "s", "prompt_id": "p0"}
     timed(
         app,

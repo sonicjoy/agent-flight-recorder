@@ -23,10 +23,49 @@ The issue triager does this with `triager run --record http://127.0.0.1:4318`.
 | Size limit | 10 MB, measured after decompression too, so a small gzip body can't expand into gigabytes |
 | Response | An `ExportTraceServiceResponse` in the request's format. If some traces couldn't be stored, `partial_success` gives the number of rejected spans and why |
 | `GET /healthz` | `{"status": "ok"}` |
-| Refused | 415 for any other content type, 400 for a body that can't be decoded (OTLP/JSON must be an object), 413 for one over the limit. Nothing is stored |
+| Refused | 415 for any other content type, 400 for a body that can't be decoded (OTLP/JSON must be an object), 413 for one over the limit, 401 without a valid API key when keys are configured (nothing is read). Nothing is stored |
 | Database unavailable | 503 with `Retry-After: 5`, so the exporter sends the request again. Traces already written by then are updated on the retry, not duplicated. It counts only when the error is about the moment, not the trace: the database can't be reached, is out of connections or resources, was shut down or timed the statement out (SQLSTATE classes 08, 53, 57, 58), or a lock, a deadlock or a serialization failure got in the way (class 40, 55P03, 55006), or it is read-only or its snapshot is too old (25006, 25P03, 72000). An error about the trace, such as an id too long for an index (54000) or a deferred constraint broken at commit (40002), rejects that trace instead, since a retry would fail the same way for ever. Hook events are treated the same way |
 
-`afr serve` listens on `127.0.0.1:4318`, the standard OTLP/HTTP port, so exporters work with their defaults. It refuses to listen on any other interface until the API has authentication (#25), and refuses to start if the database has migrations it hasn't run (`afr db upgrade`). Requests must also name a loopback host (`127.0.0.1`, `localhost` or `[::1]`), or they get a 421: a web page can't reach the API by pointing its own domain name at 127.0.0.1 (DNS rebinding).
+`afr serve` listens on `127.0.0.1:4318`, the standard OTLP/HTTP port, so exporters work with their defaults, and refuses to start if the database has migrations it hasn't run (`afr db upgrade`).
+
+## API keys
+
+Locally the API needs no key. A deployed recorder needs one on every route but `/healthz` ([design](designs/api-key-auth.md)). `afr serve` decides once, at startup, and prints which:
+
+| `AFR_API_KEY_HASHES` | Listening on | `AFR_INSECURE_NO_AUTH` | Result |
+|---|---|---|---|
+| `name:sha256hex` entries | anything | anything | `auth: on (N keys)`: a request without `Authorization: Bearer <key>` gets 401, before its body is read |
+| set but empty or malformed | anything | anything | refuses to start: a broken secret never means "no keys" |
+| unset | loopback | anything | `auth: off (loopback, no keys configured)` |
+| unset | another interface | off | refuses to start |
+| unset | another interface | on | `auth: off`, with a warning: for a local container whose port is published on `127.0.0.1` only. Refused on Cloud Run (`K_SERVICE` set) |
+
+With auth off, requests must name a loopback host (`127.0.0.1`, `localhost` or `[::1]`), or they get a 421: a web page can't reach the API by pointing its own domain name at 127.0.0.1 (DNS rebinding). With auth on, the key is the access control and any host is served.
+
+**Making a key.** One key per caller (the hook, the triager), so one can be revoked alone. Run this yourself; it prints the key and the entry for the server:
+
+```bash
+python -c "import secrets, hashlib; k = 'afr_' + secrets.token_urlsafe(32); print(k); print('NAME:' + hashlib.sha256(k.encode()).hexdigest())"
+```
+
+Replace `NAME` with the caller's name and add the entry to `AFR_API_KEY_HASHES` (comma-separated). The key goes to the caller only: the hook takes it as `AFR_API_KEY` in its environment ([claude-code.md](claude-code.md#settings)), an OpenTelemetry exporter as
+
+```bash
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20<key>   # %20: the space, URL-encoded
+```
+
+in its process environment, with an `https://` endpoint so the key never crosses the network in clear. An exporter drops a batch it gets a 401 for, so check the key first. The server stores and logs only hashes, and a key that turns up in a recorded session is redacted (`afr_api_key`).
+
+**Checking a key**, against the deployed recorder: post an empty batch, which writes nothing.
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -X POST -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $AFR_API_KEY" -d '{"events": []}' https://<recorder>/v1/claude-code/events
+```
+
+200 means the key's hash is configured, 401 that it isn't. A recorder without keys answers 200 to anything, so this means something only against a keyed one. It doesn't check how an exporter sends the key: a mistyped header shows only as 401s in the exporter's log.
+
+**Revoking a key.** Remove its entry in a new version of the secret and redeploy. When deployed, the secret is pinned to a version, never `latest`: Cloud Run reads `latest` each time an instance starts, so a bad edit would stop the running service at its next cold start.
 
 ## What happens to a request
 

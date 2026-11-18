@@ -153,3 +153,15 @@ def test_settings_come_from_the_environment_not_a_dot_env(
 
     assert config.home == tmp_path / "home"
     assert config.url == "http://127.0.0.1:4318/v1/claude-code/events"
+
+
+@pytest.mark.parametrize(("value", "expected"), [(None, None), ("", None), ("afr_x", "afr_x")])
+def test_the_api_key_comes_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch, value: str | None, expected: str | None
+) -> None:
+    if value is None:
+        monkeypatch.delenv("AFR_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("AFR_API_KEY", value)
+
+    assert HookConfig.from_env().api_key == expected

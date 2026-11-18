@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 from fake_secrets import (
+    TOKEN,
     in_context,
     in_dicts,
     prefixed_assignments,
@@ -661,3 +662,16 @@ def test_key_file_is_generated_once_and_reused(
     assert first == second and len(first) == 64
     if sys.platform != "win32":  # Windows has no owner-only mode bits
         assert os.stat(key_file).st_mode & 0o077 == 0
+
+
+@pytest.mark.parametrize("last", ["-", "_"])
+@pytest.mark.parametrize("context", ["{}", "Authorization: Bearer {}", "AFR_API_KEY={}"])
+def test_the_recorders_own_keys_are_named_wherever_they_appear(
+    redactor: Redactor, last: str, context: str
+) -> None:
+    key = "afr" + "_" + random_text(42, TOKEN) + last  # a key may end in - or _
+
+    result, counts = redact(redactor, context.format(key) + " done")
+
+    assert key not in result and result.endswith(" done")
+    assert counts == Counter({"afr_api_key": 1})

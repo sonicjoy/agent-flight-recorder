@@ -130,6 +130,7 @@ Write each one up as a short ADR in `docs/decisions/` when you make it. They fee
 6. **Build the eval harness yourself before using a library**, so eval design is something you can explain end to end, then compare the two honestly.
 7. **Eval cases live in git as YAML**, while results live in the database: cases change through review, results accumulate as history. Results are files in git (`outputs.jsonl`) until #34 loads them into the database.
 8. **The server makes no LLM calls.** MCP tools return data (runs, similar failures, labels, eval cases), and the calling agent's own model does the explaining. The analyst runs as a local job. So the deployed instance needs no LLM key.
+9. **API keys are hashes in one pinned secret.** SHA-256 hashes of random keys, one key per caller, in one Secret Manager secret pinned to a version; revoking one means a new version and a redeploy. Local use needs no key, and `afr serve` refuses to listen beyond loopback without keys ([design](designs/api-key-auth.md)).
 
 ## Weekly plan
 
@@ -182,7 +183,7 @@ The golden suite lives in the triager's repo (`evals/cases/triager/`, run with `
 
 **Learning (about 1.5h):** Hamel Husain's "Your AI Product Needs Evals" and Eugene Yan's "Task-Specific LLM Evals". Read them before the error analysis; starting on the week 2 weekend works well.
 
-This is the heaviest week (about 18.5h with reading), and week 4 is about 10h: both are over the 9h budget, so expect to use the cut list. The error analysis is the part to protect, since everything after it depends on it.
+This is the heaviest week (about 18.5h with reading), and week 4 is about 11h: both are over the 9h budget, so expect to use the cut list. The error analysis is the part to protect, since everything after it depends on it.
 
 ### Week 4 · 23–29 Nov · Analyst, MCP and deploy
 
@@ -193,7 +194,7 @@ This is the heaviest week (about 18.5h with reading), and week 4 is about 10h: b
 | Analyst agent: cluster failures, draft eval cases | #22 | 3h |
 | Evaluate the analyst as the second agent, against your labels | #23 | 1.5h |
 | MCP server | #24 | 1.5h |
-| API key auth before deploy | #25 | 0.5h |
+| API key auth before deploy | #25 | 1.5h |
 | Containerise the API and MCP server | #26 | 0.5h |
 | Deploy with Terraform to Cloud Run and Cloud SQL | #27 | 2.5h |
 | Record the recorder's own agents (needed by #23, and by #17 in week 3, so do the judge's part with #17) | #28 | 0.5h |

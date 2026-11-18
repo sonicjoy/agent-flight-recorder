@@ -31,11 +31,13 @@ class Recorder:
     def __init__(self, status: int = 200) -> None:
         self.status = status
         self.batches: list[list[dict[str, Any]]] = []
+        self.auth: list[str | None] = []  # each request's Authorization header
         recorder = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:
                 body = self.rfile.read(int(self.headers["Content-Length"]))
+                recorder.auth.append(self.headers.get("Authorization"))
                 recorder.batches.append(json.loads(body)["events"])
                 self.send_response(recorder.status)
                 self.end_headers()
@@ -58,10 +60,12 @@ def down_fails_fast(monkeypatch: pytest.MonkeyPatch) -> None:
     """A refused connection takes ~2 s on Windows; these tests only need it to fail."""
     real = client._post  # pyright: ignore[reportPrivateUsage]
 
-    def post(url: str, events: list[dict[str, Any]], timeout: float) -> dict[str, Any]:
+    def post(
+        url: str, events: list[dict[str, Any]], timeout: float, api_key: str | None = None
+    ) -> dict[str, Any]:
         if url == DOWN:
             raise urllib.error.URLError("connection refused")
-        return real(url, events, timeout)
+        return real(url, events, timeout, api_key)
 
     monkeypatch.setattr(client, "_post", post)
 
@@ -309,3 +313,81 @@ def test_a_turn_end_sends_the_permission_decisions(tmp_path: Path, recorder: Rec
 
     [[sent]] = recorder.batches
     assert [(p["tool_use_id"], p["decision"]) for p in sent["permissions"]] == [("t1", "reject")]
+
+
+# ---- API keys (docs/designs/api-key-auth.md) -----------------------------------------
+
+API_KEY = "afr_" + "stand-in-" * 4 + "abcdefg"  # made for the test, not a real key
+
+
+def keyed(home: Path, url: str) -> HookConfig:
+    return HookConfig(home=home, url=url, key=KEY, api_key=API_KEY)
+
+
+def test_the_api_key_is_sent_only_when_set(tmp_path: Path, recorder: Recorder) -> None:
+    run(event(1), keyed(tmp_path / "a", recorder.url))
+    run(event(2), config(tmp_path / "b", recorder.url))
+
+    assert recorder.auth == [f"Bearer {API_KEY}", None]
+
+
+def test_a_refused_key_keeps_the_events_and_says_why(tmp_path: Path) -> None:
+    refusing = Recorder(status=401)
+    try:
+        run(event(1), keyed(tmp_path, refusing.url))
+    finally:
+        refusing.close()
+
+    assert [e["hook"]["tool_use_id"] for e in spooled(tmp_path)] == ["t1"]
+    log = (tmp_path / "hook.log").read_text(encoding="utf-8")
+    assert "recorder refused the API key (HTTP 401); check AFR_API_KEY; spooled 1" in log
+    assert API_KEY not in log
+
+
+def test_the_key_is_not_sent_over_plain_http_to_another_host(tmp_path: Path) -> None:
+    url = "http://recorder.example:4318/v1/claude-code/events"  # never contacted
+    run(event(1), keyed(tmp_path, url))
+
+    assert [e["hook"]["tool_use_id"] for e in spooled(tmp_path)] == ["t1"]
+    log = (tmp_path / "hook.log").read_text(encoding="utf-8")
+    assert "AFR_HOOK_URL must be https to send the API key; spooled 1" in log
+
+
+def test_a_redirect_does_not_carry_the_key(tmp_path: Path) -> None:
+    seen: list[str | None] = []
+
+    class Target(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # urllib follows a POST's 302 with a GET
+            seen.append(self.headers.get("Authorization"))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, format: str, *args: Any) -> None:
+            pass
+
+    target = ThreadingHTTPServer(("127.0.0.1", 0), Target)
+    threading.Thread(target=target.serve_forever, daemon=True).start()
+    location = f"http://localhost:{target.server_address[1]}/elsewhere"
+
+    class Redirect(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.end_headers()
+
+        def log_message(self, format: str, *args: Any) -> None:
+            pass
+
+    redirect = ThreadingHTTPServer(("127.0.0.1", 0), Redirect)
+    threading.Thread(target=redirect.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{redirect.server_address[1]}/v1/claude-code/events"
+        run(event(1), keyed(tmp_path, url))
+    finally:
+        for server in (redirect, target):
+            server.shutdown()
+            server.server_close()
+
+    assert seen == [None]

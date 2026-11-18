@@ -15,7 +15,7 @@ It must never get in Claude Code's way:
 - If the recorder is down, the event is kept in <AFR_HOME>/spool.jsonl. Later async events
   send the backlog first, oldest first, in chunks that are estimated to finish well within
   the timeout (EVENT_SECONDS per event, ITEM_SECONDS per item, MB_SECONDS per MB) and are
-  under the server's size limit. A chunk the server refuses outright (a 4xx) is dropped
+  under the server's size limit. A chunk the server refuses outright (400, 413 or 422) is dropped
   and logged rather than retried for ever. The spool keeps at most MAX_SPOOL_BYTES,
   dropping the oldest events. A hook killed mid-send leaves its claimed batch behind; the
   next hook picks it up once it's stale. Whatever is dropped, by the hook or the recorder,
@@ -25,11 +25,13 @@ Before sending or spooling, it redacts (the first pass; the server redacts again
 each string at MAX_FIELD_CHARS, since a tool can return a whole file. The counts of what it
 redacted go with the event, so the server can store them.
 
-It runs in other projects' folders, so it reads its three settings from the environment,
-never from a .env file (which would be that project's): AFR_HOME, AFR_HOOK_URL and
-AFR_REDACTION_KEY. It is started with `python -I`, so a file such as json.py in the project
-folder can't replace a standard module. It avoids heavy imports: a new process starts for
-every event.
+It runs in other projects' folders, so it reads its four settings from the environment,
+never from a .env file (which would be that project's): AFR_HOME, AFR_HOOK_URL,
+AFR_REDACTION_KEY and AFR_API_KEY. The API key is sent only over https or to a loopback
+address, and never follows a redirect; a recorder that refuses it (401, 403) keeps the
+events waiting in the spool, like any other setup error. It is started with `python -I`,
+so a file such as json.py in the project folder can't replace a standard module. It
+avoids heavy imports: a new process starts for every event.
 """
 
 from __future__ import annotations
@@ -78,6 +80,9 @@ STALE_CLAIM_SECONDS = 120  # a claimed batch older than this was left by a kille
 DEFAULT_URL = "http://127.0.0.1:4318/v1/claude-code/events"
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 DROP_STATUSES = {400, 413, 422}  # the events themselves were refused; others are setup
+KEY_STATUSES = {401, 403}  # a missing or wrong AFR_API_KEY: setup, so the events wait
+KEY_REFUSED = "recorder refused the API key"
+INSECURE_URL = "AFR_HOOK_URL must be https to send the API key"
 MAX_CHUNKS_PER_HOOK = 10  # a big backlog drains over several hooks, keeping its progress
 PATH_KEYS = ("transcript_path", "agent_transcript_path")  # local paths the server doesn't use
 TURN_END = {
@@ -91,7 +96,8 @@ TURN_END = {
 class HookConfig:
     home: Path
     url: str
-    key: str | None
+    key: str | None  # the redaction key
+    api_key: str | None = None  # sent as `Authorization: Bearer` (docs/ingest.md)
 
     @classmethod
     def from_env(cls) -> HookConfig:
@@ -99,6 +105,7 @@ class HookConfig:
             home=Path(os.environ.get("AFR_HOME") or Path.home() / ".afr"),
             url=os.environ.get("AFR_HOOK_URL") or DEFAULT_URL,
             key=os.environ.get("AFR_REDACTION_KEY") or None,
+            api_key=os.environ.get("AFR_API_KEY") or None,
         )
 
 
@@ -314,11 +321,21 @@ def _opener(url: str) -> urllib.request.OpenerDirector:
     return urllib.request.build_opener()
 
 
-def _post(url: str, events: list[dict[str, Any]], timeout: float) -> dict[str, Any]:
+def _insecure(config: HookConfig) -> bool:
+    """Whether sending would put the API key on the network in clear."""
+    parts = urllib.parse.urlsplit(config.url)
+    return bool(config.api_key) and parts.scheme == "http" and parts.hostname not in LOOPBACK
+
+
+def _post(
+    url: str, events: list[dict[str, Any]], timeout: float, api_key: str | None = None
+) -> dict[str, Any]:
     body = json.dumps({"events": events}).encode()
     request = urllib.request.Request(
         url, data=body, method="POST", headers={"Content-Type": "application/json"}
     )
+    if api_key:  # unredirected: urllib would copy an ordinary header to a redirect's host
+        request.add_unredirected_header("Authorization", f"Bearer {api_key}")
     try:
         with _opener(url).open(request, timeout=timeout) as response:
             reply = json.loads(response.read() or b"{}")
@@ -439,6 +456,10 @@ def _log(home: Path, message: str) -> None:
 def _deliver(config: HookConfig, events: list[dict[str, Any]], name: str) -> None:
     """Send the backlog (async events only) and these events; spool whatever didn't get
     through. SessionEnd sends only its first event, alone, and spools any other parts."""
+    if _insecure(config):  # a key must not cross the network in clear: keep the events
+        _spool(config.home, events)
+        _log(config.home, f"{INSECURE_URL}; spooled {len(events)} ({name})")
+        return
     sync = name in SYNC_EVENTS
     try:
         claimed, backlog = ([], []) if sync else _claim_backlog(config.home)
@@ -458,12 +479,19 @@ def _deliver(config: HookConfig, events: list[dict[str, Any]], name: str) -> Non
             failure = "deferred"
             break
         try:
-            reply = _post(config.url, chunk, timeout)
+            reply = _post(config.url, chunk, timeout, config.api_key)
         except Refused as error:  # the server won't take these: don't retry them for ever
             refused += len(chunk)
             sent += len(chunk)
             _log(config.home, f"recorder refused {len(chunk)} events ({error}); dropped")
             continue
+        except urllib.error.HTTPError as error:  # 404, 421, 5xx, a refused key: keep the rest
+            failure = (
+                f"{KEY_REFUSED} (HTTP {error.code}); check AFR_API_KEY"
+                if error.code in KEY_STATUSES
+                else type(error).__name__
+            )
+            break
         except Exception as error:  # down, timed out: keep the rest for next time
             failure = type(error).__name__
             break
@@ -477,11 +505,12 @@ def _deliver(config: HookConfig, events: list[dict[str, Any]], name: str) -> Non
     unsent = pending[sent:]
     if unsent:
         dropped = _spool(config.home, unsent)
-        reason = (
-            "left for the next hook"
-            if failure == "deferred"
-            else f"recorder unreachable ({failure})"
-        )
+        if failure == "deferred":
+            reason = "left for the next hook"
+        elif failure.startswith(KEY_REFUSED):
+            reason = failure
+        else:
+            reason = f"recorder unreachable ({failure})"
         _log(config.home, f"{reason}; spooled {len(unsent)} ({name})")
         if dropped:
             _log(config.home, f"spool full: dropped the {dropped} oldest events")

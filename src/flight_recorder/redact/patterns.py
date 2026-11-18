@@ -312,6 +312,12 @@ PATTERNS: tuple[Pattern, ...] = (
         ),
     ),
     Pattern("gcp_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])")),
+    # The recorder's own API keys (docs/ingest.md); before bearer_token and secret_assignment,
+    # so a key after `Bearer` or `AFR_API_KEY=` is named for what it is.
+    Pattern(
+        "afr_api_key",
+        re.compile(r"(?<![A-Za-z0-9_-])afr_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"),
+    ),
     Pattern("gcp_oauth_token", re.compile(r"\bya29\.[0-9A-Za-z_-]{20,}+")),
     Pattern(
         "jwt",

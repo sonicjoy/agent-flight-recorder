@@ -71,10 +71,12 @@ class Recorder:
 def down_fails_fast(monkeypatch: pytest.MonkeyPatch) -> None:
     real = client._post  # pyright: ignore[reportPrivateUsage]
 
-    def post(url: str, events: list[dict[str, Any]], timeout: float) -> dict[str, Any]:
+    def post(
+        url: str, events: list[dict[str, Any]], timeout: float, api_key: str | None = None
+    ) -> dict[str, Any]:
         if url == DOWN:
             raise urllib.error.URLError("connection refused")
-        return real(url, events, timeout)
+        return real(url, events, timeout, api_key)
 
     monkeypatch.setattr(client, "_post", post)
 

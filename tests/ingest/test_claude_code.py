@@ -37,7 +37,7 @@ def store(make_database: Callable[[], str]) -> Generator[Engine]:
 
 @pytest.fixture
 def client(store: Engine) -> TestClient:
-    return TestClient(create_app(store, REDACTOR), base_url="http://127.0.0.1:4318")
+    return TestClient(create_app(store, REDACTOR, auth=None), base_url="http://127.0.0.1:4318")
 
 
 def ev(name: str, at: float, **hook: Any) -> dict[str, Any]:
@@ -398,7 +398,7 @@ def test_a_response_spans_from_its_first_transcript_line_to_its_last(
     [("127.0.0.1:4318", 200), ("localhost:4318", 200), ("[::1]:4318", 200), ("evil.example", 421)],
 )
 def test_only_loopback_hosts_are_served(client: TestClient, host: str, status: int) -> None:
-    """A web page using DNS rebinding sends its own host name: refuse it (until #25)."""
+    """A web page using DNS rebinding sends its own host name: refuse it."""
     response = client.post(URL, json={"events": []}, headers={"Host": host})
 
     assert response.status_code == status
