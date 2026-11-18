@@ -17,6 +17,7 @@ uv run afr db upgrade      # apply migrations (AFR_DATABASE_URL, default: the co
 uv run afr db current      # show the current revision
 uv run afr db revision -m "add x" --rev-id 0003   # generate a migration after changing a model
 docker compose down        # stop Postgres; the data stays in the afr-db volume
+                           # (add --profile api if you started the API container)
 ```
 
 `docker compose down -v` **deletes the volume and every recorded run**. Use it only to start from nothing on purpose.

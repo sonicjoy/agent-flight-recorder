@@ -69,14 +69,14 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST -H "Content-Type: application/j
 
 ## In a container
 
-`Dockerfile` builds the API alone (the MCP server runs on your machine over stdio): a uv-built virtual environment on `python:3.12-slim`, run as a non-root user. It starts `afr serve --host 0.0.0.0 --port ${PORT:-4318}`, so Cloud Run's `PORT` works, and a container needs API keys (`AFR_API_KEY_HASHES`) or the local opt-out to start ([API keys](#api-keys)).
+`Dockerfile` builds the API alone (the MCP server runs on your machine over stdio): a uv-built virtual environment on `python:3.12.15-slim-bookworm` (pinned by digest), run as a non-root user. It starts `afr serve --host 0.0.0.0 --port ${PORT:-4318}`, so Cloud Run's `PORT` works, and a container needs API keys (`AFR_API_KEY_HASHES`) or the local opt-out to start ([API keys](#api-keys)).
 
 ```bash
 docker compose --profile api up -d --build   # Postgres, a one-off `afr db upgrade`, then the API
-docker compose --profile api down            # stop it; the data stays
+docker compose --profile api down            # stop all of it; the data stays (plain `down` leaves the API running)
 ```
 
-The `api` profile keeps plain `docker compose up -d` as it was, Postgres only, so `uv run afr serve` can still use port 4318. The container sets `AFR_INSECURE_NO_AUTH=1` and publishes its port on `127.0.0.1` only; never publish it on all interfaces. Its redaction key comes from `AFR_REDACTION_KEY` in your shell when you run `up`, otherwise from its own `afr-home` volume, so export the hook's key first if placeholders from both should match. `.dockerignore` keeps `.env` out of the image, so a developer's keys never ship in it.
+The `api` profile keeps plain `docker compose up -d` as it was, Postgres only, so `uv run afr serve` can still use port 4318. The container sets `AFR_INSECURE_NO_AUTH=1` and publishes its port on `127.0.0.1` only; never publish it on all interfaces. Its redaction key comes from `AFR_REDACTION_KEY` in your shell when you run `up`, otherwise from its own `afr-home` volume, so export the hook's key first if placeholders from both should match. `.dockerignore` is an allowlist (`pyproject.toml`, `uv.lock`, `README.md`, `src/`) that also drops any `.env`, `.env.*` or `*.key` file inside `src/`, so a developer's keys don't ship in the image.
 
 ## What happens to a request
 

@@ -1,18 +1,13 @@
-# The image needs pyproject.toml, uv.lock, README.md and src/ only.
-# .env above all: it can hold provider keys and set the API's auth mode (docs/ingest.md).
-.env
-.env.*
-.afr/
-.git/
-.github/
-.venv/
-.review/
-.claude/
-.codegraph/
+# An allowlist: the image needs pyproject.toml, uv.lock, README.md and src/ only, so anything
+# added to the repo later stays out of the build context unless it is named here.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+# Inside src/ too: never a .env (it can hold provider keys and set the API's auth mode,
+# docs/ingest.md), a key file or bytecode.
+**/.env
+**/.env.*
+**/*.key
 **/__pycache__/
-.pytest_cache/
-.ruff_cache/
-docs/
-evals/
-scripts/
-tests/

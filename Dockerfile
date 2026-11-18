@@ -37,6 +37,7 @@ ENV PATH=/app/.venv/bin:$PATH \
 USER afr
 WORKDIR /home/afr
 EXPOSE 4318
+# For `docker compose ps` and local waits; Cloud Run uses its own probes.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
     CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen(f\"http://127.0.0.1:{os.environ.get('PORT', '4318')}/healthz\", timeout=2)"]
 # Cloud Run sets PORT. Listening on all interfaces needs API keys (AFR_API_KEY_HASHES) or, for

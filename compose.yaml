@@ -1,8 +1,10 @@
 # Local Postgres with pgvector for the recorder, and optionally the ingest API in a container.
 #   docker compose up -d                  Postgres only, for `uv run afr ...` (as before)
 #   uv run afr db upgrade                 create the tables
-#   docker compose --profile api up -d    also migrate the tables and serve the API in a
+#   docker compose --profile api up -d --build
+#                                         also migrate the tables and serve the API in a
 #                                         container on 127.0.0.1:4318 (instead of `afr serve`)
+#   docker compose --profile api down     stop all of it (plain `down` leaves the API running)
 # Port 5433 on the host, so it doesn't clash with a locally installed Postgres on 5432.
 # There is no MCP service: the MCP server runs on your machine over stdio (#24).
 services:
@@ -29,9 +31,6 @@ services:
     command: ["afr", "db", "upgrade"]
     environment: &api-env
       AFR_DATABASE_URL: postgresql+psycopg://afr:afr@db:5432/afr
-      # Placeholders match the hook's only if both use the same key: export it before `up`.
-      # Unset, the container makes its own in the afr-home volume.
-      AFR_REDACTION_KEY: ${AFR_REDACTION_KEY:-}
     depends_on:
       db:
         condition: service_healthy
@@ -41,6 +40,9 @@ services:
     build: .
     environment:
       <<: *api-env
+      # Passed through only when set in your shell at `up`: placeholders match the hook's only if
+      # both use the same key. Unset, the container makes its own in the afr-home volume.
+      AFR_REDACTION_KEY:
       # No API keys locally: the container listens on all of its interfaces, so this opt-out
       # is required, and safe only because the port below is published on 127.0.0.1 alone.
       # Never set it where the port is reachable from a network (it's refused on Cloud Run).
