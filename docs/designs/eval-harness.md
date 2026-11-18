@@ -75,6 +75,7 @@ Each command compares its results with a committed baseline, under the rules in 
 *   **Command agents** (JSON on stdin and stdout, with a timeout): a later issue. The analyst can be called in-process. Claude Code sessions can't be called at all until command agents exist.
 *   **Linking eval runs to the store** (`afr.eval.case`) and the `tool_called` and `tool_not_called` checks that need it: a later issue. See Alternative K for why a wrapper span was dropped.
 *   **The `judge` check:** #17.
+    *   Amended by #17: the judge is an agent under test; see [llm-judge.md](llm-judge.md).
 *   **Writing results to the `eval_results` table.** The table exists (migration 0001), but #15 writes files only; see Alternative L. PLAN.md key decision 7 and `docs/schema.md` are amended to say so.
 *   **Live agent runs in CI:** #19.
 *   **A fixed pass bar,** such as 95% of cases. It is replaced by the baseline gate; see Alternative A.
