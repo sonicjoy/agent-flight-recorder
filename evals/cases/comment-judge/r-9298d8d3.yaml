@@ -1,0 +1,89 @@
+id: r-9298d8d3
+tags:
+- corpus
+note: Regression/duplicate only asked about; no issue numbers, labels or milestones outside the decision.
+input:
+  judge_version: 1
+  model: anthropic:claude-haiku-5-5
+  rubric:
+    instructions: You grade a triage comment that an agent wrote for a GitHub issue, from the issue's
+      title and the agent's triage decision (labels, milestone, duplicate_of, regression_of, confidence,
+      rationale). Grade each criterion on its own, from the comment's wording. The decision is what the
+      agent decided; whether the decision itself is right is not graded here.
+    criteria:
+    - id: suggests-not-settles
+      pass: Any duplicate or regression the comment mentions is worded as a suggestion for a maintainer
+        to confirm, or none is mentioned.
+      fail: 'The comment states a duplicate or regression as decided (for example ''This is a duplicate
+        of #N'' or ''closing as a duplicate''), even if it also asks for confirmation elsewhere.'
+    - id: only-decision-references
+      pass: Every issue number, label and milestone the comment names is in the decision (its labels,
+        milestone, duplicate_of, regression_of or rationale).
+      fail: The comment names an issue number, label or milestone that isn't in the decision.
+    examples:
+    - item:
+        title: Export fails on large files
+        decision:
+          labels:
+          - bug
+          milestone: v2.1
+          duplicate_of: '88'
+          regression_of: null
+          rationale: 'Same stack trace as #88.'
+        comment: 'Thanks! This may be the same problem as #88; could a maintainer confirm? Labelled bug
+          for v2.1.'
+      criteria:
+        suggests-not-settles: pass
+        only-decision-references: pass
+      reason: 'Suggests #88 and names only the decision''s label and milestone.'
+    - item:
+        title: Dark mode toggle missing
+        decision:
+          labels:
+          - ui
+          milestone: null
+          duplicate_of: '12'
+          regression_of: null
+          rationale: 'Requested in #12.'
+        comment: 'This is a duplicate of #12, so we''ll track it there.'
+      criteria:
+        suggests-not-settles: fail
+        only-decision-references: pass
+      reason: States the duplicate as decided.
+    - item:
+        title: Crash on startup
+        decision:
+          labels:
+          - bug
+          milestone: v3.0
+          duplicate_of: null
+          regression_of: null
+          rationale: New crash.
+        comment: 'Thanks for the report. Labelled bug and docs for v3.0; it may relate to #40, which a
+          maintainer could check.'
+      criteria:
+        suggests-not-settles: pass
+        only-decision-references: fail
+      reason: 'Names the docs label and #40, neither in the decision.'
+  item:
+    comment: 'Thanks for the request—this looks like documentation/infrastructure onboarding work. Please
+      add/confirm: where CI workflows live, how to run the same steps locally (including required env
+      vars/secrets/config files), and any exact commands/Make targets/scripts developers can use. If any
+      behavior differs between CI vs local (e.g., container images, caching, service dependencies), please
+      document that too. Also, if CI was recently changed, please confirm whether this is a regression
+      or duplicate of existing docs we may already have.'
+    title: Document how CI runs and how to reproduce it locally
+    decision:
+      labels:
+      - documentation
+      - infra
+      milestone: 'Week 1: Demo agent and foundations'
+      duplicate_of: null
+      regression_of: null
+      confidence: 0.74
+      rationale: Request is to document CI workflows and provide exact local reproduction commands; this
+        is documentation/infrastructure onboarding work best placed in Week 1 alongside CI/tooling foundations.
+checks:
+- type: equals
+  field: grade
+  value: pass

@@ -1,0 +1,92 @@
+id: b-7
+tags:
+- broken
+note: 'targets: only-decision-references; author: claude; from 5a558f52: decision''s milestone changed,
+  comment still says Week 2'
+input:
+  judge_version: 1
+  model: anthropic:claude-haiku-5-5
+  rubric:
+    instructions: You grade a triage comment that an agent wrote for a GitHub issue, from the issue's
+      title and the agent's triage decision (labels, milestone, duplicate_of, regression_of, confidence,
+      rationale). Grade each criterion on its own, from the comment's wording. The decision is what the
+      agent decided; whether the decision itself is right is not graded here.
+    criteria:
+    - id: suggests-not-settles
+      pass: Any duplicate or regression the comment mentions is worded as a suggestion for a maintainer
+        to confirm, or none is mentioned.
+      fail: 'The comment states a duplicate or regression as decided (for example ''This is a duplicate
+        of #N'' or ''closing as a duplicate''), even if it also asks for confirmation elsewhere.'
+    - id: only-decision-references
+      pass: Every issue number, label and milestone the comment names is in the decision (its labels,
+        milestone, duplicate_of, regression_of or rationale).
+      fail: The comment names an issue number, label or milestone that isn't in the decision.
+    examples:
+    - item:
+        title: Export fails on large files
+        decision:
+          labels:
+          - bug
+          milestone: v2.1
+          duplicate_of: '88'
+          regression_of: null
+          rationale: 'Same stack trace as #88.'
+        comment: 'Thanks! This may be the same problem as #88; could a maintainer confirm? Labelled bug
+          for v2.1.'
+      criteria:
+        suggests-not-settles: pass
+        only-decision-references: pass
+      reason: 'Suggests #88 and names only the decision''s label and milestone.'
+    - item:
+        title: Dark mode toggle missing
+        decision:
+          labels:
+          - ui
+          milestone: null
+          duplicate_of: '12'
+          regression_of: null
+          rationale: 'Requested in #12.'
+        comment: 'This is a duplicate of #12, so we''ll track it there.'
+      criteria:
+        suggests-not-settles: fail
+        only-decision-references: pass
+      reason: States the duplicate as decided.
+    - item:
+        title: Crash on startup
+        decision:
+          labels:
+          - bug
+          milestone: v3.0
+          duplicate_of: null
+          regression_of: null
+          rationale: New crash.
+        comment: 'Thanks for the report. Labelled bug and docs for v3.0; it may relate to #40, which a
+          maintainer could check.'
+      criteria:
+        suggests-not-settles: pass
+        only-decision-references: fail
+      reason: 'Names the docs label and #40, neither in the decision.'
+  item:
+    comment: 'Triage: Looks like a good fit for the recorder core milestone (“Week 2: Recorder core”)—this
+      is the first CLI surface for listing, inspecting, and replaying recorded runs. Please confirm it
+      isn’t overlapping with any existing recorder CLI work and that it matches the intended recorder
+      data model/output format. If there’s already a CLI command set elsewhere, double-check for duplicates
+      in naming/behavior. I didn’t find a clear duplicate; the closest related item is the React replay
+      UI, but that appears to be specifically for the web app/API rather than a CLI counterpart—please
+      confirm.'
+    title: 'CLI: list, show and replay runs'
+    decision:
+      labels:
+      - recorder
+      milestone: 'Week 3: Evals and guardrails'
+      duplicate_of: null
+      regression_of: null
+      confidence: 0.94
+      rationale: This is the first CLI for listing, inspecting, and replaying recorded runs, which fits
+        the recorder core milestone. I found a very similar issue for the React replay UI, but that one
+        is specifically about the web app and API; this issue is the CLI counterpart, so it does not look
+        like a duplicate.
+checks:
+- type: equals
+  field: grade
+  value: fail

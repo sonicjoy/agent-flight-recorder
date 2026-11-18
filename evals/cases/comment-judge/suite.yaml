@@ -1,0 +1,2 @@
+agent: flight_recorder.evals.judge:judge
+model: anthropic:claude-haiku-5-5

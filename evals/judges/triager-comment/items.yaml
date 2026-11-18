@@ -1,0 +1,767 @@
+# The judge's agreement set (docs/designs/llm-judge.md). Corpus items picked by a seeded
+# rule (seed 1717: one run per triager case, 12 whose decision names a duplicate
+# or regression and 11 that don't); broken items are minimal edits of runs from other
+# cases. Grades were written blind on a shuffled sheet: a first pass by Claude, then reviewed
+# and accepted by the owner, before any judge run.
+items:
+- id: r-9bb35d0f
+  tag: corpus
+  item:
+    comment: 'Thanks for the request! This sounds like the existing open issue for a manual run labelling
+      CLI (e.g., `afr label <run>`) and related taxonomy/error analysis workflow—could you please confirm
+      whether your goal matches that one (duplicate of #14)? If this is instead a new capability or addresses
+      a regression from recent changes, let us know what changed and link any prior behavior so maintainers
+      can verify. Marking this as duplicate to keep the workstream focused (milestone: Week 3: Evals and
+      guardrails).'
+    title: Tool to tag failed runs by hand
+    decision:
+      labels:
+      - evals
+      - recorder
+      milestone: 'Week 3: Evals and guardrails'
+      duplicate_of: '14'
+      regression_of: null
+      confidence: 0.9
+      rationale: The request matches the existing open issue for a manual run labelling CLI (`afr label
+        <run>`) and taxonomy/error analysis workflow. Likely same workstream, so mark as duplicate.
+  grade: fail
+  note: "c1: 'Marking this as duplicate' is stated as done, despite the earlier request to confirm."
+- id: r-60db6d3e
+  tag: corpus
+  item:
+    comment: 'Thanks for filing! This looks primarily like documentation/launch polish: README coverage,
+      architecture diagram, ADR links, eval results, quickstart, comparisons, and screenshots. It strongly
+      overlaps with the existing Week 5 README/quickstart launch polish work, so it may be a duplicate
+      of issue #30—please double-check that the requested items (diagram/ADRs/evals/screenshots) are already
+      covered there. If anything is missing from #30 (e.g., the architecture diagram or specific sections),
+      consider confirming that here so we don’t split the work unnecessarily.'
+    title: README, architecture diagram and design decisions
+    decision:
+      labels:
+      - documentation
+      milestone: 'Week 5: Replay UI and launch'
+      duplicate_of: '30'
+      regression_of: null
+      confidence: 0.7
+      rationale: 'This is primarily a documentation task for the launch materials: README coverage, architecture
+        diagram, ADR links, eval results, quickstart, comparison, and screenshots. It overlaps strongly
+        with the existing Week 5 documentation issue for the README/quickstart launch polish, so I’d treat
+        it as a duplicate rather than a separate work item.'
+  grade: pass
+  note: "'May be a duplicate of #30 - please double-check'; #30 and Week 5 are in the decision."
+- id: r-3b783ad2
+  tag: corpus
+  item:
+    comment: 'Thanks for the report/request! This looks like it matches existing open issue #17 about
+      building an LLM-judge rubric plus an agreement check against your labels (e.g., percent agreement
+      / Cohen’s kappa) and recording the eval results. Could you please confirm whether this is a duplicate
+      of #17 or if there’s any new requirement or regression (e.g., different metrics, rubric format,
+      or evaluation workflow)? If it’s truly the same, we can consolidate; if not, we’ll track the additional
+      specifics in this issue.'
+    title: Use a model to grade answers, and check it agrees with me
+    decision:
+      labels:
+      - evals
+      milestone: 'Week 3: Evals and guardrails'
+      duplicate_of: '17'
+      regression_of: null
+      confidence: 0.92
+      rationale: 'This request matches the existing open issue #17 about building an LLM-judge rubric
+        with an agreement check against the user''s labels (percent agreement/Cohen’s kappa) and recording
+        results.'
+  grade: pass
+  note: "Asks whether it is a duplicate of #17 or something new; #17 is in the decision."
+- id: r-503ca694
+  tag: corpus
+  item:
+    comment: 'Thanks for the report. This request looks like a duplicate of #28, specifically about dogfooding
+      the recorder so the analyst runs into/records the recorder’s own agents. Could you please confirm
+      that #28 covers the same implementation details and goal? If it’s slightly different, let us know
+      what new behavior/scope it adds so we can avoid splitting the work. Marking as a duplicate to keep
+      focus and prevent duplicate effort. Milestoning for Week 4: Analyst, MCP and deploy.'
+    title: Dogfood the recorder on the analyst
+    decision:
+      labels:
+      - analyst
+      - recorder
+      - stretch
+      milestone: 'Week 4: Analyst, MCP and deploy'
+      duplicate_of: '28'
+      regression_of: null
+      confidence: 0.9
+      rationale: This request matches the existing open issue to record the recorder's own agents (dogfooding
+        analyst runs into the recorder). Likely same implementation scope; mark as duplicate to avoid
+        splitting work.
+  grade: fail
+  note: "c1: 'Marking as a duplicate' is stated as done, despite asking to confirm #28."
+- id: r-62a57abc
+  tag: corpus
+  item:
+    comment: 'Thanks for the report! This sounds like request to seed/test data for the triage agent.
+      There’s already an open issue about seeding demo runs/quickstart (listed as duplicate_of #30); could
+      you confirm whether that issue covers your needed test data as-is (including format and where it’s
+      consumed by the agent)? If it doesn’t, please share what additional seed/fixture cases you want
+      (e.g., label/milestone expectations, sample payloads, folder/schema), and we can align this with
+      the Week 1 “Demo agent and foundations” documentation/demo-agent work. No regression is indicated.'
+    title: Test data for the triage agent
+    decision:
+      labels:
+      - documentation
+      - demo-agent
+      - stretch
+      milestone: 'Week 1: Demo agent and foundations'
+      duplicate_of: '30'
+      regression_of: null
+      confidence: 0.62
+      rationale: Request is to seed/test data for the triage agent; there is already an open issue about
+        seeding demo runs/quickstart, which likely covers this. If not, it extends documentation/seed
+        tooling for the triager test cases, fitting early foundations.
+  grade: pass
+  note: "Borderline: '(listed as duplicate_of #30)' reports the field but then asks whether #30 covers it; I read it as not settled. #30, labels and milestone are in the decision."
+- id: r-ba5fd2f3
+  tag: corpus
+  item:
+    comment: 'Thanks for opening this! This looks to be the same “provider-switchable LLM config” work
+      already captured in issue #2 (matching core acceptance criteria around provider-switchable models
+      and smoke tests). Could you please confirm whether your changes/requirements are identical (or if
+      anything differs)? If so, I recommend closing this as a duplicate of #2 to avoid splitting effort
+      and discussion.'
+    title: Provider-switchable LLM config
+    decision:
+      labels:
+      - demo-agent
+      milestone: 'Week 1: Demo agent and foundations'
+      duplicate_of: '2'
+      regression_of: null
+      confidence: 0.99
+      rationale: 'This is the same provider-switchable LLM config work already captured by issue #2, with
+        matching core acceptance criteria around provider-switchable models and smoke tests. Close as
+        a duplicate rather than creating a new task.'
+  grade: pass
+  note: "'Looks to be the same' as #2, asks to confirm, recommends closing only if so; #2 is in the decision."
+- id: r-1769a824
+  tag: corpus
+  item:
+    comment: 'Thanks for the report—this looks like a duplicate of issue #20 that asks how our eval harness
+      compares with promptfoo/DeepEval. Could you confirm that the scope (what parts of DeepEval/harness
+      you want compared and any specific metrics/tooling) matches #20? If yes, we can consolidate discussion
+      there. In the meantime, please note any concrete requirements (datasets, success criteria, model
+      providers) so we can capture it in Week 3 (“Evals and guardrails”) and document the comparison accurately.'
+    title: How does our harness stack up against DeepEval?
+    decision:
+      labels:
+      - evals
+      - documentation
+      milestone: 'Week 3: Evals and guardrails'
+      duplicate_of: '20'
+      regression_of: null
+      confidence: 0.9
+      rationale: This request directly matches an existing open issue to compare our harness with promptfoo
+        or DeepEval; we should label it for evals and docs but treat it as a duplicate.
+  grade: pass
+  note: "'Looks like a duplicate of #20', asks to confirm scope; #20 and Week 3 are in the decision."
+- id: r-5fa28eeb
+  tag: corpus
+  item:
+    comment: 'Thanks! This request looks aligned with the existing issue “Seed data and five-minute quickstart”
+      (likely tracking the same goal). Maintainers: could you confirm whether “New users should see something
+      in five minutes” is a duplicate of issue #30, or if it introduces any new requirements beyond the
+      current quickstart/seed/sample-run instructions? If it’s the same, we can close/merge to avoid fragmentation;
+      if not, we should capture the additional acceptance criteria and ensure it fits the Week 5: Replay
+      UI and launch milestone.'
+    title: New users should see something in five minutes
+    decision:
+      labels:
+      - documentation
+      - ui
+      - stretch
+      milestone: 'Week 5: Replay UI and launch'
+      duplicate_of: '30'
+      regression_of: null
+      confidence: 0.93
+      rationale: The request matches the existing open issue 'Seed data and five-minute quickstart' which
+        already covers shipping sample runs and a short clone/docker compose/seed/UI guide with a 5-minute
+        goal.
+  grade: pass
+  note: "Asks maintainers to confirm whether it duplicates #30; milestone matches."
+- id: r-50ca9163
+  tag: corpus
+  item:
+    comment: 'Thanks for the request. This sounds like the same CLI behavior already covered in the closed
+      issue #12 (commands like `afr runs` / `afr show <id>` and stepping through recorded spans). Could
+      you confirm whether #12’s implementation is currently present but failing to work in your environment,
+      or if you’re seeing a regression? If it’s not working, please share the exact command outputs/logs
+      and expected vs actual behavior so we can decide whether to reopen as a regression (`regression_of`
+      once confirmed) rather than a duplicate.'
+    title: Command line to browse recorded runs
+    decision:
+      labels:
+      - recorder
+      - stretch
+      milestone: 'Week 2: Recorder core'
+      duplicate_of: '12'
+      regression_of: null
+      confidence: 0.92
+      rationale: This request (`afr runs` list, `afr show <id>`, and stepping through spans) matches an
+        existing closed issue for the same CLI behavior, so it’s best treated as a duplicate. If it’s
+        reporting the closed work is failing, we should instead use regression_of once confirmed.
+  grade: pass
+  note: "'Sounds like the same' as #12, asks to confirm and leaves duplicate vs regression open; #12 is in the decision."
+- id: r-e428f953
+  tag: corpus
+  item:
+    comment: 'Thanks for the issue—this looks like it may be duplicate work. The request (provider-switchable
+      LLM config, adding Ollama) appears to overlap with existing provider-switchable config coverage
+      in #2 (and possibly #3). Could you confirm whether your proposal differs from those issues (e.g.,
+      new config schema/CLI flags, Ollama-specific auth/endpoint handling, migration concerns)? If it’s
+      the same work, please close or link to the existing issue and we can focus on the shared implementation
+      for the demo agent foundations.'
+    title: Provider-switchable LLM config
+    decision:
+      labels:
+      - demo-agent
+      - stretch
+      milestone: 'Week 1: Demo agent and foundations'
+      duplicate_of: '2'
+      regression_of: null
+      confidence: 0.86
+      rationale: This is a provider-switchable LLM config extension (adding Ollama). Existing issues (#2/#3)
+        already cover provider-switchable config across providers; likely the same work with an added
+        Ollama option.
+  grade: pass
+  note: "'May be duplicate work', asks to confirm; #2 and #3 are both in the rationale."
+- id: r-4ead17a4
+  tag: corpus
+  item:
+    comment: 'This looks like a duplicate of issue #2, which already covers selecting/switching the LLM
+      provider via .env (including model selection and cost comparison). Could you confirm this request
+      isn’t targeting a different provider-selection mechanism (e.g., new env var names, additional providers,
+      or a changed config flow)? If it matches #2, please close/redirect this issue to reduce duplication.
+      If you think it’s a regression or adds new requirements, please add details on what’s different
+      so we can validate whether #2 fully covers it.'
+    title: Let me choose the model provider from .env
+    decision:
+      labels:
+      - demo-agent
+      milestone: 'Week 1: Demo agent and foundations'
+      duplicate_of: '2'
+      regression_of: null
+      confidence: 0.78
+      rationale: 'The request matches an already completed issue about provider-switchable LLM configuration
+        via .env with model selection and cost comparison. Likely same work; close/redirect to #2.'
+  grade: pass
+  note: "'Looks like a duplicate of #2', asks to confirm, close only if it matches; #2 is in the decision."
+- id: r-0dd25ee2
+  tag: corpus
+  item:
+    comment: 'Suggestion: Please confirm this is not duplicating or overlapping with issue #19 (“Run evals
+      in CI”). The request here aligns with that existing guardrail idea: run a Gemini free-tier smoke
+      eval suite in GitHub Actions and fail the build when eval pass-rate drops below a defined threshold.
+      If #19 is already implementing this, verify the threshold logic and ensure “drop” is interpreted
+      as intended (absolute threshold vs. relative/step change, and which metric counts). If it’s not
+      implemented yet, this issue can proceed with the same CI guardrails.'
+    title: Fail the build when eval scores drop
+    decision:
+      labels:
+      - evals
+      - infra
+      milestone: 'Week 3: Evals and guardrails'
+      duplicate_of: '19'
+      regression_of: null
+      confidence: 0.92
+      rationale: This request matches the existing open issue 'Run evals in CI', which explicitly calls
+        for running a Gemini free-tier smoke suite in GitHub Actions and failing the build when pass-rate
+        drops below a threshold.
+  grade: pass
+  note: "Asks to confirm overlap with #19; #19 is in the decision."
+- id: r-7090aeca
+  tag: corpus
+  item:
+    comment: Labeled for evals and targeted to Week 3 (Evals and guardrails) since this is the data-gathering
+      step to generate and collect real failed triager runs for later manual review. This will feed the
+      labelling CLI, hand error analysis, and golden eval case creation. Suggest maintainer confirm whether
+      the request overlaps with any existing/ongoing run-corpus generation work (possible duplicate) and
+      whether similar corpus generation already existed in a previous milestone (possible regression),
+      before proceeding.
+    title: Generate a run corpus with real failures
+    decision:
+      labels:
+      - evals
+      milestone: 'Week 3: Evals and guardrails'
+      duplicate_of: null
+      regression_of: null
+      confidence: 0.95
+      rationale: 'This is the data-gathering step for error analysis: generating and collecting real failed
+        triager runs for later manual review. It fits Week 3 because it directly feeds the labelling CLI,
+        hand error analysis, and golden eval case creation; it is not a duplicate of the later analysis/case-writing
+        issues.'
+  grade: pass
+  note: "Duplicate and regression both left for a maintainer to confirm; evals and Week 3 match."
+- id: r-ac9c041c
+  tag: corpus
+  item:
+    comment: "Thanks for opening this issue. Based on the scope of work, this task relates to our infrastructure\
+      \ and deployment pipeline, so I have added the \"infra\" label and scheduled it for the Week 4:\
+      \ Analyst, MCP and deploy milestone. \n\nCould a maintainer please double-check if this might overlap\
+      \ with any existing authentication work or regressions in the current deploy flow?"
+    title: API key auth before deploy
+    decision:
+      labels:
+      - infra
+      milestone: 'Week 4: Analyst, MCP and deploy'
+      duplicate_of: null
+      regression_of: null
+      confidence: 0.95
+      rationale: API key authentication for endpoints before deployment naturally belongs to Week 4 alongside
+        infrastructure and Terraform deployment.
+  grade: pass
+  note: "Asks a maintainer to double-check overlap and regressions; infra and Week 4 match."
+- id: r-d4576767
+  tag: corpus
+  item:
+    comment: 'Thanks for the report—this is a good fit for the “Week 3: Evals and guardrails” work. Please
+      confirm whether similar CI gating behavior already exists elsewhere (e.g., another workflow step
+      that runs evals with thresholds). Also, verify that the proposed CI approach is fork-safe (no secrets
+      exposed on PRs from forks) and that thresholds/guardrails are defined clearly. If you can, share
+      where the evals should run (which workflow, triggers) and the expected failure mode (block merge
+      vs. warning).'
+    title: Run evals in CI
+    decision:
+      labels:
+      - evals
+      - infra
+      milestone: 'Week 3: Evals and guardrails'
+      duplicate_of: null
+      regression_of: null
+      confidence: 0.89
+      rationale: This is about wiring eval execution into CI with thresholds and fork-safe secret handling,
+        which fits the evals/CI workstream in Week 3. I found related issues for provider configuration
+        and CI setup, but nothing that clearly duplicates this specific CI gating behavior, so I would
+        keep it as its own issue.
+  grade: pass
+  note: "Asks whether similar CI gating exists; no issue numbers; milestone matches."
+- id: r-5c2addd6
+  tag: corpus
+  item:
+    comment: 'Thanks for the report—this looks like a documentation/demo-agent foundation task to add
+      or wire up the repo’s own issue fixtures/export path for the triager (rather than recorder/evals/infra).
+      I’ve labeled it accordingly and set it for Week 1: Demo agent and foundations. If there’s already
+      an issue covering the same export-fixtures work, please confirm (or link it) so we can mark this
+      as a duplicate. Similarly, if this is triggered by a prior change in fixtures behavior, please confirm
+      whether it’s a regression so we can track it appropriately.'
+    title: Issue fixtures for the triager
+    decision:
+      labels:
+      - demo-agent
+      - documentation
+      milestone: 'Week 1: Demo agent and foundations'
+      duplicate_of: null
+      regression_of: null
+      confidence: 0.93
+      rationale: This is about adding the repo’s own issue fixtures/export path for the triager, which
+        supports the demo agent and documentation/quickstart rather than recorder, evals, or infra. I
+        don’t see a clear existing issue for this exact export-fixtures work, so I’m not marking it as
+        a duplicate or regression.
+  grade: pass
+  note: "No duplicate or regression asserted, only asked about; labels and milestone match the decision."
+- id: r-b59ec51d
+  tag: corpus
+  item:
+    comment: 'Suggestion: Please confirm whether this is intended to be a remote MCP server accessible
+      over HTTP (including streaming) behind the existing API gateway using the same API key, and that
+      it fits the Week 4 “Analyst, MCP and deploy” scope. If similar prior work exists, double-check for
+      duplicates (e.g., earlier HTTP/remote access implementation) before proceeding. Labeling looks appropriate
+      as “mcp” and “infra,” with target milestone Week 4; please verify deployment assumptions (where
+      it runs, auth method, and streaming behavior).'
+    title: Run the MCP server remotely over HTTP
+    decision:
+      labels:
+      - mcp
+      - infra
+      milestone: 'Week 4: Analyst, MCP and deploy'
+      duplicate_of: null
+      regression_of: null
+      confidence: 0.82
+      rationale: Requests remote MCP access over HTTP, streaming, deployed next to API behind same API
+        key—primarily MCP server + infra/deploy work, aligning with Week 4 deliverables.
+  grade: pass
+  note: "Duplicate only raised as a double-check; mcp, infra and Week 4 are all in the decision."
+- id: r-1e10cfcd
+  tag: corpus
+  item:
+    comment: 'Triage: Mark as infra for Week 4 (“Analyst, MCP and deploy”). This appears to be the deployment
+      infrastructure work to set up Terraform for Cloud Run + Cloud SQL, wiring in Secret Manager and
+      budget alerts. Please confirm it’s not already covered by an existing Terraform/deploy tracking
+      issue (or a related environment bootstrap task), and that any requirements (service accounts, VPC
+      connectivity, backups/migrations, and secrets handling) are consistent with our current patterns.
+      If anything overlaps with MCP-related deployment work, please adjust labeling/milestone accordingly.'
+    title: Deploy to Cloud Run and Cloud SQL with Terraform
+    decision:
+      labels:
+      - infra
+      milestone: 'Week 4: Analyst, MCP and deploy'
+      duplicate_of: null
+      regression_of: null
+      confidence: 0.96
+      rationale: This is deployment infrastructure work for Terraform, Cloud Run, Cloud SQL, Secret Manager,
+        and budget alerts. It fits Week 4’s deploy milestone and is not a duplicate of the MCP or other
+        existing issue.
+  grade: pass
+  note: "Asks to confirm it is not already covered; infra and Week 4 match; MCP is in the rationale."
+- id: r-9298d8d3
+  tag: corpus
+  item:
+    comment: 'Thanks for the request—this looks like documentation/infrastructure onboarding work. Please
+      add/confirm: where CI workflows live, how to run the same steps locally (including required env
+      vars/secrets/config files), and any exact commands/Make targets/scripts developers can use. If any
+      behavior differs between CI vs local (e.g., container images, caching, service dependencies), please
+      document that too. Also, if CI was recently changed, please confirm whether this is a regression
+      or duplicate of existing docs we may already have.'
+    title: Document how CI runs and how to reproduce it locally
+    decision:
+      labels:
+      - documentation
+      - infra
+      milestone: 'Week 1: Demo agent and foundations'
+      duplicate_of: null
+      regression_of: null
+      confidence: 0.74
+      rationale: Request is to document CI workflows and provide exact local reproduction commands; this
+        is documentation/infrastructure onboarding work best placed in Week 1 alongside CI/tooling foundations.
+  grade: pass
+  note: "Regression/duplicate only asked about; no issue numbers, labels or milestones outside the decision."
+- id: r-a5f5d88a
+  tag: corpus
+  item:
+    comment: 'Triage: Mark as infra and target for “Week 5: Replay UI and launch”. This sounds like launch/deployment
+      prep (repo visibility, metadata/license, branch protection) rather than recorder/evals work. Please
+      confirm it’s not overlapping with any existing infra/release checklist items and that it doesn’t
+      duplicate another issue. Also double-check any prior work related to making the repo public (e.g.,
+      settings/branch protection) if already done.'
+    title: Launch checklist and go public
+    decision:
+      labels:
+      - infra
+      milestone: 'Week 5: Replay UI and launch'
+      duplicate_of: null
+      regression_of: null
+      confidence: 0.93
+      rationale: 'This is launch/deployment work: repository visibility, metadata, license, and branch
+        protection. It is not a duplicate of an existing issue, and it fits the Week 5 launch milestone
+        rather than recorder/evals work.'
+  grade: pass
+  note: "Asks to confirm no overlap; infra and Week 5 match; recorder/evals are named in the rationale."
+- id: r-33d4765a
+  tag: corpus
+  item:
+    comment: 'Suggestion: Please confirm this eval/guardrail covers the agent output as well as any intermediate
+      recorder artifacts (e.g., streamed tokens, tool logs), and that it specifically detects key-shaped
+      strings like “GOOGLE_API_KEY” (or realistic variants) rather than only literal matches. Also verify
+      it doesn’t produce false positives (e.g., mentioning the key name in documentation) and that failures
+      report the minimum context needed to debug without leaking the value. If any prior similar guardrail
+      exists, double-check this isn’t a duplicate/regression.'
+    title: Check the agent never echoes GOOGLE_API_KEY
+    decision:
+      labels:
+      - evals
+      - recorder
+      milestone: 'Week 3: Evals and guardrails'
+      duplicate_of: null
+      regression_of: null
+      confidence: 0.72
+      rationale: Request is to add an eval/guardrail asserting the triager/agent output never contains
+        key-shaped strings (e.g., GOOGLE_API_KEY) after prompting it to print env; fits eval harness +
+        redaction/guardrail verification in Week 3.
+  grade: pass
+  note: "Duplicate/regression only as a double-check; no issue numbers, labels or milestones named."
+- id: r-6f1a5986
+  tag: corpus
+  item:
+    comment: This request maps closely to the Week 4 eval task “Evaluate the analyst against your labels,”
+      specifically scoring how well failure clustering matches your hand-written failure labels (precision/recall,
+      and related matching metrics). Please confirm whether you already measured “failure-label matching”
+      for clustering in the current eval suite to avoid duplicate effort, and whether the issue implies
+      a regression from prior clustering performance (if so, compare to prior results). If you want, share
+      the exact clustering outputs you expect to score (inputs/format), and the label taxonomy used for
+      the hand-written labels.
+    title: How good is the failure clustering?
+    decision:
+      labels:
+      - analyst
+      - evals
+      - stretch
+      milestone: 'Week 4: Analyst, MCP and deploy'
+      duplicate_of: null
+      regression_of: null
+      confidence: 0.9
+      rationale: Issue requests scoring analyst clusters and suggested cases vs hand-written failure labels
+        using precision/recall—directly matches the Week 4 eval work item 'Evaluate the analyst against
+        your labels' plus minor stretch on failure-label matching metrics.
+  grade: pass
+  note: "Duplicate effort and regression both asked about; Week 4 matches; no issue numbers."
+- id: r-adcd5733
+  tag: corpus
+  item:
+    comment: Thanks for the request! This sounds like infrastructure/documentation work to provide a single
+      unified local `docker compose up` workflow (Postgres + API + UI) with hot reload. Maintainers should
+      confirm whether an existing setup/compose file already covers this (possible duplicate) and whether
+      this changes prior local dev behavior (possible regression). If not, please share any current local
+      dev instructions and the expected services/ports so we can align the compose setup and update docs
+      accordingly.
+    title: One docker compose file for local development
+    decision:
+      labels:
+      - infra
+      - documentation
+      milestone: 'Week 4: Analyst, MCP and deploy'
+      duplicate_of: null
+      regression_of: null
+      confidence: 0.46
+      rationale: Request is for a unified local `docker compose up` environment with Postgres + API +
+        UI and hot reload, which aligns with containerisation/deployment-local dev setup work rather than
+        core recorder or evals.
+  grade: pass
+  note: "Duplicate and regression left for maintainers to confirm; no references outside the decision."
+- id: b-1
+  tag: broken
+  item:
+    comment: 'Looks like this request overlaps with existing issue #24 (FastMCP server exposing `search_runs`,
+      `get_run`, and `explain_failure`). Could you please confirm whether #24 already covers exposing
+      “run search to Claude via MCP” with the same tool names/behavior? We are closing this as a duplicate
+      of #24 and focus effort on milestone “Week 4: Analyst, MCP and deploy.” No regression is indicated.'
+    title: Expose run search to Claude via MCP
+    decision:
+      labels:
+      - mcp
+      - stretch
+      milestone: 'Week 4: Analyst, MCP and deploy'
+      duplicate_of: '24'
+      regression_of: null
+      confidence: 0.9
+      rationale: Issue requests an MCP server exposing run search/failure explanation tools for Claude;
+        there is already an open issue (#24) specifying a FastMCP server with `search_runs`, `get_run`,
+        and `explain_failure`.
+  grade: fail
+  targets: suggests-not-settles
+  author: claude
+  note: 'from 70ffb971: settles the duplicate'
+- id: b-2
+  tag: broken
+  item:
+    comment: 'Thanks! This is a duplicate of closed issue #6 (“Port the triager to an Agents SDK”), which
+      already covers rebuilding the same triage agent using the OpenAI/Claude Agents SDK for comparison
+      with LangGraph. Could you please confirm whether your request adds anything new beyond #6 (e.g.,
+      different SDK version/features, new triage behavior, or a regression compared to the existing agent)?
+      If it’s indeed the same scope, we’ll track it under the existing work in milestone “Week 1: Demo
+      agent and foundations.”'
+    title: Rewrite the triage agent with the OpenAI or Claude Agents SDK
+    decision:
+      labels:
+      - demo-agent
+      - stretch
+      milestone: 'Week 1: Demo agent and foundations'
+      duplicate_of: '6'
+      regression_of: null
+      confidence: 0.95
+      rationale: 'This request matches existing closed issue #6 (“Port the triager to an Agents SDK”),
+        which already covers rebuilding the same triage agent using Claude/OpenAI Agents SDK for comparison
+        with LangGraph.'
+  grade: fail
+  targets: suggests-not-settles
+  author: claude
+  note: 'from f9c4ab20: one phrase'
+- id: b-3
+  tag: broken
+  item:
+    comment: 'Thanks for the request! This would be covered by the existing work to produce a large corpus
+      of real triage runs, including genuine failures across providers, with some repeats and injected
+      tool failures. There’s already a related issue (#14) tracking ~150 real-failure runs; please confirm
+      whether this request is a duplicate of issue #13. If anything differs (e.g., new provider set, failure
+      modes, scale, or dataset format), it may be worth updating #13 with the specifics. Marking as evals/demo-agent
+      and targeting Week 3: Evals and guardrails.'
+    title: Produce lots of triage runs, including broken ones
+    decision:
+      labels:
+      - evals
+      - demo-agent
+      milestone: 'Week 3: Evals and guardrails'
+      duplicate_of: '13'
+      regression_of: null
+      confidence: 0.9
+      rationale: This request is essentially to generate a large corpus of real triage runs including
+        genuine failures across providers; an open issue (13) already tracks producing ~150 real-failure
+        runs with repeats and injected tool failures.
+  grade: fail
+  targets: only-decision-references
+  author: claude
+  note: 'from 2e13c298: adds #14'
+- id: b-4
+  tag: broken
+  item:
+    comment: 'Thanks for the request—this looks like it overlaps with existing issue #27. Could you please
+      confirm there isn’t any additional scope beyond Terraforming Cloud Run + Cloud SQL Postgres (with
+      pgvector) to provide a live demo URL? If it’s the same goal, we can track this under #27 to avoid
+      duplicate work. If it’s a regression or adds new requirements (e.g., different service layout, networking,
+      secrets, or pgvector setup), please call that out so we can adjust. Marked for the infra milestone:
+      Week 4: Analyst, MCP and deploy.'
+    title: Host it on GCP
+    decision:
+      labels:
+      - analyst
+      - evals
+      milestone: 'Week 4: Analyst, MCP and deploy'
+      duplicate_of: '23'
+      regression_of: null
+      confidence: 0.86
+      rationale: 'This request is essentially measuring/validating analyst cluster-name quality against
+        human labels using an LLM judge, which matches the existing open issue #23 (“Evaluate the analyst
+        against your labels”).'
+  grade: fail
+  targets: only-decision-references
+  author: claude
+  note: 957093f9's comment with 16e2b351's decision
+- id: b-5
+  tag: broken
+  item:
+    comment: 'This sounds like measuring/validating analyst cluster-name quality against existing human
+      labels using an LLM judge, which appears to match open issue #23 (“Evaluate the analyst against
+      your labels”). This is a duplicate of #23. Please confirm whether this new request changes the judging
+      rubric, dataset, or evaluation setup compared to #23. If it’s effectively the same evaluation, we
+      can consolidate; otherwise, we may want to treat it as a distinct follow-up.'
+    title: Judge the analyst's cluster names
+    decision:
+      labels:
+      - analyst
+      - evals
+      milestone: 'Week 4: Analyst, MCP and deploy'
+      duplicate_of: '23'
+      regression_of: null
+      confidence: 0.86
+      rationale: 'This request is essentially measuring/validating analyst cluster-name quality against
+        human labels using an LLM judge, which matches the existing open issue #23 (“Evaluate the analyst
+        against your labels”).'
+  grade: fail
+  targets: suggests-not-settles
+  author: claude
+  note: 'from 16e2b351: states the duplicate'
+- id: b-6
+  tag: broken
+  item:
+    comment: "Thanks for opening this issue. This request for the metrics dashboard aligns with the user\
+      \ interface work and has been labeled as `ui` and `infra`. To help us track and schedule this properly,\
+      \ I have added it to the Week 5: Replay UI and launch milestone. \n\nMaintainers, could you please\
+      \ double-check if this might overlap with any existing dashboard tickets or regressions from recent\
+      \ UI updates?"
+    title: Metrics dashboard
+    decision:
+      labels:
+      - ui
+      milestone: 'Week 5: Replay UI and launch'
+      duplicate_of: null
+      regression_of: null
+      confidence: 0.95
+      rationale: The metrics dashboard is part of the Replay UI and launch milestone (Week 5), built on
+        top of run metrics and eval results.
+  grade: fail
+  targets: only-decision-references
+  author: claude
+  note: 'from 20c12a92: adds a label'
+- id: b-7
+  tag: broken
+  item:
+    comment: 'Triage: Looks like a good fit for the recorder core milestone (“Week 2: Recorder core”)—this
+      is the first CLI surface for listing, inspecting, and replaying recorded runs. Please confirm it
+      isn’t overlapping with any existing recorder CLI work and that it matches the intended recorder
+      data model/output format. If there’s already a CLI command set elsewhere, double-check for duplicates
+      in naming/behavior. I didn’t find a clear duplicate; the closest related item is the React replay
+      UI, but that appears to be specifically for the web app/API rather than a CLI counterpart—please
+      confirm.'
+    title: 'CLI: list, show and replay runs'
+    decision:
+      labels:
+      - recorder
+      milestone: 'Week 3: Evals and guardrails'
+      duplicate_of: null
+      regression_of: null
+      confidence: 0.94
+      rationale: This is the first CLI for listing, inspecting, and replaying recorded runs, which fits
+        the recorder core milestone. I found a very similar issue for the React replay UI, but that one
+        is specifically about the web app and API; this issue is the CLI counterpart, so it does not look
+        like a duplicate.
+  grade: fail
+  targets: only-decision-references
+  author: claude
+  note: 'from 5a558f52: decision''s milestone changed, comment still says Week 2'
+- id: b-8
+  tag: broken
+  item:
+    comment: 'Thanks for reporting—this sounds like a robustness/validation gap in the `llm-ping` CLI
+      when `--prompt ""` is used and it crashes instead of returning a clear, user-facing error. This
+      is a regression of #46. In the meantime, can you share the exact command, CLI version/commit, and
+      the stack trace/log output? We should add an eval/guardrail case to ensure empty prompt inputs are
+      handled gracefully.'
+    title: llm-ping crashes on an empty prompt
+    decision:
+      labels:
+      - recorder
+      - evals
+      milestone: 'Week 3: Evals and guardrails'
+      duplicate_of: null
+      regression_of: '46'
+      confidence: 0.72
+      rationale: Issue reports a crash in the `llm-ping` CLI when `--prompt ""` is provided; this is a
+        robustness/validation failure that should produce a clear error and be captured as an eval case
+        via the harness.
+  grade: fail
+  targets: suggests-not-settles
+  author: claude
+  note: 'from 6a90126a: regression_of set and stated as fact'
+- id: b-9
+  tag: broken
+  item:
+    comment: 'Thanks for reporting. “Replay broken” is currently too vague for us to reproduce—could you
+      confirm what workflow fails (UI vs CLI replay, specific button/command, and expected vs actual behavior)?
+      Also share any error messages/stack traces, console logs, and a minimal recording or steps to reproduce
+      (browser/OS version if UI). If you’ve got evidence this started after a recent change, please mention
+      the version/commit and whether it’s a duplicate of any known replay issue. Once we have repro details,
+      we can turn this into an eval case for the Week 4: Analyst, MCP and deploy milestone.'
+    title: replay broken
+    decision:
+      labels:
+      - recorder
+      - ui
+      milestone: 'Week 5: Replay UI and launch'
+      duplicate_of: null
+      regression_of: null
+      confidence: 0.35
+      rationale: Reporter says 'replay broken' and 'doesn't work' without details. Likely a replay path
+        issue affecting CLI/UI replay; assign to replay work area (recorder + ui) for further investigation
+        and convert into an eval case once repro details are captured.
+  grade: fail
+  targets: only-decision-references
+  author: claude
+  note: 'from cd528379: names another milestone'
+- id: b-10
+  tag: broken
+  item:
+    comment: 'Thanks for the report. Triage: this is a duplicate of #29 (replay UI timelines). Your request
+      is about speeding up span inserts via batching in one transaction; that sounds distinct, but the
+      provided “duplicate_of: #29” may be incorrect. If you can share current vs expected insert timings
+      (and any relevant code path/DB calls), we can validate the approach and scope. Marking for UI/stretch
+      work for the Week 5: Replay UI and launch milestone.'
+    title: Speed up span inserts
+    decision:
+      labels:
+      - ui
+      - stretch
+      milestone: 'Week 5: Replay UI and launch'
+      duplicate_of: '29'
+      regression_of: null
+      confidence: 0.35
+      rationale: 'Reporter requests speeding up ingest span inserts via batching in one transaction; repo
+        search shows #29 about replay UI timelines, so the provided duplicate reference may be incorrect.
+        Still assigning to stretch/Week 5 per note and marking duplicate of #29 as instructed.'
+  grade: fail
+  targets: suggests-not-settles
+  author: claude
+  note: 'from 6600cc0e: settles the duplicate'
