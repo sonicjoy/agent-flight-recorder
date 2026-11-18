@@ -121,7 +121,7 @@ uv run afr label --next --attr triager.grade=wrong \
 
 | Command | |
 |---|---|
-| `afr labels list` | Each mode with its runs, labels and first labelled run. `--source judge` or `analyst` for model labels (#17, #22) |
+| `afr labels list` | Each mode with its runs, labels and first labelled run. `--source judge` or `analyst` for model labels (judge labels come with #28; analyst #22) |
 | `afr labels rename OLD NEW` | Renames a mode on human labels (OLD in any spelling), or merges it into an existing one. A run (or span) that had both keeps one label, and the merged label's note joins it, tagged (below), so no note is lost. NEW with the same words as OLD respells it. For open coding: name freely at first, then settle the names |
 | `afr labels remove <run>` | Deletes the run's human labels; `--mode` only those with that mode, in any spelling |
 
@@ -225,6 +225,38 @@ How each change against the baseline gates each command:
 | `--include-unreviewed` | Grade cases marked `unreviewed: true` too; they never enter the baseline |
 | `--accept` | Write `baseline.json` from these results (refused while a case is stale) |
 | `--json` | Print one JSON object: `suite`, `header`, `counts`, `fields`, `cases`, `changes`, `exit_code` |
+
+## `afr eval judge-suite` and `afr eval agreement`
+
+The LLM judge is an agent under test (#17, [docs/designs/llm-judge.md](designs/llm-judge.md)): a judge suite has one case per item to judge, and the owner's hand grade as its only check. `judge-suite` writes that suite; `afr eval run` runs the judge; `agreement` measures how it agrees with the hand grades. Neither command calls a model or opens the store.
+
+```bash
+uv run afr eval judge-suite --items evals/judges/triager-comment/items.yaml \
+    --rubric evals/judges/triager-comment/rubric.yaml --suite comment-judge
+uv run afr eval run --suite comment-judge         # needs the key for the rubric's model
+uv run afr eval agreement --suite comment-judge --field grade
+```
+
+`judge-suite` reads an items file (`items:`, a list of `{id, tag, item, grade}` with optional `targets`, `author` and `note`) and a rubric (`model`, `instructions`, `criteria`, optional `examples`). It writes `suite.yaml` and one case per item, deletes the folder's other case files, leaves `outputs.jsonl` alone, and never writes `baseline.json`: a judge suite never gates.
+
+| Option (`judge-suite`) | |
+|---|---|
+| `--items` | The items file (required) |
+| `--rubric` | The rubric file (required) |
+| `--suite` | The suite folder to write (required) |
+| `--root` | The cases folder (default `evals/cases`) |
+
+**Exit codes (`judge-suite`):** 0 after writing. 1 when items are invalid (a bad or repeated id, an unknown key, a tag or grade not allowed, a malformed item, an unknown `targets`), listing every one; nothing is written. 2 for a missing or malformed file, no items, a rubric the judge would refuse (including a model spec with an unknown provider), a folder that holds another suite (its `suite.yaml` names another agent, or it has cases but no `suite.yaml`), or the suite also existing under `local/`.
+
+`agreement` grades the saved outputs as `grade` does, then prints one row for all counted cases (`all`) and one per case tag (`tag <name>`; tags that aren't text are ignored): `n`, percent agreement, Cohen's kappa (`n/a` when nothing is counted or both raters used one and the same class), the catch rate (hand-graded failures the judge also failed), the pass rate, and the four counts. Then it lists every case left out and why: stale, error, skipped, no single `equals` check on the field, or a value not `pass` or `fail`.
+
+| Option (`agreement`) | |
+|---|---|
+| `--suite` | The judge suite (required) |
+| `--field` | The judge's graded field, `grade` (required) |
+| `--root` | The cases folder (default `evals/cases`) |
+
+**Exit codes (`agreement`):** 0 when no case was stale or errored (other left-out cases are listed but don't change it). 1 when a case was stale or errored: the numbers are partial, and printed anyway. 2 for usage errors, and for no `outputs.jsonl` at all, unlike `grade`, which reports every case stale: there is nothing to measure.
 
 ## Choosing a run
 

@@ -25,7 +25,8 @@ class Settings(BaseSettings):
     llm_cheap_model: str = Field(
         default="anthropic:claude-haiku-5-5",
         validation_alias=AliasChoices("AFR_LLM_CHEAP_MODEL"),
-        description="Cheaper model for the LLM judge and bulk work, as <provider>:<model>.",
+        description="Cheaper model for bulk work, as <provider>:<model> (the LLM judge pins its "
+        "own model in its rubric).",
     )
     anthropic_api_key: SecretStr | None = Field(
         default=None, validation_alias=AliasChoices("ANTHROPIC_API_KEY")

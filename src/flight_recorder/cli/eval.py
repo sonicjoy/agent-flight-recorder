@@ -126,13 +126,7 @@ def _evaluate(
         elif baseline is None:
             notes.append("no baseline.json yet: rerun with --accept to write one")
     except (CaseError, OSError) as error:
-        message = (
-            f"{error.filename}: {error.strerror}"
-            if isinstance(error, OSError) and error.strerror and error.filename
-            else error
-        )
-        out.print(render.text(f"error: {message}"), soft_wrap=True)
-        raise typer.Exit(code=2) from None
+        raise _fail(out, error) from None
     if as_json:
         # ASCII only: no control, bidi or C1 character from an output reaches the terminal
         typer.echo(json.dumps(_as_json(suite, header, result, changes, code), ensure_ascii=True))
@@ -225,3 +219,96 @@ def _report(
                 out.print(render.text(line, "red"), soft_wrap=True)
     for note in notes:
         out.print(render.text(note), soft_wrap=True)
+
+
+# --- the LLM judge (#17, docs/designs/llm-judge.md) ---------------------------------------
+
+
+def _fail(out: Console, error: Exception) -> typer.Exit:
+    message = (
+        f"{error.filename}: {error.strerror}"
+        if isinstance(error, OSError) and error.strerror and error.filename
+        else error
+    )
+    out.print(render.text(f"error: {message}"), soft_wrap=True)
+    return typer.Exit(code=2)
+
+
+@eval_app.command("judge-suite")
+def judge_suite(
+    items: Annotated[Path, typer.Option(help="The items file ({items: [...]}).")],
+    rubric: Annotated[Path, typer.Option(help="The rubric file.")],
+    suite: SuiteOpt,
+    root: RootOpt = DEFAULT_ROOT,
+) -> None:
+    """Write a judge suite from an items file and a rubric: one case per item, with the hand
+    grade as its only check. Calls no model; never writes a baseline."""
+    from flight_recorder.evals.cases import CaseError, suite_dir
+    from flight_recorder.evals.judge_suite import (
+        ItemsError,
+        build_suite,
+        check_target,
+        load_items,
+        load_rubric,
+        write_suite,
+    )
+
+    out = render.console()
+    try:
+        folder = suite_dir(root, suite, local=False)
+        if suite_dir(root, suite, local=True).exists():
+            raise CaseError(f"suite {suite!r} also exists under local/: keep one")
+        check_target(folder)  # before reading anything: refuse fast
+        files = build_suite(load_items(items), load_rubric(rubric))
+        write_suite(folder, files)
+    except ItemsError as error:
+        for item, problem in error.problems:
+            out.print(render.text(f"{item}: {problem}", "red"), soft_wrap=True)
+        raise typer.Exit(code=1) from None
+    except (CaseError, OSError) as error:
+        raise _fail(out, error) from None
+    out.print(render.text(f"wrote {len(files) - 1} cases to {folder}"), soft_wrap=True)
+
+
+def _rate(value: float | None) -> str:
+    return "n/a" if value is None else f"{value * 100:.1f}%"
+
+
+@eval_app.command("agreement")
+def agreement(
+    suite: SuiteOpt,
+    field: Annotated[str, typer.Option(help="The graded field, e.g. grade.", show_default=False)],
+    root: RootOpt = DEFAULT_ROOT,
+) -> None:
+    """How a judge agrees with hand grades, from a judge suite's saved outputs: counts,
+    percent agreement, Cohen's kappa and catch rate, overall and per tag. Calls no model.
+    Exits 1 when a case was stale or errored (the numbers are partial)."""
+    from flight_recorder.evals.agreement import agreement as measure
+    from flight_recorder.evals.agreement import incomplete, pairs_from
+    from flight_recorder.evals.cases import CaseError
+    from flight_recorder.evals.grade import grade_suite
+    from flight_recorder.evals.run import load_suite, read_outputs
+
+    out = render.console()
+    try:
+        loaded = load_suite(root, suite)
+        header, lines = read_outputs(loaded.folder)
+        if header is None:
+            raise CaseError("no outputs.jsonl: run the suite")
+        result = grade_suite(loaded.cases, lines, include_unreviewed=False)
+    except (CaseError, OSError) as error:
+        raise _fail(out, error) from None
+    pairs, by_tag, left_out = pairs_from(result, loaded.cases, field)
+    table = Table("rows", "n", "agree", "kappa", "catch", "pass", "both pass", "both fail",
+                  "hand pass / judge fail", "hand fail / judge pass", box=None,
+                  pad_edge=False)  # fmt: skip
+    for name, rows in [("all", pairs), *((f"tag {t}", r) for t, r in sorted(by_tag.items()))]:
+        a = measure(rows)
+        kappa = "n/a" if a.kappa is None else f"{a.kappa:.2f}"
+        table.add_row(render.text(name), str(a.n), _rate(a.percent), kappa, _rate(a.catch_rate),
+                      _rate(a.pass_rate), str(a.both_pass), str(a.both_fail),
+                      str(a.hand_pass_judge_fail), str(a.hand_fail_judge_pass))  # fmt: skip
+    out.print(table)
+    for case_id, reason in left_out:
+        out.print(render.text(f"left out {case_id}: {reason}", "dim"), soft_wrap=True)
+    raise typer.Exit(code=1 if incomplete(left_out) else 0)
