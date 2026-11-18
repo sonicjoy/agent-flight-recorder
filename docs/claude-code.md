@@ -85,6 +85,24 @@ The recorder stores each response as an `llm` span and prices it at Claude's API
 
 **The transcript format is internal to Claude Code and can change.** The reader skips lines it doesn't recognise, and never fails the hook; if a format change breaks it, tokens stop being recorded while everything else carries on. Messages Claude Code writes itself, such as a login error (model `<synthetic>`), aren't counted as model calls.
 
+## Asking about runs from Claude Code (MCP)
+
+In this repo, Claude Code can read the run store itself: `.mcp.json` starts `afr-mcp`, a local MCP server over stdio. Ask "why did run 3f2a fail?" and Claude Code calls its tools instead of you reading `afr runs show` and the trace.
+
+Setup: run `uv sync` once (a first `uv run` in a fresh worktree builds the venv and can be slow), start Postgres, then approve the `afr` project server when Claude Code asks. It reads the same `.env` and defaults as the `afr` CLI, since Claude Code starts it in the project folder. Nothing listens on the network, and it needs no API key.
+
+| Tool | Ask | Returns |
+|---|---|---|
+| `search_runs` | "find the runs where the triager timed out" | the best matches with their failed span; `index_empty` or `unembedded_runs` above 0 means run `afr embed` |
+| `explain_run` | "why did run 3f2a fail?" (`last`, an id prefix, or the session or trace id) | the root failures with their path, error and input; refused calls; what it was asked and answered; the agent's decisions and the right answer; labels; other runs with the same labelled mode |
+| `list_failure_modes` | "what keeps failing?" | your labelled modes with run and label counts, most runs first (`source` can be `judge` or `analyst`) |
+
+The tools are read-only: the server's database session can't write. Each result is at most 20,000 characters, and its `cut` field says what was left out.
+
+**Trust and privacy.** Every field is recorded text: hidden characters are shown as escapes, but the text can still say anything ([Recorded text is untrusted](cli.md#recorded-text-is-untrusted)), and the tool descriptions tell the model so. A result can carry any recorded run, including sessions from other projects, to the model provider of the session that asks.
+
+**Not recorded back.** The hook records tool calls, so it would also record afr's own answers into the asking session: later searches would find "the session where I asked about the timeout", and an untrusted run's text would be stored again as your own. So for `mcp__afr__*` tools the recorder keeps the call's input (what was asked) and stores `{"afr_result_omitted": true, "chars": n}` in place of the result. This holds only while the server is named `afr`; a server renamed in your own config is recorded like any tool.
+
 ## Settings
 
 The hook runs in other projects' folders, so it reads only environment variables, never a `.env` file:
