@@ -36,6 +36,7 @@ avoids heavy imports: a new process starts for every event.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -420,10 +421,10 @@ def _spool(home: Path, events: list[dict[str, Any]]) -> int:
     lines = [json.dumps(e) + "\n" for e in events]
     held = spool.stat().st_size if spool.exists() else 0
     if held + sum(len(line.encode()) for line in lines) > MAX_SPOOL_BYTES:
+        partial = home / f"spool.jsonl.{os.getpid()}.tmp"
         try:  # full: rewrite it without its oldest events
             every = spool.read_text(encoding="utf-8").splitlines(keepends=True) + lines
             kept = _newest(every, MAX_SPOOL_BYTES)
-            partial = home / f"spool.jsonl.{os.getpid()}.tmp"
             fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as file:
                 file.writelines(kept)
@@ -431,6 +432,9 @@ def _spool(home: Path, events: list[dict[str, Any]]) -> int:
             return len(every) - len(kept)
         except OSError:  # held open elsewhere (Windows): keep what still fits after it
             pass
+        finally:  # a failed rewrite must not leave a spool-sized copy behind
+            with contextlib.suppress(OSError):
+                partial.unlink(missing_ok=True)
     kept = _newest(lines, MAX_SPOOL_BYTES - (spool.stat().st_size if spool.exists() else 0))
     fd = os.open(spool, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(fd, "a", encoding="utf-8") as file:

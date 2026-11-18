@@ -158,6 +158,30 @@ def test_the_spool_keeps_its_cap_dropping_the_oldest(
     assert "spool full: dropped" in (tmp_path / "hook.log").read_text(encoding="utf-8")
 
 
+def test_a_full_spool_whose_rewrite_cannot_replace_it_leaves_no_temp_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On Windows the rewrite's os.replace fails while another hook holds the spool open;
+    each failure used to leave a spool-sized spool.jsonl.<pid>.tmp behind."""
+    monkeypatch.setattr(client, "MAX_SPOOL_BYTES", 2_000)
+    real = os.replace
+
+    def held_open(src: Any, dst: Any) -> None:
+        if str(src).endswith(".tmp"):
+            raise PermissionError(13, "The process cannot access the file")
+        real(src, dst)
+
+    monkeypatch.setattr(client.os, "replace", held_open)
+    spool = client._spool  # pyright: ignore[reportPrivateUsage]
+
+    for n in range(40):  # the spool, unclaimed, as SessionEnd or a busy hook finds it
+        spool(tmp_path, [{"hook": {"tool_use_id": f"t{n}"}, "pad": "x" * 60}])
+
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert (tmp_path / "spool.jsonl").stat().st_size <= 2_000  # the fallback still caps it
+    assert spooled(tmp_path)[0]["hook"]["tool_use_id"] == "t0"  # no rewrite: oldest stays
+
+
 def test_a_batch_left_by_a_killed_hook_is_sent_once_stale(
     tmp_path: Path, recorder: Recorder
 ) -> None:
