@@ -16,8 +16,6 @@ from flight_recorder.cli.runs import _choice, open_store, parse_when  # pyright:
 if TYPE_CHECKING:
     from flight_recorder.search.query import Hit
 
-SEARCH_STATES = ("ok", "error", "unset", "unfinished")
-"""Running runs aren't embedded until they settle, so they can't be searched."""
 COMMIT_EVERY = 50  # runs: an interrupted `afr embed` keeps what it did
 
 
@@ -64,6 +62,7 @@ def search(
     """Runs that match a description: by meaning (embeddings) and by exact words."""
     from flight_recorder.search import embedder as embedders
     from flight_recorder.search.index import has_vectors, pending_runs
+    from flight_recorder.search.query import SEARCHABLE_STATES
     from flight_recorder.search.query import search as run_search
     from flight_recorder.store.read import RunFilter
 
@@ -73,7 +72,7 @@ def search(
     where = RunFilter(
         source=source,
         agent=agent,
-        status=_choice(status, SEARCH_STATES, "--status"),  # type: ignore[arg-type]
+        status=_choice(status, SEARCHABLE_STATES, "--status"),  # type: ignore[arg-type]
         since=parse_when(since, now) if since else None,
         until=parse_when(until, now) if until else None,
         limit=limit,

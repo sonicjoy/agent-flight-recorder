@@ -11,7 +11,7 @@ import re
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -36,6 +36,30 @@ class AmbiguousRunError(LookupError):
     def __init__(self, ref: str, matches: Sequence[Run]) -> None:
         super().__init__(f"{ref!r} matches {len(matches)} runs")
         self.matches = list(matches)
+
+
+RELATIVE = re.compile(r"(\d+)([mhdw])")
+UNITS = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
+TIME_FORMS = "use 30m, 2h, 3d or 1w ago, a date (2026-11-10) or 2026-11-10T14:30"
+
+
+def parse_when(value: str, now: datetime) -> datetime:
+    """`30m`, `2h`, `3d` or `1w` ago; a date (local midnight); or a local date and time.
+    ValueError for anything else, and for a time out of range."""
+    value = value.strip()
+    try:
+        if match := RELATIVE.fullmatch(value):
+            return now - timedelta(**{UNITS[match[2]]: int(match[1])})
+        try:
+            day = date.fromisoformat(value)
+        except ValueError:
+            at = datetime.fromisoformat(value)
+            return at if at.tzinfo else at.astimezone()
+        return datetime.combine(day, time()).astimezone()
+    except ValueError:
+        raise ValueError(f"{value!r}: {TIME_FORMS}") from None
+    except (OverflowError, OSError):  # too far back or ahead (OSError: Windows, pre-1970)
+        raise ValueError(f"{value!r} is out of range") from None
 
 
 def _last_change() -> ColumnElement[datetime]:
@@ -160,6 +184,13 @@ def find_runs(
             )
         )
     return summaries
+
+
+def summaries_of(session: Session, runs: Sequence[Run], now: datetime) -> list[RunSummary]:
+    """These runs' summaries (state and cost), newest first."""
+    if not runs:
+        return []
+    return find_runs(session, RunFilter(limit=len(runs)), now, ids=[r.id for r in runs])
 
 
 HEX_PREFIX = re.compile(r"[0-9a-f]{4,32}")  # hyphens removed first

@@ -22,6 +22,8 @@ from flight_recorder.search.summary import MAX_FAILURES
 from flight_recorder.store.models import KEYWORD_CONFIG, Embedding, Run, Span
 from flight_recorder.store.read import RunFilter, RunSummary, find_runs, run_conditions
 
+SEARCHABLE_STATES = ("ok", "error", "unset", "unfinished")
+"""Running runs aren't embedded until they settle, so they can't be searched."""
 K = 60  # the usual RRF constant: damps the gap between first and tenth place
 MIN_CANDIDATES = 50  # texts taken from each side before fusing...
 CANDIDATES_PER_RESULT = MAX_FAILURES + 1  # ...or a run's most texts per run asked for

@@ -66,6 +66,10 @@ Ties between runs with the same fused score go by run id, so a ranking is the sa
 
 The #14 queries are in [evals/retrieval.yaml](evals/retrieval.yaml), written from the store by `scripts/retrieval_queries.py`; the result and the decision to keep bge-small are in [error-analysis.md](evals/error-analysis.md#can-search-find-these-runs).
 
+## From Claude Code
+
+The MCP server's `search_runs` tool runs the same search ([claude-code.md](claude-code.md#asking-about-runs-from-claude-code-mcp)). It never downloads the model during a call: if `afr embed` hasn't fetched it yet, the tool says so. The recorder stores a stub in place of afr's own tool results, so their raw text isn't indexed under the asking session. That session can still rank near the run it asked about: its question and Claude's reply, which may quote the result, are recorded like any others.
+
 ## In tests
 
 Tests use a deterministic fake embedder (a hashed bag of words), so they're fast and offline. One smoke test runs the real model:

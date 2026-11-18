@@ -39,9 +39,14 @@ class Embedder(Protocol):
     def query(self, value: str) -> list[float]: ...
 
 
-def model_dir(cache: Path) -> Path:
+class ModelNotDownloaded(Exception):
+    """The embedding model isn't in the cache, and downloading wasn't allowed."""
+
+
+def model_dir(cache: Path, *, download: bool = True) -> Path:
     """The pinned model's files: from the cache without touching the network, else
-    downloaded at MODEL_REVISION (showing progress, the first time only)."""
+    downloaded at MODEL_REVISION (showing progress, the first time only). With
+    `download=False`, a missing model raises ModelNotDownloaded instead."""
     from huggingface_hub import snapshot_download  # pyright: ignore[reportUnknownVariableType]
     from huggingface_hub.errors import LocalEntryNotFoundError
 
@@ -58,7 +63,9 @@ def model_dir(cache: Path) -> Path:
 
     try:
         return fetch(local_only=True)
-    except LocalEntryNotFoundError:
+    except LocalEntryNotFoundError as error:
+        if not download:
+            raise ModelNotDownloaded(MODEL) from error
         return fetch(local_only=False)
 
 
@@ -67,8 +74,11 @@ class FastEmbedder:
 
     model = MODEL
 
-    def __init__(self) -> None:
+    def __init__(self, *, download: bool = True) -> None:
+        """`download=False`: never fetch the model (raise ModelNotDownloaded), for callers
+        that can't wait for a download, like an MCP tool call."""
         self._loaded: TextEmbedding | None = None
+        self._download = download
 
     def _engine(self) -> TextEmbedding:
         if self._loaded is None:
@@ -78,7 +88,9 @@ class FastEmbedder:
 
             cache = Settings().afr_home / "models"
             self._loaded = TextEmbedding(
-                MODEL, cache_dir=str(cache), specific_model_path=str(model_dir(cache))
+                MODEL,
+                cache_dir=str(cache),
+                specific_model_path=str(model_dir(cache, download=self._download)),
             )
         return self._loaded
 

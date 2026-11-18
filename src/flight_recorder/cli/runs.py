@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import errno
 import os
-import re
 import sys
 from collections.abc import Callable, Generator, Iterator, Sequence
 from contextlib import contextmanager
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
@@ -30,28 +29,17 @@ if TYPE_CHECKING:
 runs_app = typer.Typer(help="Recorded runs: list them and show one.", no_args_is_help=True)
 
 KINDS = ("agent", "llm", "tool", "step", "other")
-RELATIVE = re.compile(r"(\d+)([mhdw])")
-UNITS = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
-TIME_FORMS = "use 30m, 2h, 3d or 1w ago, a date (2026-11-10) or 2026-11-10T14:30"
 RUN_HELP = "last, a run id prefix, or the session or trace id."
 
 
 def parse_when(value: str, now: datetime) -> datetime:
     """`30m`, `2h`, `3d` or `1w` ago; a date (local midnight); or a local date and time."""
-    value = value.strip()
+    from flight_recorder.store.read import parse_when as parse
+
     try:
-        if match := RELATIVE.fullmatch(value):
-            return now - timedelta(**{UNITS[match[2]]: int(match[1])})
-        try:
-            day = date.fromisoformat(value)
-        except ValueError:
-            at = datetime.fromisoformat(value)
-            return at if at.tzinfo else at.astimezone()
-        return datetime.combine(day, time()).astimezone()
-    except ValueError:
-        raise typer.BadParameter(f"{value!r}: {TIME_FORMS}") from None
-    except (OverflowError, OSError):  # too far back or ahead (OSError: Windows, pre-1970)
-        raise typer.BadParameter(f"{value!r} is out of range") from None
+        return parse(value, now)
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from None
 
 
 def _choice(value: str | None, allowed: Sequence[str], option: str) -> str | None:
@@ -90,26 +78,27 @@ def _quiet_when_piped_reader_leaves() -> Generator[None]:
 def open_store(*, readonly: bool = True) -> Generator[Session]:
     """A session on AFR_DATABASE_URL (read-only unless asked), with friendly errors for the
     usual problems. A writable session is the caller's to commit."""
-    from sqlalchemy import create_engine
-    from sqlalchemy.exc import OperationalError
     from sqlalchemy.orm import Session
 
-    from flight_recorder.store.db import database_url, pending_migrations
+    from flight_recorder.store.db import (
+        CONNECT_TIMEOUT,
+        UNREACHABLE,
+        StoreBehind,
+        StoreUnreachable,
+        check_ready,
+        make_engine,
+    )
 
-    # Fail in seconds when Postgres is down, not after the OS's connect retries (2 minutes)
-    engine = create_engine(database_url(), connect_args={"connect_timeout": 3})
+    engine = make_engine(connect_timeout=CONNECT_TIMEOUT)
     try:
         try:
-            behind = pending_migrations(engine)
-        except OperationalError as error:
-            typer.echo(
-                "error: can't reach the run store; is Postgres running (`docker compose up -d`)?",
-                err=True,
-            )
+            check_ready(engine)
+        except StoreUnreachable as error:
+            typer.echo(f"error: {UNREACHABLE}", err=True)
             raise typer.Exit(code=2) from error
-        if behind:
+        except StoreBehind as error:
             typer.echo("error: the database isn't up to date; run `afr db upgrade` first", err=True)
-            raise typer.Exit(code=2)
+            raise typer.Exit(code=2) from error
         with _quiet_when_piped_reader_leaves(), Session(engine) as session:
             session.connection(execution_options={"postgresql_readonly": readonly})
             yield session
@@ -118,10 +107,9 @@ def open_store(*, readonly: bool = True) -> Generator[Session]:
 
 
 def _summaries(session: Session, runs: Sequence[Run]) -> list[RunSummary]:
-    from flight_recorder.store.read import RunFilter, find_runs
+    from flight_recorder.store.read import summaries_of
 
-    where = RunFilter(limit=len(runs))
-    return find_runs(session, where, datetime.now(UTC), ids=[r.id for r in runs])
+    return summaries_of(session, runs, datetime.now(UTC))
 
 
 def resolve_ref(session: Session, ref: str) -> RunSummary:
