@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session, aliased
 
 from flight_recorder.payloads import DECIDED, NONE_TEXT, value_text
 from flight_recorder.redact import Redactor
-from flight_recorder.store.models import Label, Span
+from flight_recorder.store.models import Label, Run, Span
 
 if TYPE_CHECKING:
     from sqlalchemy import CursorResult
@@ -355,6 +355,19 @@ def _keep_answers(session: Session, going: Sequence[uuid.UUID]) -> None:
         if stays is not None and stays.expected is None:
             stays.expected = answer
     session.flush()
+
+
+def runs_with_mode(session: Session, mode_key: str, excluding: uuid.UUID, limit: int) -> list[Run]:
+    """Other runs with a label of this mode (any spelling, any source), newest first."""
+    labelled = select(Label.run_id).where(Label.mode_key == mode_key)
+    return list(
+        session.scalars(
+            select(Run)
+            .where(Run.id.in_(labelled), Run.id != excluding)
+            .order_by(Run.started_at.desc(), Run.id)
+            .limit(limit)
+        )
+    )
 
 
 def labels_of(session: Session, run_id: uuid.UUID) -> list[Label]:

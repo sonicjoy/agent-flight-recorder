@@ -1136,3 +1136,47 @@ def test_items_past_the_limit_are_reported_not_dropped_silently(
 
     assert reply["dropped_items"] == 500
     assert sum(1 for s in stored(store)[1] if s.startswith("llm:")) == 1_000
+
+
+# --- afr's own MCP tools (#24) ----------------------------------------------------------
+
+
+def _tool_call(tool: str, use: str, at: float, response: Any) -> list[dict[str, Any]]:
+    asked = {"run": "3f2a"}
+    return [
+        ev("PreToolUse", at, prompt_id="p1", tool_name=tool, tool_use_id=use, tool_input=asked),
+        ev("PostToolUse", at + 1, prompt_id="p1", tool_name=tool, tool_use_id=use,
+           tool_input=asked, tool_response=response),
+    ]  # fmt: skip
+
+
+def test_afrs_own_mcp_results_are_stored_as_a_stub_and_others_whole(
+    client: TestClient, store: Engine
+) -> None:
+    answer = {"failures": [{"error": "an untrusted run's text"}]}
+    events = [
+        ev("UserPromptSubmit", 1, prompt_id="p1", prompt="why did 3f2a fail?"),
+        *_tool_call("mcp__afr__explain_run", "t1", 2, answer),
+        *_tool_call("mcp__other__explain_run", "t2", 4, answer),
+        *_tool_call("Bash", "t3", 6, "ok"),
+    ]
+
+    client.post(URL, json={"events": events})
+
+    _, spans = stored(store)
+    own, other, bash = spans["tool:t1"], spans["tool:t2"], spans["tool:t3"]
+    import json
+
+    assert own.output == {"afr_result_omitted": True, "chars": len(json.dumps(answer))}
+    assert own.input == {"run": "3f2a"}  # the asking is kept
+    assert other.output == answer and bash.output == "ok"
+
+
+def test_mcp_json_names_the_server_ingest_leaves_out() -> None:
+    import json
+    from pathlib import Path
+
+    from flight_recorder import MCP_SERVER
+
+    config = json.loads((Path(__file__).parents[2] / ".mcp.json").read_text(encoding="utf-8"))
+    assert list(config["mcpServers"]) == [MCP_SERVER]

@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -30,7 +29,7 @@ from typing import TYPE_CHECKING, Any, cast
 import yaml
 
 from flight_recorder.redact.patterns import PATTERNS
-from flight_recorder.redact.redactor import FINGERPRINT_CHARS
+from flight_recorder.safe_text import PLACEHOLDER, clean, map_strings, strip_fingerprints
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -45,9 +44,6 @@ SUITE = "suite"  # suite.yaml holds a suite's settings (afr eval), so no case ca
 LOCAL_SOURCES = ("claude_code",)  # a session's prompts and replies are the user's own work
 # Names Windows won't create or check out, whatever the extension
 DEVICES = {"con", "prn", "aux", "nul", *(f"{d}{n}" for d in ("com", "lpt") for n in range(10))}
-PLACEHOLDER = re.compile(
-    rf"\[REDACTED:(?P<kind>[a-z0-9_]+)(?::(?P<fp>[0-9a-f]{{{FINGERPRINT_CHARS}}}))?\]"
-)
 SUFFIX = ".yaml"
 # YAML line breaks that only a double-quoted string keeps as they are
 BLOCK_BREAKS = (chr(0x85), chr(0x2028), chr(0x2029))  # NEL, line and paragraph separators
@@ -103,18 +99,6 @@ def suite_dir(root: Path, suite: str, *, local: bool) -> Path:
 # --- placeholders -------------------------------------------------------------------
 
 
-def _strings(value: Any, change: Callable[[str], str]) -> Any:
-    """`value` with `change` applied to every string at any depth, dict keys included."""
-    if isinstance(value, str):
-        return change(value)
-    if isinstance(value, dict):
-        items = cast("dict[Any, Any]", value)
-        return {_strings(k, change): _strings(v, change) for k, v in items.items()}
-    if isinstance(value, list | tuple):
-        return [_strings(v, change) for v in cast("list[Any]", value)]
-    return value
-
-
 def _matches(case: dict[str, Any]) -> list[re.Match[str]]:
     found: list[re.Match[str]] = []
 
@@ -122,7 +106,7 @@ def _matches(case: dict[str, Any]) -> list[re.Match[str]]:
         found.extend(PLACEHOLDER.finditer(text))
         return text
 
-    _strings(case, collect)
+    map_strings(case, collect)
     return found
 
 
@@ -147,17 +131,7 @@ def faked(case: dict[str, Any]) -> dict[str, Any]:
     def swap(text: str) -> str:
         return PLACEHOLDER.sub(lambda m: fake(m["kind"]), text)
 
-    return cast("dict[str, Any]", _strings(case, swap))
-
-
-def strip_fingerprints(value: Any) -> Any:
-    """`value` with each placeholder's fingerprint removed (`[REDACTED:kind]`): the
-    fingerprint ties a value to one person's redaction key. Nothing else changes."""
-
-    def bare(text: str) -> str:
-        return PLACEHOLDER.sub(lambda m: f"[REDACTED:{m['kind']}]", text)
-
-    return _strings(value, bare)
+    return cast("dict[str, Any]", map_strings(case, swap))
 
 
 def kept(case: dict[str, Any]) -> dict[str, Any]:
@@ -194,8 +168,6 @@ def dump(case: dict[str, Any]) -> str:
 
 def preview(case: dict[str, Any]) -> str:
     """The case as written, safe to print: control and invisible characters escaped."""
-    from flight_recorder.cli.render import clean
-
     return clean(dump(case))
 
 

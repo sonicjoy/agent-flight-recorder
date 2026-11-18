@@ -2,6 +2,10 @@
 
 from typing import Any
 
+MCP_SERVER = "afr"
+"""The MCP server's name in `.mcp.json`: Claude Code calls its tools `mcp__afr__<tool>`, and
+ingest stores a stub in place of their results (docs/designs/mcp-server.md, "Self-pollution")."""
+
 
 def __getattr__(name: str) -> Any:
     # Looked up on first use: importlib.metadata costs ~60 ms, and the Claude Code hook

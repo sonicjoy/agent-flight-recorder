@@ -36,6 +36,7 @@ from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
+from flight_recorder import MCP_SERVER
 from flight_recorder.redact import PATTERNS, Redactor
 from flight_recorder.store.models import Run, Span
 from flight_recorder.store.write import Kind, RunIn, SpanIn, SpanStatus, record_run
@@ -43,6 +44,7 @@ from flight_recorder.store.write import Kind, RunIn, SpanIn, SpanStatus, record_
 SOURCE = "claude_code"
 AGENT = "claude-code"
 ROOT = "session"
+OWN_TOOLS = f"mcp__{MCP_SERVER}__"  # this project's MCP tools, as Claude Code names them
 NAME_CHARS = 80
 TURN_ENDS = ("Stop", "StopFailure", "SubagentStop", "SessionEnd")  # they carry items
 
@@ -70,6 +72,16 @@ def _time(value: Any) -> datetime | None:
 def _str(hook: Mapping[str, Any], key: str) -> str | None:
     value = hook.get(key)
     return value if isinstance(value, str) and value else None
+
+
+def _own_result(tool_name: str, response: Any) -> Any:
+    """A tool's result as stored: afr's own MCP tools (`mcp__afr__*`) get a stub, so the
+    store never re-records what it answered. Stored, an answer would rank the asking session
+    next to the run it was about, and re-store an untrusted run's text as the owner's own.
+    The call's input (what was asked) is kept."""
+    if not tool_name.startswith(OWN_TOOLS):
+        return response
+    return {"afr_result_omitted": True, "chars": len(json.dumps(response, default=str))}
 
 
 def _turn(hook: Mapping[str, Any]) -> str | None:
@@ -682,7 +694,7 @@ def apply_event(session: Session, redactor: Redactor, event: Mapping[str, Any]) 
         spans.append(
             merge(
                 **tool,
-                output=hook.get("tool_response"),
+                output=_own_result(tool["name"], hook.get("tool_response")),
                 ended_at=at,
                 status=None if rejected else ("error" if failed else "ok"),
                 error=_str(hook, "error") if failed and not rejected else None,

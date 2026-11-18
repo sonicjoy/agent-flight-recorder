@@ -8,15 +8,14 @@ vector and keyword search combined.
 
 from __future__ import annotations
 
-import hashlib
-import math
 import re
 import uuid
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Generator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from fake_embedder import FakeEmbedder
 from sqlalchemy import Engine, create_engine, select, text
 from sqlalchemy.orm import Session
 from typer.testing import CliRunner
@@ -33,32 +32,7 @@ pytestmark = pytest.mark.db
 runner = CliRunner()
 REDACTOR = Redactor(b"test-key-0123456789abcdef0123456789abcdef")
 T0 = datetime(2026, 11, 1, 9, 0, tzinfo=UTC)
-WORD = re.compile(r"[a-z0-9]+")
 SECRET = "sk-proj-" + "Ab3dE5gH7jK9mN1pQ3sT5vX7zA9cE1gI"  # an OpenAI-shaped fake
-
-
-class FakeEmbedder:
-    """Deterministic and offline: each word adds to one dimension, so texts that share
-    words are close. Enough to test the plumbing, not real meaning (the smoke test does)."""
-
-    model = "fake-bag-of-words"
-
-    def __init__(self) -> None:
-        self.calls: list[list[str]] = []
-
-    def _vector(self, value: str) -> list[float]:
-        vector = [0.0] * 384
-        for word in WORD.findall(value.lower()):
-            vector[int(hashlib.sha256(word.encode()).hexdigest(), 16) % 384] += 1.0
-        norm = math.sqrt(sum(v * v for v in vector)) or 1.0
-        return [v / norm for v in vector]
-
-    def documents(self, texts: Sequence[str]) -> list[list[float]]:
-        self.calls.append(list(texts))
-        return [self._vector(t) for t in texts]
-
-    def query(self, value: str) -> list[float]:
-        return self._vector(value)
 
 
 def at(seconds: float) -> datetime:
