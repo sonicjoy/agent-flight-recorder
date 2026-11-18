@@ -101,7 +101,7 @@ The tools are read-only: the server's database session can't write. Each result 
 
 **Trust and privacy.** Every field is recorded text: hidden characters are shown as escapes, but the text can still say anything ([Recorded text is untrusted](cli.md#recorded-text-is-untrusted)), and the tool descriptions tell the model so. A result can carry any recorded run, including sessions from other projects, to the model provider of the session that asks.
 
-**Not recorded back.** The hook records tool calls, so it would also record afr's own answers into the asking session: later searches would find "the session where I asked about the timeout", and an untrusted run's text would be stored again as your own. So for `mcp__afr__*` tools the recorder keeps the call's input (what was asked) and stores `{"afr_result_omitted": true, "chars": n}` in place of the result. This holds only while the server is named `afr`; a server renamed in your own config is recorded like any tool.
+**Not recorded back.** The hook records tool calls, so it would also record afr's own answers into the asking session: later searches would find "the session where I asked about the timeout", and an untrusted run's text would be stored again as your own. So for `mcp__afr__*` tools the recorder keeps the call's input (what was asked) and stores `{"afr_result_omitted": true, "chars": n}` in place of the result. A failed call stores its error, which is the server's own message. Two limits: this holds only while the server is named `afr` (a server renamed in your own config is recorded like any tool), and only the tool result is left out. Claude's reply, a subagent's message or a compaction summary that quotes the result is recorded as usual, as your own session's text.
 
 ## Settings
 

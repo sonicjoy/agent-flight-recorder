@@ -30,7 +30,6 @@ runs_app = typer.Typer(help="Recorded runs: list them and show one.", no_args_is
 
 KINDS = ("agent", "llm", "tool", "step", "other")
 RUN_HELP = "last, a run id prefix, or the session or trace id."
-CONNECT_TIMEOUT = 3  # seconds: fail fast when Postgres is down
 
 
 def parse_when(value: str, now: datetime) -> datetime:
@@ -82,6 +81,7 @@ def open_store(*, readonly: bool = True) -> Generator[Session]:
     from sqlalchemy.orm import Session
 
     from flight_recorder.store.db import (
+        CONNECT_TIMEOUT,
         UNREACHABLE,
         StoreBehind,
         StoreUnreachable,
@@ -107,10 +107,9 @@ def open_store(*, readonly: bool = True) -> Generator[Session]:
 
 
 def _summaries(session: Session, runs: Sequence[Run]) -> list[RunSummary]:
-    from flight_recorder.store.read import RunFilter, find_runs
+    from flight_recorder.store.read import summaries_of
 
-    where = RunFilter(limit=len(runs))
-    return find_runs(session, where, datetime.now(UTC), ids=[r.id for r in runs])
+    return summaries_of(session, runs, datetime.now(UTC))
 
 
 def resolve_ref(session: Session, ref: str) -> RunSummary:

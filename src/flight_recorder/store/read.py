@@ -186,6 +186,13 @@ def find_runs(
     return summaries
 
 
+def summaries_of(session: Session, runs: Sequence[Run], now: datetime) -> list[RunSummary]:
+    """These runs' summaries (state and cost), newest first."""
+    if not runs:
+        return []
+    return find_runs(session, RunFilter(limit=len(runs)), now, ids=[r.id for r in runs])
+
+
 HEX_PREFIX = re.compile(r"[0-9a-f]{4,32}")  # hyphens removed first
 TOO_SHORT = re.compile(r"[0-9a-f]{1,3}")
 MAX_MATCHES = 20

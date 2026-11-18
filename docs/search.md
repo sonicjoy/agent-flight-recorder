@@ -68,7 +68,7 @@ The #14 queries are in [evals/retrieval.yaml](evals/retrieval.yaml), written fro
 
 ## From Claude Code
 
-The MCP server's `search_runs` tool runs the same search ([claude-code.md](claude-code.md#asking-about-runs-from-claude-code-mcp)). It never downloads the model during a call: if `afr embed` hasn't fetched it yet, the tool says so. The recorder stores a stub in place of afr's own tool results, so a session that asked about a failure isn't found next to that failure.
+The MCP server's `search_runs` tool runs the same search ([claude-code.md](claude-code.md#asking-about-runs-from-claude-code-mcp)). It never downloads the model during a call: if `afr embed` hasn't fetched it yet, the tool says so. The recorder stores a stub in place of afr's own tool results, so their raw text isn't indexed under the asking session. That session can still rank near the run it asked about: its question and Claude's reply, which may quote the result, are recorded like any others.
 
 ## In tests
 

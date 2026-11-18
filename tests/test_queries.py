@@ -80,7 +80,7 @@ def test_references_resolve_and_bad_ones_say_why(session: Session) -> None:
     first = record(session, "trace-aaaa", [span("root", None, 0)])
     record(session, "trace-bbbb", [span("root", None, 0)], started_at=at(10))
 
-    by_prefix = explain_run(session, str(first)[:8], NOW)
+    by_prefix = explain_run(session, str(first)[:4], NOW)  # the shortest prefix allowed
     by_external = explain_run(session, "trace-aaaa", NOW)
     newest = explain_run(session, "last", NOW)
 
@@ -115,7 +115,7 @@ def test_an_ambiguous_reference_lists_the_matches(
     message = str(raised.value)
     assert "'abcd' matches 7 runs; use more of the id" in message
     assert sum(str(run_id) in message for run_id in ids) == queries.MAX_MATCHES
-    assert "and 2 more" in message
+    assert "and 2 more" in message and "at least" not in message
 
 
 def test_one_error_is_one_failure_with_its_path_and_input(session: Session) -> None:
@@ -136,7 +136,8 @@ def test_one_error_is_one_failure_with_its_path_and_input(session: Session) -> N
 
 def test_a_wrong_answer_with_no_error_span_rests_on_its_labels(session: Session) -> None:
     attributes = {"triager.decided.labels": ["bug"], "triager.decided.milestone": "(none)"}
-    run_id = record(session, "trace-1", [span("root", None, 0)], attributes=attributes)
+    root = span("root", None, 0, input="Triage issue 13", output={"labels": ["bug"]})
+    run_id = record(session, "trace-1", [root], attributes=attributes)
     kept = label(session, run_id, "wrong-label", "should be docs")
     kept.note = "should be docs; [afr-note v1 at=2026-11-01T09:00:00Z by=x mode=y] merged text"
     set_answer(session, kept.id, {"fields": {"labels": ["docs"]}}, REDACTOR)
@@ -154,6 +155,7 @@ def test_a_wrong_answer_with_no_error_span_rests_on_its_labels(session: Session)
     assert out["right_answer"] == {"fields": {"labels": "docs"}}
     assert out["decisions"] == {"labels": "bug", "milestone": "(none)"}
     assert out["cut"] == ["1 note fragments from merged labels left out"]
+    assert out["asked"] == "Triage issue 13" and out["answered"] == "bug"
 
 
 def test_a_clean_run_has_no_evidence(session: Session) -> None:
@@ -177,8 +179,24 @@ def test_other_runs_with_the_same_mode_are_listed_never_the_run_itself(session: 
     assert [r["id"] for r in group["runs"]] == [str(other)]
 
 
+def _ordered(session: Session, run_id: uuid.UUID) -> None:
+    """Labels added in one transaction share created_at: spread them out in insertion
+    order, so label order (and so which modes are looked up) is fixed."""
+    rows = session.query(Label).filter_by(run_id=run_id).order_by(Label.failure_mode).all()
+    for i, row in enumerate(sorted(rows, key=lambda r: int(r.failure_mode.split("-")[1]))):
+        row.created_at = T0 + timedelta(seconds=i)
+    session.flush()
+
+
+def _cut(out: dict[str, Any]) -> dict[str, int]:
+    found = {line.split(" ", 1)[1].removesuffix(" left out"): int(line.split(" ", 1)[0])
+             for line in out["cut"]}  # fmt: skip
+    assert len(found) == len(out["cut"])  # one line per kind
+    return found
+
+
 def test_a_huge_run_stays_under_budget_and_says_what_it_left_out(session: Session) -> None:
-    long = "\x1b" + "y" * 1_000
+    long = "" + "y" * 1_000
     spans = [span("root", None, 0, kind="agent", name="agent")]
     for i in range(8):  # 8 failures, each at the bottom of a deep chain
         parent = "root"
@@ -192,13 +210,12 @@ def test_a_huge_run_stays_under_budget_and_says_what_it_left_out(session: Sessio
     run_id = record(session, "trace-1", spans, attributes=attributes)
     others = [record(session, f"trace-o{i}", [span("root", None, 0)]) for i in range(5)]
     for i in range(12):
-        mode = f"mode-{i}"
-        label(session, run_id, mode, ("\x1b" * 100 + "note ") * 20)
+        label(session, run_id, f"mode-{i}", ("" * 100 + "note ") * 20)
         if i < 3:
             for other in others:
-                label(session, other, mode)
-    first = session.query(Label).filter_by(run_id=run_id).order_by(Label.created_at).first()
-    assert first is not None
+                label(session, other, f"mode-{i}")
+    _ordered(session, run_id)
+    first = session.query(Label).filter_by(run_id=run_id, failure_mode="mode-0").one()
     set_answer(
         session, first.id, {"fields": {f"f{i:02}": "a" * 1_000 for i in range(30)}}, REDACTOR
     )
@@ -210,12 +227,89 @@ def test_a_huge_run_stays_under_budget_and_says_what_it_left_out(session: Sessio
     assert out["run"]["spans"] == 5_000
     assert len(out["failures"]) >= 1 and len(out["failures"][0]["path"]) == queries.PATH_NAMES
     assert len(out["failures"][0]["input"]) <= 500
-    kinds = [line.split(" ", 1)[1] for line in out["cut"]]
-    assert len(kinds) == len(set(kinds))  # one line per kind
-    lines = {line.split(" ", 1)[1]: int(line.split(" ", 1)[0]) for line in out["cut"]}
-    assert lines["failures left out"] >= 3  # 8 found, at most 5 shown
-    assert lines["labels left out"] >= 2  # 12 labels, at most 10 shown
-    assert lines["decision fields left out"] >= 10  # 30 decided, at most 20 shown
+    shown_runs = sum(len(g["runs"]) for g in out["same_mode_runs"])
+    expected = {
+        queries.FAILURES: 8 - len(out["failures"]),
+        queries.LABELS: 12 - len(out["labels"]),
+        queries.MODES_UNCHECKED: 9,  # 12 modes, the first 3 looked up
+        queries.SAME_MODE: 15 - shown_runs,  # mode-0..2 have 5 other runs each
+        queries.DECISIONS: 30 - len(out["decisions"] or {}),
+        queries.ANSWER_FIELDS: 30 - len(out["right_answer"]["fields"]),
+        queries.REFUSED: 0,
+        queries.FRAGMENTS: 0,
+    }
+    assert _cut(out) == {k: n for k, n in expected.items() if n}
+    assert [g["mode"] for g in out["same_mode_runs"]] == ["mode-0", "mode-1", "mode-2"][
+        : len(out["same_mode_runs"])
+    ]
+
+
+def test_explain_run_trims_in_its_stated_order(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spans = [span("root", None, 0, kind="agent", name="agent")]
+    spans += [span(f"e{i}", "root", 1 + i, status="error", error=f"boom {i}") for i in range(3)]
+    spans += [span(f"r{i}", "root", 10 + i, kind="tool", status="rejected") for i in range(2)]
+    attributes = {f"triager.decided.f{i}": "v" for i in range(3)}
+    run_id = record(session, "trace-1", spans, attributes=attributes)
+    other = record(session, "trace-2", [span("root", None, 0)])
+    for i in range(4):
+        label(session, run_id, f"mode-{i}", "note")
+        label(session, other, f"mode-{i}")
+    _ordered(session, run_id)
+    full = explain_run(session, str(run_id), NOW)
+    assert sum(len(g["runs"]) for g in full["same_mode_runs"]) == 3 and full["cut"] == [
+        "1 modes' other runs left out"
+    ]
+
+    monkeypatch.setattr(queries, "MAX_RESULT_CHARS", size(full) - 1)
+    one = explain_run(session, str(run_id), NOW)
+    assert _cut(one)[queries.SAME_MODE] == 1  # the first thing dropped
+    assert len(one["labels"]) == 4 and len(one["refused"]) == 2
+
+    monkeypatch.setattr(queries, "MAX_RESULT_CHARS", 10)
+    least = explain_run(session, str(run_id), NOW)
+    assert least["same_mode_runs"] == [] and least["labels"] == [] and least["refused"] == []
+    assert len(least["failures"]) == 1 and least["decisions"] == {}
+    assert _cut(least) == {
+        queries.SAME_MODE: 3,
+        queries.LABELS: 4,
+        queries.REFUSED: 2,
+        queries.FAILURES: 2,
+        queries.DECISIONS: 3,
+        queries.MODES_UNCHECKED: 1,
+    }
+
+
+def test_recorded_identifiers_are_capped_so_the_budget_holds(session: Session) -> None:
+    run_id = record(session, "x" * 30_000, [span("root", None, 0, status="error", error="e")],
+                    agent="a" * 30_000, name="n" * 30_000)  # fmt: skip
+    out = explain_run(session, str(run_id), NOW)
+    assert size(out) <= queries.MAX_RESULT_CHARS
+    assert len(out["run"]["external_id"]) == len(out["run"]["agent"]) == 200
+
+
+def test_decision_names_that_collide_once_capped_are_counted(session: Session) -> None:
+    attributes = {"triager.decided." + "k" * 250 + "a": 1, "triager.decided." + "k" * 250 + "b": 2}
+    run_id = record(session, "trace-1", [span("root", None, 0)], attributes=attributes)
+    out = explain_run(session, str(run_id), NOW)
+    assert len(out["decisions"]) == 1 and _cut(out) == {queries.DECISIONS: 1}
+
+
+def test_a_value_too_deep_to_walk_is_named_not_raised() -> None:
+    deep: Any = "x"
+    for _ in range(5_000):
+        deep = [deep]
+    assert queries._text(deep, 500) == queries.TOO_DEEP  # pyright: ignore[reportPrivateUsage]
+
+
+def test_arguments_with_a_nul_are_refused(session: Session) -> None:
+    with pytest.raises(QueryError, match="NUL"):
+        explain_run(session, "ab\x00cd", NOW)
+    with pytest.raises(QueryError, match="NUL"):
+        queries.search_runs(session, FakeEmbedder(), "x\x00", now=NOW)
+    with pytest.raises(QueryError, match="NUL"):
+        queries.search_runs(session, FakeEmbedder(), "x", agent="a\x00", now=NOW)
 
 
 def test_a_structured_input_becomes_one_capped_text(session: Session) -> None:

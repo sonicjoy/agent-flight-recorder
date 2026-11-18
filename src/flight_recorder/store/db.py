@@ -20,6 +20,7 @@ def database_url(settings: Settings | None = None) -> str:
     return (settings or Settings()).database_url.get_secret_value()
 
 
+CONNECT_TIMEOUT = 3  # seconds: the CLI and the MCP server fail fast when Postgres is down
 UNREACHABLE = "can't reach the run store; is Postgres running (`docker compose up -d`)?"
 
 
@@ -86,7 +87,7 @@ def check_ready(engine: Engine) -> None:
     try:
         behind = pending_migrations(engine)
     except OperationalError as error:
-        raise StoreUnreachable(str(error)) from error
+        raise StoreUnreachable from error
     if behind:
         raise StoreBehind
 

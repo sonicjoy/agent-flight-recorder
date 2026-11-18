@@ -285,8 +285,10 @@ All tools are read-only and synchronous; the server has one local client. Parame
     | input, asked | 500 |
     | answered, decision values, right-answer values | 400 |
     | label note | 500 |
-    | names | 200 |
+    | names, and the recorded identifiers `external_id` and `agent` | 200 |
 
+*   **Too deep:** a recorded value nested deeper than the walk can go is shown as `(nested too deeply to show)`, not an error.
+*   **NUL:** a tool argument holding a NUL character is refused with a `QueryError` (Postgres can't take it in text).
 *   **Multi-line text:** errors and inputs keep their newlines, so a stack trace stays readable. `clean` escapes everything else that is hidden.
 *   **Decisions and right answers:** at most 20 fields each (`MAX_FIELDS`); the rest are counted in `cut`.
 *   **Total budget:** a whole result, measured as JSON *after* cleaning, stays under 20,000 characters (`MAX_RESULT_CHARS`).
@@ -325,7 +327,7 @@ The Claude Code hook (matcher `*`) sends every tool result to ingest, including 
 *   make later searches rank the asking session next to the run it asked about;
 *   re-store untrusted OTel text under `claude_code`, where it reads as the owner's own work.
 
-The fix is in `ingest/claude_code.py`'s `PostToolUse`/`PostToolUseFailure` branch. When the tool's name starts with `mcp__` + `MCP_SERVER` + `__`, the span's output is `{"afr_result_omitted": true, "chars": <length of the JSON of the response>}` instead of the response. The tool's input (the question asked) and its status are kept: the session still shows that it asked afr something.
+The fix is in `ingest/claude_code.py`'s `PostToolUse`/`PostToolUseFailure` branch. When the tool's name starts with `mcp__` + `MCP_SERVER` + `__`, the span's output is `{"afr_result_omitted": true, "chars": <length of the JSON of the response>}` instead of the response. The tool's input (the question asked) and its status are kept: the session still shows that it asked afr something. A failed call has no result to stub; its error, the server's own message, is kept. Only the tool result is covered: a reply, subagent message or compaction summary that quotes it is recorded as usual (documented in `docs/claude-code.md`).
 
 *   `MCP_SERVER = "afr"` lives in `flight_recorder/__init__.py`, imported by ingest and by `mcp_server.py`.
 *   A test checks that `.mcp.json` names the server `MCP_SERVER`, so the three can't drift apart.
@@ -594,7 +596,7 @@ Adds `runs_with_mode`: runs other than `excluding` that have a label whose `mode
     *   `failure_modes`: modes from the end.
 *   **Results:** each function builds its result with every recorded field already passed through `safe(field, cap)`, then `safe(result)`, then `fit`. `search_runs` and `failure_modes` results also carry `cut`.
 *   **`cut` lines:** one line per kind, whether the items were left out by a cap (`MAX_EXPLAINED` and the like) or by `fit`. The count is the total for that kind: `"<n> <kind> left out"`, for example `"7 labels left out"`. The kinds are:
-    *   `failures`, `refused calls`, `labels`, `same-mode runs`, `note fragments from merged labels`, `decision fields`, `right-answer fields` (in `explain_run`);
+    *   `failures`, `refused calls`, `labels`, `same-mode runs`, `modes' other runs` (modes past the first 3, not looked up), `note fragments from merged labels`, `decision fields`, `right-answer fields` (in `explain_run`);
     *   `hits` (in `search_runs`);
     *   `modes` (in `failure_modes`).
 

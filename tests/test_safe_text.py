@@ -73,3 +73,36 @@ def test_other_values_become_json_ready() -> None:
         "none": None,
     }
     assert safe(("a", "b")) == ["a", "b"]
+
+
+def test_a_placeholder_cut_inside_its_fingerprint_loses_what_is_left_of_it() -> None:
+    assert safe("mail [REDACTED:email:0d8b") == "mail [REDACTED:email"
+    assert safe("mail [REDACTED:email:") == "mail [REDACTED:email"
+    assert safe("[REDACTED:email:0a1b2c3d] and [REDACTED:api_key:0a") == (
+        "[REDACTED:email] and [REDACTED:api_key"
+    )
+
+
+def test_cleaning_only_the_shown_part_gives_the_same_text() -> None:
+    import random
+
+    from flight_recorder.payloads import cut
+    from flight_recorder.safe_text import strip_text
+
+    rng = random.Random(7)
+    pool = [
+        "\x1b",
+        "\r",
+        "\n",
+        "\r\n",
+        "\ufe0f",
+        "\u202e",
+        "a",
+        "\xe9",
+        "\U0001f600",
+        "[REDACTED:k:0a1b2c3d]",
+    ]
+    for _ in range(20_000):
+        text = "".join(rng.choice(pool) for _ in range(rng.randrange(0, 80)))
+        limit = rng.randrange(2, 30)
+        assert safe(text, limit) == cut(clean(strip_text(text)), limit), (text, limit)

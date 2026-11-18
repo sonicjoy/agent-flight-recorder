@@ -92,9 +92,16 @@ def map_strings(
     return leaf(value) if leaf else value
 
 
+CUT_PLACEHOLDER = re.compile(r"\[REDACTED:(?P<kind>[a-z0-9_]+):[0-9a-f]*\Z")
+"""A placeholder cut inside its fingerprint at the end of a text (a run name is cut to 80
+characters after the hook redacted it; a field to 32 KB)."""
+
+
 def strip_text(text: str) -> str:
-    """`text` with each placeholder's fingerprint removed (`[REDACTED:kind]`)."""
-    return PLACEHOLDER.sub(lambda m: f"[REDACTED:{m['kind']}]", text)
+    """`text` with each placeholder's fingerprint removed (`[REDACTED:kind]`), including a
+    placeholder cut short at the end."""
+    text = PLACEHOLDER.sub(lambda m: f"[REDACTED:{m['kind']}]", text)
+    return CUT_PLACEHOLDER.sub(lambda m: f"[REDACTED:{m['kind']}", text)
 
 
 def strip_fingerprints(value: Any) -> Any:
@@ -117,7 +124,15 @@ def safe(value: Any, limit: int = SAFE_CHARS) -> Any:
     comes before cutting, so the cap holds after escapes. Running it twice changes nothing."""
     return map_strings(
         value,
-        lambda s: cut(clean(strip_text(s)), limit),
-        key=lambda k: cut(clean(strip_text(k)), KEY_CHARS),
+        lambda s: _capped(s, limit),
+        key=lambda k: _capped(k, KEY_CHARS),
         leaf=_json_leaf,
     )
+
+
+def _capped(text: str, limit: int) -> str:
+    """`cut(clean(strip_text(text)), limit)`, cleaning only what can show. Cleaning maps
+    each character to itself or a longer escape, except `\\r\\n`, which becomes one `\\n`; so
+    2 * limit + 2 raw characters clean to more than `limit`, and the 2 after them cover a
+    pair split at the edge."""
+    return cut(clean(strip_text(text)[: 2 * limit + 4]), limit)

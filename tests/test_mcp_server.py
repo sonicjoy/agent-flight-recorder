@@ -193,6 +193,15 @@ async def test_a_store_behind_the_code_says_to_upgrade_or_restart(
     assert _error_text(result) == BEHIND_MESSAGE
 
 
+async def test_a_store_ahead_of_the_code_says_to_restart(store: Engine) -> None:
+    with store.begin() as connection:
+        connection.execute(text("UPDATE alembic_version SET version_num = 'from_a_newer_branch'"))
+
+    result = await _call(create_server(store, FakeEmbedder), "list_failure_modes", {})
+
+    assert _error_text(result) == BEHIND_MESSAGE
+
+
 async def test_a_slow_query_hits_the_statement_timeout(
     store: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -205,7 +214,7 @@ async def test_a_slow_query_hits_the_statement_timeout(
 
     result = await _call(server, "list_failure_modes", {})
 
-    assert _error_text(result) == TIMEOUT_MESSAGE
+    assert _error_text(result) == TIMEOUT_MESSAGE.format(timeout="100ms")
 
 
 async def test_a_missing_model_says_to_run_afr_embed(store: Engine) -> None:

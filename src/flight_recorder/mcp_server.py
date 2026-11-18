@@ -68,7 +68,7 @@ RUN_DOC = (
     "run id prefix of at least 4 hex characters, or the full session or trace id."
 )
 SINCE_DOC = "Started at or after: 30m, 2h, 3d or 1w ago, a date, or a local date and time."
-TIMEOUT_MESSAGE = "the store took too long to answer (over 10 s)"
+TIMEOUT_MESSAGE = "the store took too long to answer (over {timeout})"
 BEHIND_MESSAGE = (
     "the store needs `afr db upgrade`, or this server is older than the store: restart it"
 )
@@ -84,14 +84,14 @@ def _timed_out(error: OperationalError) -> bool:
 
 
 @contextmanager
-def _tool_errors() -> Generator[None]:
+def _tool_errors(timeout: str) -> Generator[None]:
     """Every failure as a ToolError the model can read. Anything unexpected is named by its
     class only: the SDK would otherwise send `str(error)`, which can hold recorded text."""
     try:
         yield
     except OperationalError as error:
         if _timed_out(error):
-            raise ToolError(TIMEOUT_MESSAGE) from None
+            raise ToolError(TIMEOUT_MESSAGE.format(timeout=timeout)) from None
         log.exception("store error")
         raise ToolError(UNREACHABLE) from None
     except queries.QueryError as error:
@@ -142,7 +142,7 @@ def create_server(
             int, Field(description=f"How many runs, 1 to {queries.SEARCH_LIMIT}.")
         ] = 10,
     ) -> dict[str, Any]:
-        with _tool_errors(), lock:
+        with _tool_errors(statement_timeout), lock:
             if not embedders:
                 embedders.append(embedder_factory())
             with session() as opened:
@@ -161,7 +161,7 @@ def create_server(
 
     @server.tool(description=EXPLAIN_DESCRIPTION, annotations=READ_ONLY)
     def explain_run(run: Annotated[str, Field(description=RUN_DOC)]) -> dict[str, Any]:
-        with _tool_errors(), session() as opened:
+        with _tool_errors(statement_timeout), session() as opened:
             return queries.explain_run(opened, run, datetime.now(UTC))
 
     @server.tool(description=MODES_DESCRIPTION, annotations=READ_ONLY)
@@ -173,7 +173,7 @@ def create_server(
             int, Field(description=f"How many modes, 1 to {queries.MODES_LIMIT}.")
         ] = 30,
     ) -> dict[str, Any]:
-        with _tool_errors(), session() as opened:
+        with _tool_errors(statement_timeout), session() as opened:
             return queries.failure_modes(opened, source, limit)
 
     return server
@@ -184,9 +184,9 @@ def main() -> None:
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
     logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
     from flight_recorder.search.embedder import FastEmbedder
-    from flight_recorder.store.db import make_engine
+    from flight_recorder.store.db import CONNECT_TIMEOUT, make_engine
 
-    engine = make_engine(connect_timeout=3)
+    engine = make_engine(connect_timeout=CONNECT_TIMEOUT)
     try:
         create_server(engine, lambda: FastEmbedder(download=False)).run("stdio")
     finally:

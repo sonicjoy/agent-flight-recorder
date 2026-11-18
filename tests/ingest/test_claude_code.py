@@ -1180,3 +1180,22 @@ def test_mcp_json_names_the_server_ingest_leaves_out() -> None:
 
     config = json.loads((Path(__file__).parents[2] / ".mcp.json").read_text(encoding="utf-8"))
     assert list(config["mcpServers"]) == [MCP_SERVER]
+
+
+def test_a_failed_afr_call_keeps_its_error_and_gets_no_stub(
+    client: TestClient, store: Engine
+) -> None:
+    asked = {"run": "zzzz"}
+    events = [
+        ev("UserPromptSubmit", 1, prompt_id="p1", prompt="why?"),
+        ev("PreToolUse", 2, prompt_id="p1", tool_name="mcp__afr__explain_run",
+           tool_use_id="t1", tool_input=asked),
+        ev("PostToolUseFailure", 3, prompt_id="p1", tool_name="mcp__afr__explain_run",
+           tool_use_id="t1", tool_input=asked, error="no run matches 'zzzz'"),
+    ]  # fmt: skip
+
+    client.post(URL, json={"events": events})
+
+    _, spans = stored(store)
+    failed = spans["tool:t1"]
+    assert (failed.status, failed.error, failed.output) == ("error", "no run matches 'zzzz'", None)

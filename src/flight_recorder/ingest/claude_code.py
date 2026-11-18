@@ -79,8 +79,8 @@ def _own_result(tool_name: str, response: Any) -> Any:
     store never re-records what it answered. Stored, an answer would rank the asking session
     next to the run it was about, and re-store an untrusted run's text as the owner's own.
     The call's input (what was asked) is kept."""
-    if not tool_name.startswith(OWN_TOOLS):
-        return response
+    if response is None or not tool_name.startswith(OWN_TOOLS):
+        return response  # a failed call has no result; its error is the server's own message
     return {"afr_result_omitted": True, "chars": len(json.dumps(response, default=str))}
 
 

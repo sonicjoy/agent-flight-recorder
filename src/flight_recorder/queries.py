@@ -43,17 +43,18 @@ from flight_recorder.store.labels import (
     split_note,
 )
 from flight_recorder.store.models import LABEL_SOURCES, Run
+from flight_recorder.store.read import MAX_MATCHES as PREFIX_MATCHES
 from flight_recorder.store.read import (
     AmbiguousRunError,
     RunFilter,
     RunNotFoundError,
     RunSummary,
     SpanNode,
-    find_runs,
     parse_when,
     resolve_run,
     span_content,
     span_tree,
+    summaries_of,
 )
 
 SEARCH_LIMIT = 25
@@ -68,11 +69,24 @@ PATH_NAMES = 6
 NOTE_CHARS = 500
 VALUE_CHARS = OUTPUT_CHARS  # a decision or right-answer value
 MAX_MATCHES = 5  # runs listed when a reference is ambiguous
+TOO_DEEP = "(nested too deeply to show)"
 MAX_RESULT_CHARS = 20_000
 """A whole result as the SDK sends it as text (JSON, indented by 2): far below Claude Code's
 default limit on MCP output (25,000 tokens), so Claude Code never cuts a result silently."""
 
 Result = dict[str, Any]
+
+# The kinds `cut` lines name: one spelling each, for caps and trims alike
+FAILURES = "failures"
+REFUSED = "refused calls"
+LABELS = "labels"
+FRAGMENTS = "note fragments from merged labels"
+SAME_MODE = "same-mode runs"
+MODES_UNCHECKED = "modes' other runs"  # modes past MAX_MODES_SHOWN, not looked up
+DECISIONS = "decision fields"
+ANSWER_FIELDS = "right-answer fields"
+HITS = "hits"
+MODES = "modes"
 
 
 class QueryError(ValueError):
@@ -88,7 +102,7 @@ class Trim(NamedTuple):
 
 def size(result: Result) -> int:
     """The result's length as the SDK sends it as text: `pydantic_core.to_json(indent=2)`."""
-    return len(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+    return len(json.dumps(result, indent=2, ensure_ascii=False))
 
 
 def _cut_lines(counts: dict[str, int]) -> list[str]:
@@ -148,9 +162,7 @@ def _pop_field(key: str, inner: str | None = None) -> Callable[[Result], bool]:
 
 def _pop_same_mode_run(result: Result) -> bool:
     groups = cast("list[dict[str, Any]]", result.get("same_mode_runs") or [])
-    while groups and not groups[-1]["runs"]:
-        groups.pop()
-    if not groups:
+    if not groups:  # a group is never kept empty
         return False
     groups[-1]["runs"].pop()
     if not groups[-1]["runs"]:
@@ -165,23 +177,24 @@ def _brief(summary: RunSummary) -> Result:
     run = summary.run
     return {
         "id": run.id,
-        "external_id": run.external_id,
+        "external_id": safe(run.external_id, NAME_CHARS),  # recorded: an OTel sender sets it
         "source": run.source,
-        "agent": run.agent,
+        "agent": safe(run.agent, NAME_CHARS) if run.agent else None,
         "name": safe(run.name, NAME_CHARS),
         "state": summary.state,
         "started_at": run.started_at,
     }
 
 
-def _summaries(session: Session, runs: Sequence[Run], now: datetime) -> list[RunSummary]:
-    if not runs:
-        return []
-    return find_runs(session, RunFilter(limit=len(runs)), now, ids=[r.id for r in runs])
+def _plain(value: str | None, name: str) -> str | None:
+    """`value` unless it holds a NUL, which Postgres can't take in text."""
+    if value is not None and "\x00" in value:
+        raise QueryError(f"{name} can't contain a NUL character")
+    return value
 
 
 def _resolve(session: Session, ref: str, now: datetime) -> RunSummary:
-    ref = ref.strip()
+    ref = cast("str", _plain(ref, "run")).strip()
     if not ref:
         raise QueryError("say which run: last, a run id prefix, or the session or trace id")
     try:
@@ -189,19 +202,35 @@ def _resolve(session: Session, ref: str, now: datetime) -> RunSummary:
     except RunNotFoundError as error:
         raise QueryError(str(error)) from None
     except AmbiguousRunError as error:
-        shown = _summaries(session, error.matches[:MAX_MATCHES], now)
+        shown = summaries_of(session, error.matches[:MAX_MATCHES], now)
         lines = [f"{s.run.id} {s.run.started_at:%Y-%m-%d %H:%M} {s.run.name or ''}" for s in shown]
         more = len(error.matches) - len(shown)
-        tail = [f"and {more} more"] if more > 0 else []
+        capped = len(error.matches) >= PREFIX_MATCHES  # resolve_run stops counting there
+        tail = [f"and {'at least ' if capped else ''}{more} more"] if more > 0 else []
         raise QueryError("; ".join([f"{error}; use more of the id", *lines, *tail])) from None
-    (summary,) = _summaries(session, [run], now)
+    (summary,) = summaries_of(session, [run], now)
     return summary
 
 
 def _text(value: Any, limit: int) -> str | None:
-    """A recorded value as one capped text, or None when it has none."""
-    text = recorded_text(value)
+    """A recorded value as one capped text, or None when it has none. A value nested too
+    deeply for the walk (ingest stores up to the redactor's own depth) is named, not shown."""
+    try:
+        text = recorded_text(value)
+    except RecursionError:
+        return TOO_DEEP
     return safe(text, limit) if text else None
+
+
+def _fields(items: Sequence[tuple[str, Any]]) -> tuple[dict[str, str], int]:
+    """At most MAX_FIELDS fields, names and values capped; and how many were left out,
+    counting a name that becomes another's once capped."""
+    shown: dict[str, str] = {}
+    for name, value in items[:MAX_FIELDS]:
+        key = cast("str", safe(name, NAME_CHARS))
+        if key not in shown:
+            shown[key] = cast("str", safe(value_text(value), VALUE_CHARS))
+    return shown, len(items) - len(shown)
 
 
 def _path(node: SpanNode) -> list[str]:
@@ -236,29 +265,25 @@ def explain_run(session: Session, ref: str, now: datetime) -> Result:
         }
         for node in found[:MAX_EXPLAINED]
     ]
-    counts["failures"] = len(found) - len(failures)
+    counts[FAILURES] = len(found) - len(failures)
 
     refused_all = refused_calls(roots)
     refused = [
         {"span_id": n.id, "kind": n.kind, "name": safe(n.name, NAME_CHARS)}
         for n in refused_all[:MAX_REFUSED]
     ]
-    counts["refused calls"] = len(refused_all) - len(refused)
+    counts[REFUSED] = len(refused_all) - len(refused)
 
     asked, answered = conversation(session, run, roots)
 
-    decided = decided_fields(run.attributes or {})
-    decisions = {k: safe(value_text(v), VALUE_CHARS) for k, v in list(decided.items())[:MAX_FIELDS]}
-    counts["decision fields"] = len(decided) - len(decisions)
+    decisions, counts[DECISIONS] = _fields(list(decided_fields(run.attributes or {}).items()))
 
     right_answer: Result | None = None
     if (answer := answer_of(session, run.id)) is not None:
         fields = answer.get("fields")
         if isinstance(fields, dict):
-            items = list(cast("dict[str, Any]", fields).items())
-            shown = {k: safe(value_text(v), VALUE_CHARS) for k, v in items[:MAX_FIELDS]}
+            shown, counts[ANSWER_FIELDS] = _fields(list(cast("dict[str, Any]", fields).items()))
             right_answer = {"fields": shown}
-            counts["right-answer fields"] = len(items) - len(shown)
         else:
             right_answer = {"text": safe(str(answer.get("text", "")), VALUE_CHARS)}
 
@@ -279,33 +304,22 @@ def explain_run(session: Session, ref: str, now: datetime) -> Result:
                 "created_at": label.created_at,
             }
         )
-    counts["labels"] = len(all_labels) - len(labels)
-    counts["note fragments from merged labels"] = fragments
+    counts[LABELS] = len(all_labels) - len(labels)
+    counts[FRAGMENTS] = fragments
 
-    same_mode: list[Result] = []
-    keys: list[str] = []
+    modes: dict[str, str] = {}  # mode key -> its spelling on the run's earliest label
     for label in all_labels:
-        if label.mode_key and label.mode_key not in keys:
-            keys.append(label.mode_key)
-    for label_key in keys[:MAX_MODES_SHOWN]:
-        others = _summaries(
-            session, runs_with_mode(session, label_key, run.id, SAME_MODE_RUNS), now
-        )
+        if label.mode_key:
+            modes.setdefault(label.mode_key, label.failure_mode)
+    same_mode: list[Result] = []
+    for key, mode in list(modes.items())[:MAX_MODES_SHOWN]:
+        others = summaries_of(session, runs_with_mode(session, key, run.id, SAME_MODE_RUNS), now)
         if others:
-            mode = next(lb.failure_mode for lb in all_labels if lb.mode_key == label_key)
-            same_mode.append(
-                {
-                    "mode": safe(mode, NAME_CHARS),
-                    "runs": [
-                        {
-                            k: v
-                            for k, v in _brief(s).items()
-                            if k in ("id", "name", "state", "started_at")
-                        }
-                        for s in others
-                    ],
-                }
-            )
+            runs = [
+                {k: _brief(s)[k] for k in ("id", "name", "state", "started_at")} for s in others
+            ]
+            same_mode.append({"mode": safe(mode, NAME_CHARS), "runs": runs})
+    counts[MODES_UNCHECKED] = max(len(modes) - MAX_MODES_SHOWN, 0)
 
     evidence = "failed_spans" if found else "labels_only" if all_labels else "none"
     result: Result = {
@@ -329,14 +343,14 @@ def explain_run(session: Session, ref: str, now: datetime) -> Result:
         "same_mode_runs": same_mode,
     }
     trims = [
-        Trim("same-mode runs", _pop_same_mode_run),
-        Trim("labels", _pop("labels")),
-        Trim("refused calls", _pop("refused")),
-        Trim("failures", _pop("failures", keep=1)),
-        Trim("decision fields", _pop_field("decisions")),
-        Trim("right-answer fields", _pop_field("right_answer", "fields")),
+        Trim(SAME_MODE, _pop_same_mode_run),
+        Trim(LABELS, _pop("labels")),
+        Trim(REFUSED, _pop("refused")),
+        Trim(FAILURES, _pop("failures", keep=1)),
+        Trim(DECISIONS, _pop_field("decisions")),
+        Trim(ANSWER_FIELDS, _pop_field("right_answer", "fields")),
     ]
-    return fit(cast("Result", safe(result)), trims, counts)
+    return fit(cast("Result", safe(result)), trims, counts, MAX_RESULT_CHARS)
 
 
 # --- search_runs -------------------------------------------------------------------------
@@ -346,7 +360,7 @@ def _when(value: str | None, now: datetime, name: str) -> datetime | None:
     if value is None or not value.strip():
         return None
     try:
-        return parse_when(value, now)
+        return parse_when(cast("str", _plain(value, name)), now)
     except ValueError as error:
         raise QueryError(f"{name}: {error}") from None
 
@@ -365,15 +379,15 @@ def search_runs(
     now: datetime,
 ) -> Result:
     """Runs that match a description, by meaning and by exact words, best first."""
-    if not query.strip():
+    if not cast("str", _plain(query, "query")).strip():
         raise QueryError("say what to look for")
     if status is not None and status not in SEARCHABLE_STATES:
         raise QueryError(f"status {status!r}: use one of {', '.join(SEARCHABLE_STATES)}")
     if not 1 <= limit <= SEARCH_LIMIT:
         raise QueryError(f"limit is 1 to {SEARCH_LIMIT}")
     where = RunFilter(
-        source=source,
-        agent=agent,
+        source=_plain(source, "source"),
+        agent=_plain(agent, "agent"),
         status=status,  # type: ignore[arg-type]  # checked against SEARCHABLE_STATES
         since=_when(since, now, "since"),
         until=_when(until, now, "until"),
@@ -401,7 +415,7 @@ def search_runs(
         "index_empty": empty,
         "unembedded_runs": pending_runs(session, embedder.model, now),
     }
-    return fit(cast("Result", safe(result)), [Trim("hits", _pop("hits"))])
+    return fit(cast("Result", safe(result)), [Trim(HITS, _pop("hits"))], None, MAX_RESULT_CHARS)
 
 
 # --- list_failure_modes ------------------------------------------------------------------
@@ -426,13 +440,17 @@ def failure_modes(session: Session, source: str = "human", limit: int = 30) -> R
                 "mode": safe(c.mode, NAME_CHARS),
                 "runs": c.runs,
                 "labels": c.labels,
-                "example_run": {"id": c.example, "external_id": examples.get(c.example)},
+                "example_run": {
+                    "id": c.example,
+                    "external_id": safe(examples.get(c.example), NAME_CHARS),
+                },
             }
             for c in shown
         ],
     }
     return fit(
         cast("Result", safe(result)),
-        [Trim("modes", _pop("modes"))],
-        {"modes": len(counts) - len(shown)},
+        [Trim(MODES, _pop("modes"))],
+        {MODES: len(counts) - len(shown)},
+        MAX_RESULT_CHARS,
     )
