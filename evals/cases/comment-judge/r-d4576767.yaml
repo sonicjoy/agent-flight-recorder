@@ -4,7 +4,7 @@ tags:
 note: Asks whether similar CI gating exists; no issue numbers; milestone matches.
 input:
   judge_version: 1
-  model: anthropic:claude-haiku-5-5
+  model: openai:gpt-5.4-mini
   rubric:
     instructions: You grade a triage comment that an agent wrote for a GitHub issue, from the issue's
       title and the agent's triage decision (labels, milestone, duplicate_of, regression_of, confidence,

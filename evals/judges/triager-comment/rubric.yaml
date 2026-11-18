@@ -1,4 +1,4 @@
-model: anthropic:claude-haiku-5-5
+model: openai:gpt-5.4-mini
 instructions: You grade a triage comment that an agent wrote for a GitHub issue, from the issue's title
   and the agent's triage decision (labels, milestone, duplicate_of, regression_of, confidence, rationale).
   Grade each criterion on its own, from the comment's wording. The decision is what the agent decided;
