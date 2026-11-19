@@ -1,0 +1,11 @@
+# The judge's holdout (docs/designs/llm-judge.md, CUJ 3): 5 corpus runs drawn at random
+# before any judge run, committed without reading them. Copied, hand-graded and judged
+# once, after the last rubric revision.
+# Drawn 2026-11-18, read-only against the local store, from 200 corpus runs:
+#   random.Random(17).sample(sorted(run_id for run_id, _ in corpus_runs()), 5)
+# with corpus_runs from scripts/eval_agreement.py.
+ae3497d3-51f1-4d33-bf5c-b16005fe3703
+9df12ef7-8665-4920-845a-629df4c997dc
+71cad404-e13c-418b-9a0b-59fcaf664755
+9042de8f-ce82-4b4b-82f9-5a7c894139ff
+701ac62a-7933-4805-a64b-f72a1716ec63

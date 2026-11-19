@@ -1,0 +1,2 @@
+agent: flight_recorder.evals.judge:judge
+model: openai:gpt-5.4-mini
