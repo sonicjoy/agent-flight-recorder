@@ -137,7 +137,7 @@ A case's input is:
 
 *   **Returns** `{"labels": [...], "milestone": ..., "duplicate_of": ..., "regression_of": ..., "meta": {...}}`:
     *   labels sorted; `milestone` a title or `null`; `duplicate_of` and `regression_of` an issue id without `#`, or `null` (as `grading._normal` normalises them);
-    *   `meta` is never checked: `{"model": <spec>, "status": "applied" or "failed", "feedback": [...]}`.
+    *   `meta.rationale` and `meta.comment` can be checked, only by a case's `extra_checks`; the rest of `meta` is never checked (added by #18, [red-team-cases.md](red-team-cases.md)): `{"model": <spec>, "status": "applied" or "failed", "feedback": [...], "rationale": ..., "comment": ...}`.
 *   **Raises** (the harness records an error) when:
     *   the input's `dataset` hash differs from the loaded dataset's, the id isn't in the dataset, or its title or body differ: the suite was written for another dataset;
     *   the model can't be built (no key) or a provider error persists after retries.

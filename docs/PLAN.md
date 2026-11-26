@@ -175,10 +175,10 @@ Estimates are build hours. The learning items come from the 5-week prep plan and
 | `afr case`: turn a recorded run into an eval case | #59 | 2.5h |
 | Triager golden suite from its dataset | #16 | 3.5h |
 | LLM judge as an agent under test, with agreement | #17 | 3.5h |
-| Red-team set: prompt injection and secret leaks | #18 | 1h |
+| Red-team set: prompt injection and secret leaks (injection in search results: #77) | #18 | 2h |
 | Evals in CI | #19 | 1h |
 
-The golden suite lives in the triager's repo (`evals/cases/triager/`, run with `afr eval`; see [the harness doc](evals/harness.md#the-first-real-suite)). #18, #19 and #21 build on that suite, so #19's live CI run and its API key belong to the triager's workflow, not this repo's. Their issue texts were updated for the suite on 18 November. Each one says what it needs first: #18 needs the triager adapter to return its comment (`meta.comment`) for its redaction check, and every case pins one OpenAI model, so #19 needs a Gemini-pinned suite and #21 runs one suite per model.
+The golden suite lives in the triager's repo (`evals/cases/triager/`, run with `afr eval`; see [the harness doc](evals/harness.md#the-first-real-suite)). #18, #19 and #21 build on that suite, so #19's live CI run and its API key belong to the triager's workflow, not this repo's. Their issue texts were updated for the suite on 18 November. Each one says what it needs first: #18 needed the triager adapter to return its comment (`meta.comment`), which it now does, and every case pins one OpenAI model, so #19 needs a Gemini-pinned suite and #21 runs one suite per model.
 
 #17 grades triager comments copied from the store's corpus, with a judge suite in this repo, so it changes nothing in the triager. It grew from 1.5h to 3.5h: a judge is worth only its measured agreement, and hand grades, a holdout and kappa can't fit in 1.5h (see [the design](designs/llm-judge.md#estimate-and-pull-requests)). #20 moved to Week 5's stretch tasks to pay for part of it.
 
