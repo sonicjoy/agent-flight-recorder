@@ -468,3 +468,6 @@ def test_search_checks_its_arguments(session: Session) -> None:
         query = arguments.pop("query")
         with pytest.raises(QueryError):
             queries.search_runs(session, fake, query, now=NOW, **arguments)
+    at_the_caps = {f"k{i}": ["v"] for i in range(queries.ATTR_KEYS - 1)}
+    at_the_caps["last"] = ["v"] * queries.ATTR_VALUES
+    queries.search_runs(session, fake, "x", attrs=at_the_caps, now=NOW)  # allowed: no error
