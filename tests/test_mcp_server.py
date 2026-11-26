@@ -332,3 +332,17 @@ def test_importing_the_server_loads_no_cli_and_connects_to_nothing(tmp_path: Pat
     )
     assert done.returncode == 0, done.stderr
     assert done.stdout == ""
+
+
+async def test_search_passes_an_attribute_filter(store: Engine) -> None:
+    run_id = _failed_run(store)
+    with Session(store) as session:
+        embed_runs(session, FakeEmbedder())
+        session.commit()
+    server = create_server(store, FakeEmbedder)
+
+    none = await _call(server, "search_runs", {"query": "timed out", "attrs": {"k": ["v"]}})
+    every = await _call(server, "search_runs", {"query": "timed out", "attrs": {}})
+
+    assert none.structured_content["hits"] == []
+    assert [h["run"]["id"] for h in every.structured_content["hits"]] == [str(run_id)]

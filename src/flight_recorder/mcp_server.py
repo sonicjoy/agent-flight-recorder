@@ -67,6 +67,10 @@ RUN_DOC = (
     "`last` (the newest finished run: it can be an earlier turn of this very session), a "
     "run id prefix of at least 4 hex characters, or the full session or trace id."
 )
+ATTRS_DOC = (
+    "Run attributes: each key must equal one of its values, for example "
+    '{"triager.grade.duplicate_of": ["wrong"]} for runs graded wrong on that field.'
+)
 SINCE_DOC = "Started at or after: 30m, 2h, 3d or 1w ago, a date, or a local date and time."
 TIMEOUT_MESSAGE = "the store took too long to answer (over {timeout})"
 BEHIND_MESSAGE = (
@@ -141,6 +145,10 @@ def create_server(
         limit: Annotated[
             int, Field(description=f"How many runs, 1 to {queries.SEARCH_LIMIT}.")
         ] = 10,
+        attrs: Annotated[
+            dict[str, list[str]] | None,
+            Field(description=ATTRS_DOC),
+        ] = None,
     ) -> dict[str, Any]:
         with _tool_errors(statement_timeout), lock:
             if not embedders:
@@ -156,6 +164,7 @@ def create_server(
                     since=since,
                     until=until,
                     limit=limit,
+                    attrs=attrs,
                     now=datetime.now(UTC),
                 )
 

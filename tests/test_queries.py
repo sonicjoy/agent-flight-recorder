@@ -424,6 +424,26 @@ def test_search_finds_embedded_runs_and_says_when_nothing_is_embedded(session: S
     assert hit["failed_span"] is None or hit["failed_span"]["error"] == "request timed out"
 
 
+def test_search_filters_on_run_attributes(session: Session) -> None:
+    """The MCP tool and the analyst pass the same filter as `afr search --attr` (#57)."""
+    from flight_recorder.search.index import embed_runs
+
+    fake = FakeEmbedder()
+    for external_id, grade in (("dup-wrong", "wrong"), ("dup-right", "right"), ("dup-none", None)):
+        attributes = {} if grade is None else {"triager.grade.duplicate_of": grade}
+        record(session, external_id, [span("root", None, 0, output="duplicate_of: 14")],
+               name="marked as a duplicate", attributes=attributes)  # fmt: skip
+    embed_runs(session, fake)
+
+    def found(attrs: dict[str, list[str]] | None) -> set[str]:
+        out = queries.search_runs(session, fake, "marked as a duplicate", attrs=attrs, now=NOW)
+        return {hit["run"]["external_id"] for hit in out["hits"]}
+
+    assert found({"triager.grade.duplicate_of": ["wrong"]}) == {"dup-wrong"}
+    assert found({"triager.grade.duplicate_of": ["wrong", "right"]}) == {"dup-wrong", "dup-right"}
+    assert found(None) == {"dup-wrong", "dup-right", "dup-none"}
+
+
 def test_search_checks_its_arguments(session: Session) -> None:
     fake = FakeEmbedder()
     bad: list[dict[str, Any]] = [
@@ -433,6 +453,10 @@ def test_search_checks_its_arguments(session: Session) -> None:
         {"query": "x", "since": "9999999w"},
         {"query": "x", "limit": 0},
         {"query": "x", "limit": queries.SEARCH_LIMIT + 1},
+        {"query": "x", "attrs": {"k": []}},
+        {"query": "x", "attrs": {"": ["v"]}},
+        {"query": "x", "attrs": {"k": ["v\x00"]}},
+        {"query": "x", "attrs": {"k\x00": ["v"]}},
     ]
     for arguments in bad:
         query = arguments.pop("query")
