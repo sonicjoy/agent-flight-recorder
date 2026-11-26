@@ -431,6 +431,7 @@ def test_search_filters_on_run_attributes(session: Session) -> None:
     fake = FakeEmbedder()
     for external_id, grade in (("dup-wrong", "wrong"), ("dup-right", "right"), ("dup-none", None)):
         attributes = {} if grade is None else {"triager.grade.duplicate_of": grade}
+        attributes["triager.grade"] = "wrong" if grade else "right"
         record(session, external_id, [span("root", None, 0, output="duplicate_of: 14")],
                name="marked as a duplicate", attributes=attributes)  # fmt: skip
     embed_runs(session, fake)
@@ -442,6 +443,9 @@ def test_search_filters_on_run_attributes(session: Session) -> None:
     assert found({"triager.grade.duplicate_of": ["wrong"]}) == {"dup-wrong"}
     assert found({"triager.grade.duplicate_of": ["wrong", "right"]}) == {"dup-wrong", "dup-right"}
     assert found(None) == {"dup-wrong", "dup-right", "dup-none"}
+    both = {"triager.grade.duplicate_of": ["right"], "triager.grade": ["wrong"]}
+    assert found(both) == {"dup-right"}  # every key must match
+    assert found({"triager.grade.duplicate_of": ["right"], "triager.grade": ["right"]}) == set()
 
 
 def test_search_checks_its_arguments(session: Session) -> None:
@@ -454,6 +458,8 @@ def test_search_checks_its_arguments(session: Session) -> None:
         {"query": "x", "limit": 0},
         {"query": "x", "limit": queries.SEARCH_LIMIT + 1},
         {"query": "x", "attrs": {"k": []}},
+        {"query": "x", "attrs": {f"k{i}": ["v"] for i in range(queries.ATTR_KEYS + 1)}},
+        {"query": "x", "attrs": {"k": ["v"] * (queries.ATTR_VALUES + 1)}},
         {"query": "x", "attrs": {"": ["v"]}},
         {"query": "x", "attrs": {"k": ["v\x00"]}},
         {"query": "x", "attrs": {"k\x00": ["v"]}},

@@ -193,14 +193,23 @@ def _plain(value: str | None, name: str) -> str | None:
     return value
 
 
+ATTR_KEYS = 20
+ATTR_VALUES = 100
+
+
 def _attrs(attrs: dict[str, list[str]]) -> dict[str, tuple[str, ...]]:
-    """An attribute filter, checked: a key and at least one value each, all text without NUL."""
+    """An attribute filter, checked: a key and at least one value each, all text without NUL,
+    and capped, so a huge filter is a clear refusal, not a slow search or a driver error."""
+    if len(attrs) > ATTR_KEYS:
+        raise QueryError(f"attrs takes at most {ATTR_KEYS} keys")
     checked: dict[str, tuple[str, ...]] = {}
     for key, values in attrs.items():
         if not cast("str", _plain(key, "an attrs key")):
             raise QueryError("an attrs key can't be empty")
         if not values:
             raise QueryError(f"attrs {key!r} needs at least one value")
+        if len(values) > ATTR_VALUES:
+            raise QueryError(f"attrs takes at most {ATTR_VALUES} values per key")
         checked[key] = tuple(cast("str", _plain(v, f"attrs {key!r}")) for v in values)
     return checked
 
