@@ -17,6 +17,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from flight_recorder.analyst.items import graded_items
 from flight_recorder.evals.cases import CaseError, Draft, draft_case, problems, write_case
 from flight_recorder.evals.checks import same
 from flight_recorder.payloads import none_as_null
@@ -44,19 +45,26 @@ class Written:
     """(run id, reason) for each representative not written."""
 
 
-def _expects_the_failure(session: Session, run_id: str, signature: str, draft: Draft) -> str | None:
-    """The field whose expected value is the agent's own wrong decision, the very failure the
-    group is about; None when the case expects something else. `afr label --answer` keeps
-    the agent's decision for every field the answer leaves out, so an answer that fixed
-    another field can still expect this one's mistake."""
-    field = signature.split(":", 1)[0]
-    if field == "error" or field not in draft.case["expected"]:
-        return None
+def expects_a_wrong_value(session: Session, run_id: str, draft: Draft) -> str | None:
+    """The first field (by name) whose expected value is the agent's decision that the run's
+    recorded truth marks wrong, whichever group the run is written for; None when there is
+    none. `afr label --answer` keeps the agent's decision for every field an answer leaves
+    out, so an answer that fixed one field can still expect another field's mistake."""
     run = session.get(Run, uuid.UUID(run_id))
-    decided = decided_fields(dict(run.attributes or {})) if run is not None else {}
-    if field not in decided:
+    if run is None:
         return None
-    return field if same(draft.case["expected"][field], none_as_null(decided[field])) else None
+    attributes = dict(run.attributes or {})
+    decided = decided_fields(attributes)
+    expected = draft.case["expected"]
+    wrong = sorted(item["id"].split("#", 1)[1] for item in graded_items(run_id, "", attributes))
+    for name in wrong:
+        if (
+            name in expected
+            and name in decided
+            and same(expected[name], none_as_null(decided[name]))
+        ):
+            return name
+    return None
 
 
 def write_groups(
@@ -91,9 +99,11 @@ def write_groups(
                 written.skipped.append((run_id, "it holds redacted values; use afr case new"))
             elif not draft.case["checks"]:
                 written.skipped.append((run_id, "it has nothing to check"))
-            elif field := _expects_the_failure(session, run_id, group["signature"], draft):
-                written.skipped.append((run_id, f"its case would expect the agent's own {field}; "
-                                        "fix the answer with afr label --answer"))  # fmt: skip
+            elif wrong := expects_a_wrong_value(session, run_id, draft):
+                written.skipped.append((run_id, f"its case would expect the agent's {wrong}, "
+                                        "which the recorded truth marks wrong: correct the "
+                                        "answer with afr label --answer, or label the run "
+                                        "debatable-truth if the agent was right"))  # fmt: skip
             else:
                 try:
                     written.paths.append(write_case(root, draft))

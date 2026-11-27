@@ -135,3 +135,35 @@ def test_item_text_is_redacted_again_cut_and_shows_hidden_characters() -> None:
 
     assert token not in text and "\u202e" not in text and "\\u202e" in text
     assert len(text) == TEXT_CHARS
+
+
+def test_a_signature_is_one_safe_line_and_different_signatures_stay_different() -> None:
+    from flight_recorder.analyst.items import SIGNATURE_CHARS, safe_signature
+    from flight_recorder.redact import Redactor
+
+    redactor = Redactor(b"k" * 32)
+    names = ["\u641c\u7d22", "\u7ffb\u8bd1", "a b", "a_b", "a%20b", "a\nb", "a\tb", "x" * 300,
+             "x" * 299 + "y", "~redacted"]  # fmt: skip
+    signatures = [safe_signature(f"error:agent:{n}:KeyError", redactor) for n in names]
+
+    assert len(set(signatures)) == len(names)
+    for sig in signatures:
+        assert len(sig) <= SIGNATURE_CHARS and sig.isprintable() and "\n" not in sig
+        assert sig.startswith("error:agent:")
+        assert sig.endswith(":KeyError") or "~" in sig  # a long one ends in its hash
+    assert signatures[0] == "error:agent:\u641c\u7d22:KeyError"  # letters stay readable
+
+
+def test_a_signature_part_that_holds_a_secret_or_a_placeholder_becomes_redacted() -> None:
+    from flight_recorder.analyst.items import safe_signature
+    from flight_recorder.redact import Redactor
+
+    redactor = Redactor(b"k" * 32)
+    token = "ghp_" + "Z9y8" * 9
+
+    assert safe_signature(f"error:tool:{token}:KeyError", redactor) == (
+        "error:tool:~redacted:KeyError"
+    )
+    recorded = "error:tool:get [REDACTED:github_token:1a2b3c4d] now:KeyError"
+    assert safe_signature(recorded, redactor) == "error:tool:~redacted:KeyError"
+    assert safe_signature("token:extra", redactor) == "token:extra"  # field and direction kept

@@ -104,9 +104,10 @@ def analyse(
         params = {"model": str(parsed), "max_groups": MAX_GROUPS, "max_shown": MAX_SHOWN}
         result = run_core({"version": VERSION, "items": items, "params": params})
         groups: list[dict[str, Any]] = result["groups"]
-        for group in groups:  # a provider's error text is not ours to print or log as is
-            if group["error"]:
-                group["error"] = str(redactor.redact(group["error"]).value)
+        for group in groups:  # model and provider text, redacted before it's printed or logged
+            for key in ("error", "cause"):
+                if group[key]:
+                    group[key] = str(redactor.redact(group[key]).value)
         run_of = {entry["id"]: entry["run"] for entry in items}
         for number, group in enumerate(groups, 1):
             head = Text(f"\n{number}. ", style="bold")
@@ -151,6 +152,8 @@ def analyse(
         log = write_log(LOG_DIR, params=params, groups=groups, kept=kept, written=written,
                         now=now)  # fmt: skip
     except OSError as error:
+        if failure is not None:
+            typer.echo(f"error: {failure}", err=True)
         raise fail(f"can't write the decisions log in {LOG_DIR.as_posix()}: "
                    f"{error.strerror or error}", 1) from None  # fmt: skip
     out.print(render.text(f"log: {log.as_posix()}"))

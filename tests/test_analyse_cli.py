@@ -88,6 +88,7 @@ class Fake:
         self.prompts: list[Any] = []
         self.refuse: set[str] = set()  # signatures whose reply breaks the rules
         self.raises: Exception | None = None  # a provider error for every call
+        self.cause = "It adds labels."
 
     def __call__(self, spec: str) -> Fake:
         return self
@@ -104,7 +105,7 @@ class Fake:
         shown = messages[-1].content.count("<item ")
         refused = any(f"way: {sig}\n" in messages[0].content for sig in self.refuse)
         picks = ["e99"] if refused else [f"e{n}" for n in range(1, min(shown, 3) + 1)]
-        return self.schema(name="Extra Label", cause="It adds labels.", representatives=picks)
+        return self.schema(name="Extra Label", cause=self.cause, representatives=picks)
 
 
 installed: list[Fake] = [Fake()]  # the model the last `cli` fixture installed
@@ -271,23 +272,25 @@ def test_a_case_holding_a_redacted_value_is_skipped(
     assert f"run-{str(run)[:8]}" not in [p.stem for p in _cases(tmp_path)]
 
 
-def test_a_case_that_would_expect_the_groups_own_failure_is_skipped(
-    cli: Callable[..., Any], tmp_path: Path, store: Any
+@pytest.mark.parametrize("keep", ["1", "1,2,3", "3"])
+def test_a_case_that_would_expect_a_value_the_truth_marks_wrong_is_never_written(
+    cli: Callable[..., Any], tmp_path: Path, store: Any, keep: str
 ) -> None:
-    """An answer that fixes another field keeps the agent's labels, the very failure of the
-    labels:extra group: that case would pass on the bug."""
+    """An answer that fixes the milestone keeps the agent's labels, which the truth marks wrong:
+    whichever of the run's groups is kept (labels:extra is 1, milestone:wrong is 3), its case
+    would pass on the bug."""
     attributes = EXTRA | {"t.decided.milestone": "W1", "t.expected.milestone": "W2"}
     run = add(store[0], "answered", attributes=attributes, minute=9)
     labelled = runner.invoke(app, ["label", str(run), "--mode", "late-milestone",
                                    "--answer", "milestone=W2"])  # fmt: skip
     assert labelled.exit_code == 0, labelled.output
 
-    result = cli(input="1\n")
+    result = cli(input=f"{keep}\n")
 
     assert result.exit_code == 0, result.output
-    assert f"skipped run {str(run)[:8]}: its case would expect the agent's own labels" in (
-        result.output
-    )
+    assert "3. extra-label  (milestone:wrong" in result.output  # the numbering assumed above
+    assert f"skipped run {str(run)[:8]}: its case would expect the agent's labels, which the " \
+        "recorded truth marks wrong" in result.output  # fmt: skip
     assert f"run-{str(run)[:8]}" not in [p.stem for p in _cases(tmp_path)]
 
 
@@ -302,9 +305,9 @@ def test_what_reaches_the_model_is_redacted_cut_and_one_line(
 
     sent = [m.content for prompt in installed[0].prompts for m in prompt]
     assert sent and all(token not in text and "\u202e" not in text for text in sent)
-    hostile = next(p for p in installed[0].prompts if "Ignore" in p[0].content)
+    hostile = next(p for p in installed[0].prompts if "~redacted" in p[0].content)
     line = hostile[0].content.split("failed the same way: ", 1)[1].split("\n", 1)[0]
-    assert "Ignore_all_rules" in line  # the span name stays on the signature's own line
+    assert line.startswith("error:agent:~redacted:Boom%E2%80%AE")  # one line, no fingerprint
     assert "x" * 601 not in hostile[-1].content
 
 
@@ -369,3 +372,46 @@ def test_group_numbers_are_read_one_comma_separated_number_at_a_time(
     answer: str, kept: set[int] | None
 ) -> None:
     assert analyse_cli._kept(answer, 10) == kept  # pyright: ignore[reportPrivateUsage]
+
+
+def test_a_log_the_os_refuses_exits_1_after_listing_the_cases_written(
+    cli: Callable[..., Any], tmp_path: Path
+) -> None:
+    (tmp_path / "evals").mkdir()
+    (tmp_path / "evals" / "analyst-log").write_text("a file where the folder goes")
+
+    result = cli(input="1\n")
+
+    assert result.exit_code == 1
+    assert "can't write the decisions log" in result.output
+    assert result.output.count("wrote ") == 2 and len(_cases(tmp_path)) == 2
+
+
+def test_a_case_path_afr_refuses_is_a_write_failure_and_still_logged(
+    cli: Callable[..., Any], tmp_path: Path, clean_env: pytest.MonkeyPatch
+) -> None:
+    from flight_recorder.evals.cases import CaseError, Draft
+
+    def refuse(self: Draft, root: Path) -> Path:
+        raise CaseError("a case path resolves outside the cases folder")
+
+    clean_env.setattr(Draft, "path", refuse)
+
+    result = cli(input="1\n")
+
+    assert result.exit_code == 1
+    assert "resolves outside" in result.output
+    assert _log(tmp_path)["written"] == []
+
+
+def test_the_models_cause_is_redacted_before_it_is_shown_or_logged(
+    cli: Callable[..., Any], tmp_path: Path
+) -> None:
+    token = "ghp_" + "P5o4" * 9
+    installed[0].cause = f"It pastes {token} into labels."
+
+    result = cli(input="\n")
+
+    assert result.exit_code == 0, result.output
+    assert "It pastes" in result.output and token not in result.output
+    assert all(token not in str(g["cause"]) for g in _log(tmp_path)["groups"])

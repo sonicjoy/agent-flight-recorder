@@ -7,6 +7,7 @@ note or answer: #23 scores the groups against those labels.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from datetime import UTC
@@ -19,7 +20,7 @@ from flight_recorder.evals.cases import accepted_value
 from flight_recorder.evals.checks import same
 from flight_recorder.payloads import NONE_TEXT, decided_expected_pairs, none_as_null, value_text
 from flight_recorder.redact import Redactor
-from flight_recorder.safe_text import clean
+from flight_recorder.safe_text import PLACEHOLDER, clean
 from flight_recorder.search.summary import failure_line, root_failures
 from flight_recorder.store.labels import accepted_fields
 from flight_recorder.store.read import span_tree
@@ -28,7 +29,7 @@ TEXT_CHARS = 600
 CLASS_CHARS = 40
 SIGNATURE_CHARS = 120
 DIGITS = re.compile(r"[0-9]")
-UNSAFE = re.compile(r"[^A-Za-z0-9_.:-]+")
+REDACTED_PART = "~redacted"  # `~` is never left as is by _encoded
 
 
 def _as_set(value: Any) -> set[str]:
@@ -100,10 +101,31 @@ def _text(text: str, redactor: Redactor) -> str:
     return str(redactor.redact(clean(text)).value)[:TEXT_CHARS]
 
 
+def _encoded(part: str) -> str:
+    """`part` with every character but letters, digits and `_.-` percent-encoded (UTF-8), `%`
+    and `:` included: one line, and two different parts never encode alike."""
+    return "".join(
+        c if c.isalnum() or c in "_.-" else "".join(f"%{b:02X}" for b in c.encode()) for c in part
+    )
+
+
 def safe_signature(text: str, redactor: Redactor) -> str:
-    """A signature fit for a prompt, a tag and the log: redacted again, one line of letters,
-    digits and `_.:-`, at most SIGNATURE_CHARS. An error's span name is recorded text."""
-    return UNSAFE.sub("_", str(redactor.redact(text).value))[:SIGNATURE_CHARS] or "unknown"
+    """A signature fit for a prompt, a tag and the log (an error's span name is recorded text):
+    each `:`-separated part redacted again on its own, and replaced by `~redacted` when a
+    pattern matched it or it holds a placeholder from recording (a fingerprint would depend
+    on a machine's key, and encoded it would hide from `problems`), then encoded. Longer than
+    SIGNATURE_CHARS, it keeps a prefix and a hash of the whole, so different signatures stay
+    different."""
+    marked = PLACEHOLDER.sub("\0", text)  # a placeholder holds `:`; keep it in one part
+    parts: list[str] = []
+    for part in marked.split(":"):
+        again = str(redactor.redact(part).value)
+        parts.append(_encoded(part) if again == part and "\0" not in part else REDACTED_PART)
+    joined = ":".join(parts)
+    if len(joined) > SIGNATURE_CHARS:
+        digest = hashlib.sha256(joined.encode()).hexdigest()[:8]
+        joined = f"{joined[: SIGNATURE_CHARS - 9]}~{digest}"
+    return joined or "unknown"
 
 
 def items_for(
