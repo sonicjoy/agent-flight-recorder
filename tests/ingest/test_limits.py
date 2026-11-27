@@ -67,6 +67,7 @@ def store(make_database: Callable[[], str]) -> Generator[Engine]:
 
 
 @pytest.mark.db
+@pytest.mark.timing
 def test_a_full_chunk_of_turn_ends_is_applied_within_the_send_timeout(store: Engine) -> None:
     """Measured, not estimated: the chunk the hook would send, against the real app."""
     app = TestClient(
@@ -92,6 +93,7 @@ def timed(app: TestClient, events: list[dict[str, Any]]) -> float:
 
 
 @pytest.mark.db
+@pytest.mark.timing
 def test_a_chunk_of_the_biggest_parts_finishes_within_its_estimate(store: Engine) -> None:
     """The recorder redacts and stores every byte: full parts take longer than their items
     alone say (two of 2 MB took 2.1 to 2.4 s against 1.66 s estimated)."""
@@ -110,6 +112,7 @@ def test_a_chunk_of_the_biggest_parts_finishes_within_its_estimate(store: Engine
 
 
 @pytest.mark.db
+@pytest.mark.timing
 def test_a_chunk_takes_no_longer_late_in_a_long_session(store: Engine) -> None:
     """A Claude Code session is one run, applied an event at a time: an event's work must
     not grow with the spans already stored (50 events took 3.1 s in a 50,000-span run)."""

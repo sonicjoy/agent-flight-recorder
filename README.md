@@ -50,6 +50,8 @@ uv run pyright
 uv run pytest                       # database tests skip if Postgres isn't running
 ```
 
+The commit hook skips the wall-clock tests (`-m "not timing"`), which a busy machine can miss; CI runs them on every pull request.
+
 ## Roadmap
 
 See the [project plan](docs/PLAN.md) and [milestones](https://github.com/sonicjoy/agent-flight-recorder/milestones).

@@ -69,6 +69,7 @@ def test_zip_bomb_across_members_is_refused() -> None:
         otlp.decompress(member + member, "gzip")
 
 
+@pytest.mark.timing
 def test_zip_bomb_is_refused_without_inflating_it() -> None:
     bomb = gzip.compress(b"\x00" * (otlp.MAX_BODY_BYTES * 5))  # 50 MB of zeros, ~50 KB gzipped
 
