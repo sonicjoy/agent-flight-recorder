@@ -19,6 +19,14 @@ def test_openai_gpt_5_5_long_context_rate() -> None:
     assert cost_usd("openai:gpt-5.5", 272_001, 1_000) == pytest.approx(2.76501)
 
 
+def test_openai_gpt_6_luna_rates() -> None:
+    # $0.10 in, $0.50 out, $0.01 cached in per 1M; above 272K input: 2x input and cache, 1.5x out
+    assert cost_usd("openai:gpt-6-luna", 1_000, 500) == pytest.approx(0.00035)
+    assert cost_usd("openai:gpt-6-luna", 0, 0, cache_read=100_000) == pytest.approx(0.001)
+    assert cost_usd("openai:gpt-6-luna", 272_000, 1_000) == pytest.approx(0.0277)
+    assert cost_usd("openai:gpt-6-luna", 272_001, 1_000) == pytest.approx(0.0551502)
+
+
 def test_gemini_free_tier_costs_nothing() -> None:
     assert cost_usd("google_genai:gemini-3.5-flash-lite", 10_000, 10_000) == 0.0
 

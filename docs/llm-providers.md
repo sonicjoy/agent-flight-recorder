@@ -70,6 +70,7 @@ The tables below record the rates when they were last checked by hand; `pricing.
 | `anthropic:claude-fable-5-1` | $10.00 | $50.00 | platform.claude.com/docs/en/about-claude/pricing, 11 Nov 2026 |
 | `openai:gpt-5.4-nano` | $0.20 | $1.25 | [OpenAI pricing](https://developers.openai.com/api/docs/pricing), 5 Nov 2026 |
 | `openai:gpt-5.4-mini` | $0.75 | $4.50 | [OpenAI pricing](https://developers.openai.com/api/docs/pricing), 5 Nov 2026 |
+| `openai:gpt-6-luna` | $0.10, cached $0.01 ($0.20 and $0.02 above 272K input tokens) | $0.50 ($0.75 above 272K) | [OpenAI model page](https://developers.openai.com/api/docs/models/gpt-6-luna), 27 Nov 2026 |
 | `openai:gpt-5.5` | $5.00 ($10.00 above 272K input tokens) | $30.00 ($45.00 above 272K) | [OpenAI pricing](https://developers.openai.com/api/docs/pricing), 5 Nov 2026 |
 | `google_genai:gemini-3.8-flash` | free tier | free tier | [AI Studio pricing](https://aistudio.google.com/docs/pricing), 5 Nov 2026 |
 | `google_genai:gemini-3.5-flash-lite` | free tier | free tier | [AI Studio pricing](https://aistudio.google.com/docs/pricing), 5 Nov 2026 |
