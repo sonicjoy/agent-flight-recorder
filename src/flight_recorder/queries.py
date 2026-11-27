@@ -193,6 +193,27 @@ def _plain(value: str | None, name: str) -> str | None:
     return value
 
 
+ATTR_KEYS = 20
+ATTR_VALUES = 100
+
+
+def _attrs(attrs: dict[str, list[str]]) -> dict[str, tuple[str, ...]]:
+    """An attribute filter, checked: a key and at least one value each, all text without NUL,
+    and capped, so a huge filter is a clear refusal, not a slow search or a driver error."""
+    if len(attrs) > ATTR_KEYS:
+        raise QueryError(f"attrs takes at most {ATTR_KEYS} keys")
+    checked: dict[str, tuple[str, ...]] = {}
+    for key, values in attrs.items():
+        if not cast("str", _plain(key, "an attrs key")):
+            raise QueryError("an attrs key can't be empty")
+        if not values:
+            raise QueryError(f"attrs {key!r} needs at least one value")
+        if len(values) > ATTR_VALUES:
+            raise QueryError(f"attrs takes at most {ATTR_VALUES} values per key")
+        checked[key] = tuple(cast("str", _plain(v, f"attrs {key!r}")) for v in values)
+    return checked
+
+
 def _resolve(session: Session, ref: str, now: datetime) -> RunSummary:
     ref = cast("str", _plain(ref, "run")).strip()
     if not ref:
@@ -378,9 +399,11 @@ def search_runs(
     since: str | None = None,
     until: str | None = None,
     limit: int = 10,
+    attrs: dict[str, list[str]] | None = None,
     now: datetime,
 ) -> Result:
-    """Runs that match a description, by meaning and by exact words, best first."""
+    """Runs that match a description, by meaning and by exact words, best first. `attrs`
+    keeps runs whose attribute equals one of the listed values, for each key."""
     if not cast("str", _plain(query, "query")).strip():
         raise QueryError("say what to look for")
     if status is not None and status not in SEARCHABLE_STATES:
@@ -394,6 +417,7 @@ def search_runs(
         since=_when(since, now, "since"),
         until=_when(until, now, "until"),
         limit=limit,
+        attrs=_attrs(attrs or {}),
     )
     empty = not has_vectors(session, embedder.model)
     hits = [] if empty else search(session, embedder, query.strip(), where, now)

@@ -28,7 +28,13 @@ Run it after recording, or on a schedule. It prints what it did, for example `em
 
 One line per run, best first. Each line has the id, start time, agent, name, status, how it matched and its similarity score. When a run's best match was one of its failures, the failed span and its error are shown under it.
 
-The same filters as `afr runs list` (`--source`, `--agent`, `--status`, `--since`, `--until`), plus `--limit` (default 10, at most 100). `--status` takes `ok`, `error`, `unset` or `unfinished`; running runs aren't embedded yet. It only reads. If settled runs haven't been embedded yet, it says how many: `2 settled runs aren't embedded yet; run afr embed`.
+The same filters as `afr runs list` (`--source`, `--agent`, `--status`, `--since`, `--until`), plus `--limit` (default 10, at most 100). `--attr KEY=VALUE` keeps runs whose attribute has that value, as in `afr label --next`; repeat a key for any of several values. A run's summary says what it decided but never whether that was right, so a description alone can't find wrong runs (the [#14 retrieval check](evals/error-analysis.md#can-search-find-these-runs)). The triager records its grade on each run, so this finds wrong duplicate links:
+
+```bash
+uv run afr search "marked as a duplicate" --agent issue-triager --attr triager.grade.duplicate_of=wrong
+```
+
+The MCP server's `search_runs` takes the same filter as `attrs`, a key to a list of values. `--status` takes `ok`, `error`, `unset` or `unfinished`; running runs aren't embedded yet. It only reads. If settled runs haven't been embedded yet, it says how many: `2 settled runs aren't embedded yet; run afr embed`.
 
 **Hybrid ranking.** Two searches run over the embedded texts that pass the filters:
 - **Meaning:** cosine similarity between the query's vector and each text's (pgvector, HNSW index). "tool timed out while fetching" finds `ReadTimeout: read timed out` without sharing many words with it.

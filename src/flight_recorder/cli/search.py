@@ -11,7 +11,13 @@ from rich.table import Table
 from rich.text import Text
 
 from flight_recorder.cli import render
-from flight_recorder.cli.runs import _choice, open_store, parse_when  # pyright: ignore[reportPrivateUsage]
+from flight_recorder.cli.runs import (
+    ATTR_HELP,
+    _choice,  # pyright: ignore[reportPrivateUsage]
+    open_store,
+    parse_attrs,
+    parse_when,
+)
 
 if TYPE_CHECKING:
     from flight_recorder.search.query import Hit
@@ -58,6 +64,7 @@ def search(
     ] = None,
     until: Annotated[str | None, typer.Option(help="Started before: the same forms.")] = None,
     limit: Annotated[int, typer.Option(min=1, max=100, help="How many runs.")] = 10,
+    attr: Annotated[list[str] | None, typer.Option(help=ATTR_HELP)] = None,
 ) -> None:
     """Runs that match a description: by meaning (embeddings) and by exact words."""
     from flight_recorder.search import embedder as embedders
@@ -76,6 +83,7 @@ def search(
         since=parse_when(since, now) if since else None,
         until=parse_when(until, now) if until else None,
         limit=limit,
+        attrs=parse_attrs(attr or []),
     )
     model = embedders.default_embedder()
     with open_store() as session:

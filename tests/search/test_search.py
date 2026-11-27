@@ -23,7 +23,7 @@ from typer.testing import CliRunner
 from flight_recorder.cli import app
 from flight_recorder.redact import Redactor
 from flight_recorder.store.db import upgrade
-from flight_recorder.store.models import Embedding
+from flight_recorder.store.models import Embedding, Run
 from flight_recorder.store.read import RunFilter
 from flight_recorder.store.write import RunIn, SpanIn, record_run
 
@@ -731,3 +731,46 @@ def test_search_keeps_scanning_the_vector_index_under_filters(
     search(db, fake, "timeout", RunFilter(limit=30), datetime.now(UTC))
     assert db.scalar(text("SHOW hnsw.iterative_scan")) == "strict_order"
     assert db.scalar(text("SHOW hnsw.ef_search")) == "630"  # 21 texts per run x 30 runs
+
+
+def graded_runs(db: Session, fake: FakeEmbedder) -> None:
+    """Two triager runs that read the same, one graded wrong and one right (#57)."""
+    from flight_recorder.search.index import embed_runs
+
+    for external_id, grade in (("dup-wrong", "wrong"), ("dup-right", "right")):
+        record(db, external_id, [span("root", None, 0, output="duplicate_of: 14")],
+               name="marked as a duplicate", started_at=at(30), agent="issue-triager",
+               attributes={"triager.grade.duplicate_of": grade})  # fmt: skip
+    embed_runs(db, fake)
+    db.commit()
+
+
+def test_search_attr_keeps_only_runs_with_that_attribute(
+    cli: Callable[..., Any], db: Session, fake: FakeEmbedder
+) -> None:
+    graded_runs(db, fake)
+
+    result = cli("search", "marked as a duplicate", "--agent", "issue-triager",
+                 "--attr", "triager.grade.duplicate_of=wrong")  # fmt: skip
+
+    assert result.exit_code == 0, result.output
+    shown = {line.split()[0] for line in result.output.splitlines()[1:] if line.strip()}
+    wrong = str(db.scalar(select(Run.id).where(Run.external_id == "dup-wrong")))[:8]
+    right = str(db.scalar(select(Run.id).where(Run.external_id == "dup-right")))[:8]
+    assert wrong in shown and right not in shown
+
+
+def test_search_attr_repeats_like_afr_label(
+    cli: Callable[..., Any], db: Session, fake: FakeEmbedder
+) -> None:
+    graded_runs(db, fake)
+
+    either = cli("search", "marked as a duplicate", "--attr", "triager.grade.duplicate_of=wrong",
+                 "--attr", "triager.grade.duplicate_of=right")  # fmt: skip
+    bad = cli("search", "marked as a duplicate", "--attr", "no-equals")
+
+    assert either.exit_code == 0
+    for external_id in ("dup-wrong", "dup-right"):
+        short = str(db.scalar(select(Run.id).where(Run.external_id == external_id)))[:8]
+        assert short in either.output
+    assert bad.exit_code == 2 and "KEY=VALUE" in bad.output
