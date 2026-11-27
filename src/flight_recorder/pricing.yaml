@@ -5,7 +5,7 @@
 # The date these prices were last changed. Each priced span stores it (spans.pricing_version),
 # so its cost can be recomputed from this file at that version. `afr pricing check --write`
 # sets it when it changes a Claude rate; set it by hand when you change a price.
-version: "2026-11-11"
+version: "2026-11-27"
 
 models:
   # Cache writes are 1.25x input (5-minute cache) or 2x (1 hour). Cache reads vary by model:
@@ -57,6 +57,15 @@ models:
   openai:gpt-5.4-mini:
     input: 0.75
     output: 4.50
+  openai:gpt-6-luna:
+    input: 0.10
+    output: 0.50
+    cache_read: 0.01
+    long_context:
+      above_input_tokens: 272000
+      input: 0.20
+      output: 0.75
+      cache_read: 0.02
   openai:gpt-5.5:
     input: 5.00
     output: 30.00
