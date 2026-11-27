@@ -87,6 +87,9 @@ def run_state(run: Run, last_change: datetime, now: datetime) -> RunState:
     return "running" if now - last_change <= RUNNING_WINDOW else "unfinished"
 
 
+EVERY_RUN = 100_000  # a limit for reads that must never be cut at a page size
+
+
 @dataclass(frozen=True)
 class RunFilter:
     source: str | None = None

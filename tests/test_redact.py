@@ -586,6 +586,7 @@ ADVERSARIAL = {
 }
 
 
+@pytest.mark.timing
 @pytest.mark.parametrize("text", ADVERSARIAL.values(), ids=ADVERSARIAL.keys())
 def test_matching_stays_fast_on_hostile_input(redactor: Redactor, text: str) -> None:
     """Redaction runs on untrusted agent output; a slow regex would stall ingest."""
@@ -595,6 +596,7 @@ def test_matching_stays_fast_on_hostile_input(redactor: Redactor, text: str) -> 
     assert time.perf_counter() - started < 2.0
 
 
+@pytest.mark.timing
 def test_dict_keys_stay_fast_on_hostile_input(redactor: Redactor) -> None:
     value = {"a_" * 100_000 + "token": "x" * 10, "aPassword" * 40_000: "y" * 10}
 

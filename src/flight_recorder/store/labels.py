@@ -22,7 +22,7 @@ from sqlalchemy import String, and_, cast, delete, func, select, text, update
 from sqlalchemy.dialects.postgresql import aggregate_order_by, insert
 from sqlalchemy.orm import Session, aliased
 
-from flight_recorder.payloads import DECIDED, NONE_TEXT, value_text
+from flight_recorder.payloads import ACCEPTED, DECIDED, EXPECTED, NONE_TEXT, value_text
 from flight_recorder.redact import Redactor
 from flight_recorder.store.models import Label, Run, Span
 
@@ -226,12 +226,37 @@ def mode_counts(session: Session, source: str = HUMAN) -> list[ModeCount]:
 # --- the right answer (#59) -------------------------------------------------------------
 
 
+def _by_field(attributes: dict[str, Any], pattern: re.Pattern[str]) -> dict[str, Any]:
+    found = [(m["field"], key) for key in sorted(attributes) if (m := pattern.fullmatch(key))]
+    names = [field for field, _ in found]
+    return {(f if names.count(f) == 1 else key): attributes[key] for f, key in found}
+
+
 def decided_fields(attributes: dict[str, Any]) -> dict[str, Any]:
     """The agent's decisions, `<prefix>.decided.<field>`, keyed by `<field>` (dots kept), or
     by the whole attribute when two prefixes decide a field of the same name."""
-    found = [(m["field"], key) for key in sorted(attributes) if (m := DECIDED.fullmatch(key))]
-    names = [field for field, _ in found]
-    return {(f if names.count(f) == 1 else key): attributes[key] for f, key in found}
+    return _by_field(attributes, DECIDED)
+
+
+def expected_fields(attributes: dict[str, Any]) -> dict[str, Any]:
+    """The recorded truth, `<prefix>.expected.<field>`, keyed as `decided_fields` keys."""
+    return _by_field(attributes, EXPECTED)
+
+
+def accepted_fields(attributes: dict[str, Any]) -> dict[str, list[Any]]:
+    """Other answers the truth accepts, `<prefix>.accepted.<field>`, as a list per field."""
+    found = _by_field(attributes, ACCEPTED)
+    return {k: typed("list[Any]", v) if isinstance(v, list) else [v] for k, v in found.items()}
+
+
+TRUTH_MODES = ("bad-real-truth", "bad-synthetic-truth", "debatable-truth")
+"""Modes that say the recorded truth was wrong, not the agent (docs/evals/error-analysis.md)."""
+
+
+def has_truth_problem(session: Session, run_id: uuid.UUID) -> bool:
+    """Whether a human labelled the run itself with a truth mode, in any spelling."""
+    keys = {mode_key(session, mode) for mode in TRUTH_MODES}
+    return bool(modes_of(session, run_id) & keys)
 
 
 def answer_line(answer: dict[str, Any]) -> str:

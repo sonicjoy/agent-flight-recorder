@@ -51,7 +51,29 @@ def flat_text(value: Any, limit: int) -> str:
 # The convention any agent can use to show its decision next to the truth: an attribute
 # `<prefix>.decided.<field>`, and `<prefix>.expected.<field>` (docs/cli.md).
 DECIDED = re.compile(r"(?P<prefix>.+)\.decided\.(?P<field>.+)")
+EXPECTED = re.compile(r"(?P<prefix>.+)\.expected\.(?P<field>.+)")
+# Other answers the truth accepts, each one string (a list field's joined by ", ")
+ACCEPTED = re.compile(r"(?P<prefix>.+)\.accepted\.(?P<field>.+)")
 NONE_TEXT = "(none)"  # how an empty list reads, and how the triager writes an empty decision
+
+
+def none_as_null(value: Any) -> Any:
+    """A recorded field value with the recorder's "nothing" (`(none)`: span attributes can't
+    hold null) as null. Free text and agent output never go through this."""
+    return None if value == NONE_TEXT else value
+
+
+def decided_expected_pairs(attributes: dict[str, Any]) -> list[tuple[str, str, str, str]]:
+    """(prefix, field, decided key, expected key) for each `<p>.decided.<f>` that has a
+    `<p>.expected.<f>`, in key order."""
+    found: list[tuple[str, str, str, str]] = []
+    for key in sorted(attributes):
+        match = DECIDED.fullmatch(key)
+        if match:
+            expected_key = f"{match['prefix']}.expected.{match['field']}"
+            if expected_key in attributes:
+                found.append((match["prefix"], match["field"], key, expected_key))
+    return found
 
 
 def value_text(value: object) -> str:

@@ -639,6 +639,7 @@ def test_a_very_deep_tree_renders_and_replays() -> None:
     rendered(render.span_tree([root]), render.step(last, 3000, 3000, T0, None))
 
 
+@pytest.mark.timing
 def test_many_parent_loops_are_cut_quickly() -> None:
     import time as clock
 
@@ -800,6 +801,7 @@ def test_content_never_makes_strings_look_like_structure() -> None:
     assert _pretty({"plain": "just words"}) == ["plain: just words"]
 
 
+@pytest.mark.timing
 def test_deep_chains_filter_and_replay_in_linear_time() -> None:
     import time as clock
 

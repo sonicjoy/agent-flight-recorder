@@ -9,7 +9,7 @@ An open-source tool that records every AI agent run, replays it as a timeline, f
 - **Record**: capture runs from Claude Code hooks and OpenTelemetry traces through a FastAPI ingest API, with secrets and PII redacted before storage.
 - **Store**: runs, spans, tool calls, tokens and cost in Postgres, with pgvector embeddings for searching runs by meaning.
 - **Replay**: a CLI and a React timeline UI to step through any run.
-- **Analyse**: a LangGraph analyst agent that clusters failed runs by cause and drafts eval cases.
+- **Analyse**: `afr analyse` groups an agent's failed runs by exactly how they went wrong, has a cheap model name each group, and drafts eval cases you approve.
 - **Guard**: an eval harness and red-team set that run in CI so regressions fail the build.
 - **Query**: an MCP server so agents can search past runs and ask "why did run X fail?"
 
@@ -49,6 +49,8 @@ uv run ruff check && uv run ruff format --check
 uv run pyright
 uv run pytest                       # database tests skip if Postgres isn't running
 ```
+
+The commit hook skips the wall-clock tests (`-m "not timing"`), which a busy machine can miss; CI runs them on every pull request.
 
 ## Roadmap
 

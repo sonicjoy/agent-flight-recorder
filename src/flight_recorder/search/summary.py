@@ -136,7 +136,7 @@ def _from_model_calls(session: Session, roots: list[SpanNode]) -> tuple[Any, Any
     return asked, answered
 
 
-def _failure_line(node: SpanNode) -> str:
+def failure_line(node: SpanNode) -> str:
     return f"{node.kind} {node.name} failed: {flat_text(node.error, ERROR_CHARS)}"
 
 
@@ -162,7 +162,7 @@ def documents(session: Session, run: Run, state: str) -> list[Document]:
             f"status: {state}",
             f"asked: {flat_text(asked, INPUT_CHARS)}" if asked else "",
             f"answered: {flat_text(answered, OUTPUT_CHARS)}" if answered else "",
-            *(_failure_line(n) for n in failures[:MAX_IN_SUMMARY]),
+            *(failure_line(n) for n in failures[:MAX_IN_SUMMARY]),
             *(_refused_line(n) for n in refused[:MAX_IN_SUMMARY]),
             f"tools: {', '.join(t for t, _ in tools.most_common(MAX_TOOLS))}" if tools else "",
         ]
@@ -171,7 +171,7 @@ def documents(session: Session, run: Run, state: str) -> list[Document]:
     for node in failures[:MAX_FAILURES]:
         given = span_content(session, node.id).input
         lines = [
-            _failure_line(node),
+            failure_line(node),
             f"in {agent} run: {name}",
             f"input: {flat_text(given, INPUT_CHARS)}" if given else "",
         ]
