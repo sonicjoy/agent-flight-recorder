@@ -37,3 +37,6 @@ Thumbs.db
 
 # Eval cases that may hold personal content, such as from Claude Code sessions (#59)
 evals/cases/local/
+
+# afr analyse's decisions logs name runs from your own store
+evals/analyst-log/

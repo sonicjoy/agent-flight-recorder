@@ -158,9 +158,9 @@ checks:
   - {type: equals, field: milestone, value: "Week 3"}
 ```
 
-- **`expected`** is the run's right answer from its labels (a run keeps one, the last given), by field, or `answer: <text>`. With none, it's what the agent did and the case says `unreviewed: true`: fix it, then delete the line. What the agent did is its decided fields, else its output as recorded: the entry span's output, a Claude Code session's last reply, or for a LangChain run whose entry span recorded none, its structured output as fields (a tool call no tool ran), else what its last model call said, in full.
+- **`expected`** is the run's right answer from its labels (a run keeps one, the last given), by field, or `answer: <text>`. With none, it's the run's recorded truth (`<prefix>.expected.<field>`), unless you labelled the run with a truth-quality mode (`bad-real-truth`, `bad-synthetic-truth`, `debatable-truth`). With neither, it's what the agent did and the case says `unreviewed: true`: fix it, then delete the line. What the agent did is its decided fields, else its output as recorded: the entry span's output, a Claude Code session's last reply, or for a LangChain run whose entry span recorded none, its structured output as fields (a tool call no tool ran), else what its last model call said, in full.
 - **Types:** `expected` follows the attributes. The recorder's "nothing", the text `(none)` (span attributes can't hold null), is written as `null` when it comes from a decided field or a typed answer's field; free text keeps it. `null` matches an agent's `null`, a missing field or `[]` in [`afr eval`](#afr-eval-run-and-afr-eval-grade).
-- **`checks`** is one `equals` per expected field, to edit by hand: free text rarely matches exactly.
+- **`checks`** is one `equals` per expected field, to edit by hand: free text rarely matches exactly. A field whose recorded truth has accepted alternatives (`<prefix>.accepted.<field>`, a list field's joined by `, `) gets a `one_of` over the truth and those alternatives instead.
 - It prints the whole case first (control characters escaped), then asks `write it?`. Redaction catches secret shapes, not everything personal (home paths, names, hostnames, passwords written in prose), so read it before it goes into git.
 
 **Safety.** Cases go into git, and the repo will be public. The rules are in `flight_recorder.evals.cases`, which the analyst (#22) uses too:
@@ -178,6 +178,16 @@ checks:
 | `--fake`, `--keep-placeholders` | What to do with redacted values (above) |
 | `--root` | The cases folder (default `evals/cases`) |
 | `--yes` | Write without asking |
+
+## `afr analyse`
+
+Groups an agent's failed runs by exactly how they went wrong and writes an eval case for each representative run of the groups you keep. See [analyst.md](analyst.md).
+
+```bash
+uv run afr analyse --agent issue-triager --attr triager.grade=wrong
+```
+
+`--agent` is required. `--attr KEY=VALUE` (repeatable, as in `afr label --next`) adds runs matching every attribute to the error runs; `--suite` (default `drafts`) and `--root` (default `evals/cases`) say where cases go; `--model` names the model that names groups (default `AFR_LLM_CHEAP_MODEL`). It needs a terminal: it asks which groups to keep and never keeps any by itself. Exit codes: 0 done, including nothing kept; 1 no failed runs, failed runs with no difference to group, a case write failed (cases already written stay, and the log lists them), or the log couldn't be written; 2 a bad option, no terminal, a bad model spec or missing key, or the store unreachable.
 
 ## `afr eval run` and `afr eval grade`
 

@@ -37,7 +37,6 @@ labels_app = typer.Typer(
 SEED = 14
 # another labeller got there first: unique violation, deadlock, serialization failure
 RACED = ("23505", "40P01", "40001")
-EVERY_RUN = 100_000
 SKIP, QUIT = "s", "q"
 NUMBER = re.compile(r"[0-9]{1,6}")  # ASCII only (str.isdigit() also takes ²), and short
 
@@ -292,7 +291,7 @@ def _queue(
     redactor: Redactor,
 ) -> None:
     from flight_recorder.store.labels import decided_fields, labelled_runs, sample
-    from flight_recorder.store.read import RunFilter, find_runs
+    from flight_recorder.store.read import EVERY_RUN, RunFilter, find_runs
 
     now = datetime.now(UTC)
     where = RunFilter(agent=agent, attrs=where_attrs, limit=EVERY_RUN)
