@@ -1,0 +1,119 @@
+"""The analyst's items and signatures (#22, docs/designs/analyst.md §2)."""
+
+from __future__ import annotations
+
+import random
+from typing import Any
+
+import pytest
+
+from flight_recorder.analyst.items import error_signature, graded_items, signature
+
+RUN = "11111111-2222-3333-4444-555555555555"
+STARTED = "2026-11-12T09:00:00+00:00"
+
+
+def items(attributes: dict[str, Any]) -> list[dict[str, Any]]:
+    return graded_items(RUN, STARTED, attributes)
+
+
+@pytest.mark.parametrize(
+    ("decided", "expected", "wanted"),
+    [
+        (["a", "b"], ["a"], "labels:extra"),  # added, missed none
+        (["a"], ["a", "b"], "labels:missed"),  # missed, added none
+        (["a", "c"], ["a", "b"], "labels:wrong"),  # both
+        (["a"], None, "labels:extra"),  # the truth is empty
+        (None, ["a"], "labels:missed"),  # the agent's value is empty
+        (["b"], ["a"], "labels:wrong"),
+    ],
+)
+def test_a_list_fields_signature_says_what_the_agent_added_or_missed(
+    decided: Any, expected: Any, wanted: str
+) -> None:
+    assert signature("labels", decided, expected) == wanted
+
+
+@pytest.mark.parametrize(
+    ("decided", "expected", "wanted"),
+    [
+        ("25", None, "duplicate_of:extra"),
+        (None, "25", "duplicate_of:missed"),
+        ("25", "7", "duplicate_of:wrong"),
+    ],
+)
+def test_a_single_fields_signature_says_extra_missed_or_wrong(
+    decided: Any, expected: Any, wanted: str
+) -> None:
+    assert signature("duplicate_of", decided, expected) == wanted
+
+
+def test_a_graded_run_gives_one_item_per_wrong_field_in_the_recorded_formats() -> None:
+    found = items({
+        "triager.decided.labels": ["evals", "infra"], "triager.expected.labels": ["evals"],
+        "triager.decided.duplicate_of": "25", "triager.expected.duplicate_of": "(none)",
+        "triager.decided.milestone": "Week 3", "triager.expected.milestone": "Week 3",
+        "triager.grade": "wrong",
+    })  # fmt: skip
+
+    assert found == [
+        {"id": f"{RUN}#duplicate_of", "run": RUN, "started": STARTED,
+         "signature": "duplicate_of:extra", "text": "duplicate_of: decided 25; expected (none)"},
+        {"id": f"{RUN}#labels", "run": RUN, "started": STARTED, "signature": "labels:extra",
+         "text": "labels: decided evals, infra; expected evals"},
+    ]  # fmt: skip
+
+
+def test_the_grade_key_decides_which_fields_are_wrong_when_present() -> None:
+    found = items({
+        "triager.decided.labels": ["evals", "infra"], "triager.expected.labels": ["evals"],
+        "triager.grade.labels": "ok",  # matched an accepted answer
+        "triager.decided.milestone": "Week 2", "triager.expected.milestone": "Week 2",
+        "triager.grade.milestone": "wrong",
+    })  # fmt: skip
+
+    assert [i["signature"] for i in found] == ["milestone:wrong"]
+
+
+def test_without_a_grade_key_a_decision_matching_an_accepted_answer_is_not_wrong() -> None:
+    found = items({
+        "triager.decided.labels": ["evals", "infra"], "triager.expected.labels": ["evals"],
+        "triager.accepted.labels": ["evals, infra"],
+        "triager.decided.labels_none": "(none)", "triager.expected.labels_none": [],
+    })  # fmt: skip
+
+    assert found == []  # accepted, and (none) is the same nothing as []
+
+
+def test_a_failed_run_with_no_decision_gives_no_graded_items() -> None:
+    assert items({"triager.expected.labels": ["evals"], "triager.grade": "failed"}) == []
+
+
+def test_the_error_signature_keeps_the_class_and_drops_the_numbers() -> None:
+    assert error_signature("llm", "ChatOpenAI", "RateLimitError: 429 retry in 12s") == (
+        "error:llm:ChatOpenAI:RateLimitError"
+    )
+    timeout = error_signature("tool", "fetch", "timeout after 30s")
+    assert timeout == "error:tool:fetch:timeout after 00s"
+    assert error_signature("tool", "fetch", None) == "error:tool:fetch:unknown"
+    assert len(error_signature("tool", "f", "x" * 100)) == len("error:tool:f:") + 40
+
+
+def test_items_are_the_same_every_time_and_never_carry_unrecorded_text() -> None:
+    """Property, seeded: graded items depend only on the attributes given, come out the same
+    on every call, and name only the fields and values recorded."""
+    rng = random.Random(22)
+    values: list[Any] = ["a", "b", "(none)", ["a"], ["a", "b"], [], "Week 3"]
+    for _ in range(300):
+        attributes: dict[str, Any] = {}
+        for field in rng.sample(["labels", "milestone", "duplicate_of"], rng.randint(1, 3)):
+            attributes[f"p.decided.{field}"] = rng.choice(values)
+            attributes[f"p.expected.{field}"] = rng.choice(values)
+            if rng.random() < 0.3:
+                attributes[f"p.grade.{field}"] = rng.choice(["ok", "wrong"])
+        first = items(dict(attributes))
+        assert first == items(dict(reversed(list(attributes.items()))))
+        for item in first:
+            field = item["id"].split("#", 1)[1]
+            assert item["signature"].split(":", 1)[0] == field
+            assert attributes.get(f"p.grade.{field}", "wrong") == "wrong"

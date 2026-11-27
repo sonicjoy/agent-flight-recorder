@@ -340,3 +340,56 @@ def test_load_refuses_yaml_aliases_which_can_expand_without_bound() -> None:
     bomb = "a: &a [x, x]\nb: &b [*a, *a]\nc: [*b, *b]\n"
     with pytest.raises(CaseError, match="aliases"):
         load(bomb)
+
+
+# --- the recorded truth's checks (#22) ------------------------------------------------------
+
+
+def test_accepted_entries_are_decoded_by_the_truths_shape() -> None:
+    from flight_recorder.evals.cases import truth_checks
+
+    expected, checks = truth_checks(
+        {"labels": ["a"], "milestone": "(none)", "dup": "7"},
+        {"labels": ["a, b", "(none)", "a"], "milestone": ["Week 2"], "dup": ["(none)"]},
+    )
+
+    assert expected == {"dup": "7", "labels": ["a"], "milestone": None}
+    assert checks == [
+        {"type": "one_of", "field": "dup", "values": ["7", None]},
+        {"type": "one_of", "field": "labels", "values": [["a"], ["a", "b"], []]},
+        {"type": "one_of", "field": "milestone", "values": [None, "Week 2"]},
+    ]
+
+
+def test_a_truth_check_passes_the_truth_and_the_accepted_and_fails_any_other_decision() -> None:
+    """Property, over seeded random cases: the check is the truth (or a one_of led by it); it
+    passes the truth and every accepted answer, and fails a decision that is neither."""
+    import random
+
+    from flight_recorder.evals.cases import truth_checks
+    from flight_recorder.evals.checks import run_checks, same
+
+    rng = random.Random(22)
+    words = ["a", "b", "c", "(none)"]
+    for _ in range(500):
+        listy = rng.random() < 0.5
+
+        def value(listy: bool = listy) -> Any:
+            if listy:
+                picked = sorted(set(rng.sample(["a", "b", "c"], rng.randint(0, 3))))
+                return picked or "(none)"
+            return rng.choice(words)
+
+        truth = value()
+        accepted = [", ".join(v) if isinstance(v, list) else v for v in
+                    (value() for _ in range(rng.randint(0, 3)))]  # fmt: skip
+        expected, [check] = truth_checks({"f": truth}, {"f": accepted} if accepted else {})
+        decoded_truth = expected["f"]
+        allowed = check["values"] if check["type"] == "one_of" else [check["value"]]
+        assert same(allowed[0], decoded_truth)
+        for good in allowed:
+            assert all(r.passed for r in run_checks([check], {"f": good}))
+        decision = value()
+        decided = None if decision == "(none)" else decision
+        if not any(same(decided, a) for a in allowed):
+            assert not any(r.passed for r in run_checks([check], {"f": decided}))

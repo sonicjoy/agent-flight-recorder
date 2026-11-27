@@ -22,7 +22,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
 
-from flight_recorder.payloads import DECIDED, cut, flat, value_text
+from flight_recorder.payloads import cut, decided_expected_pairs, flat, value_text
 from flight_recorder.safe_text import clean
 
 if TYPE_CHECKING:
@@ -445,23 +445,10 @@ def _clock(offset: timedelta) -> str:
 NOISE_PREFIXES = ("telemetry.", "service.instance.", "openinference.")
 
 
-def _pairs(attributes: dict[str, Any]) -> list[tuple[str, str, str, str]]:
-    """(prefix, field, decided key, expected key) for each `<p>.decided.<f>` that has a
-    `<p>.expected.<f>`, in key order."""
-    found: list[tuple[str, str, str, str]] = []
-    for key in sorted(attributes):
-        match = DECIDED.fullmatch(key)
-        if match:
-            expected_key = f"{match['prefix']}.expected.{match['field']}"
-            if expected_key in attributes:
-                found.append((match["prefix"], match["field"], key, expected_key))
-    return found
-
-
 def decision_rows(attributes: dict[str, Any]) -> Text:
     """One row per decided/expected pair, both sides named: `agent X  ≠  truth Y`."""
     lines = Text()
-    for prefix, field, decided_key, expected_key in _pairs(attributes):
+    for prefix, field, decided_key, expected_key in decided_expected_pairs(attributes):
         decided = value_text(attributes[decided_key])
         expected = value_text(attributes[expected_key])
         same = decided == expected
@@ -479,7 +466,7 @@ def decision_rows(attributes: dict[str, Any]) -> Text:
 def truth_source(attributes: dict[str, Any]) -> Text | None:
     """Where the truth came from, for the `agent vs truth` heading: `truth from a synthetic
     case (s65)`, from `<p>.case_source` and `<p>.case`. A synthetic case stands out."""
-    for prefix, *_ in _pairs(attributes):
+    for prefix, *_ in decided_expected_pairs(attributes):
         source = attributes.get(f"{prefix}.case_source")
         if source is None:
             continue
@@ -496,7 +483,7 @@ def truth_source(attributes: dict[str, Any]) -> Text | None:
 
 def other_attributes(attributes: dict[str, Any]) -> Text:
     """Every attribute that isn't a decided/expected pair or SDK noise."""
-    paired = {key for _, _, *keys in _pairs(attributes) for key in keys}
+    paired = {key for _, _, *keys in decided_expected_pairs(attributes) for key in keys}
     lines = Text()
     for key in sorted(attributes):
         if key in paired or key.startswith(NOISE_PREFIXES):

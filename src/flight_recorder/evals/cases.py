@@ -15,7 +15,8 @@ Cases go into git, and the repo is public, so the safety rules live here, not in
   with a safe loader that also refuses aliases.
 
 A case is `id`, `from_run`, `tags`, `input`, `expected` and `checks` (#15's format), plus
-`unreviewed: true` when `expected` is only what the agent did, and `placeholders: true`.
+`unreviewed: true` when `expected` is only what the agent did, and `placeholders: true`. A
+field's check is `equals`, or `one_of` when the recorded truth accepts other answers.
 """
 
 from __future__ import annotations
@@ -297,6 +298,38 @@ def agent_output(session: Session, run: Run, roots: list[SpanNode]) -> dict[str,
     return {}
 
 
+def accepted_value(truth: Any, entry: Any) -> Any:
+    """One accepted alternative in the truth's shape: a list field's entry is one string
+    joined by ", " (the triager's format), and `(none)` is nothing."""
+    from flight_recorder.payloads import NONE_TEXT
+
+    if isinstance(truth, list) and isinstance(entry, str):
+        return [] if entry == NONE_TEXT else entry.split(", ")
+    return None if entry == NONE_TEXT else entry
+
+
+def truth_checks(
+    truth: dict[str, Any], accepted: dict[str, list[Any]]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """The expected fields and their checks from a recorded truth: `equals` the truth, or
+    `one_of` the truth then each accepted alternative not already listed."""
+    from flight_recorder.evals.checks import same
+
+    expected = dict(sorted(_decoded(truth).items()))
+    checks: list[dict[str, Any]] = []
+    for field, value in expected.items():
+        values = [value]
+        for entry in accepted.get(field, []):
+            alternative = accepted_value(truth[field], entry)
+            if not any(same(alternative, v) for v in values):
+                values.append(alternative)
+        if len(values) == 1:
+            checks.append({"type": "equals", "field": field, "value": value})
+        else:
+            checks.append({"type": "one_of", "field": field, "values": values})
+    return expected, checks
+
+
 def draft_case(
     session: Session,
     run_id: uuid.UUID,
@@ -305,12 +338,21 @@ def draft_case(
     redactor: Redactor,
     case_id: str | None = None,
 ) -> Draft:
-    """The case a recorded run makes: its input; the right answer from its labels, else what
-    the agent did (`unreviewed`); an `equals` check per expected field; its failure modes as
-    tags; all redacted again by `redactor`. Raises CaseError for a bad id or a run with no
+    """The case a recorded run makes: its input; the right answer from its labels, else the
+    recorded truth (`<prefix>.expected.*`, with its accepted alternatives as `one_of`) unless a
+    human marked that truth as bad, else what the agent did (`unreviewed`); its failure modes
+    as tags; all redacted again by `redactor`. Raises CaseError for a bad id or a run with no
     recorded input."""
     from flight_recorder.search.summary import conversation
-    from flight_recorder.store.labels import HUMAN, answer_of, decided_fields, labels_of
+    from flight_recorder.store.labels import (
+        HUMAN,
+        accepted_fields,
+        answer_of,
+        decided_fields,
+        expected_fields,
+        has_truth_problem,
+        labels_of,
+    )
     from flight_recorder.store.models import Run
     from flight_recorder.store.read import span_tree
 
@@ -324,6 +366,10 @@ def draft_case(
     if asked is None or asked == "":
         raise CaseError(f"run {str(run_id)[:8]} has no recorded input to replay")
     answer = answer_of(session, run.id)
+    attributes = run.attributes or {}
+    truth = expected_fields(attributes)
+    checks: list[dict[str, Any]] | None = None
+    unreviewed = False
     if answer is not None:
         found = answer.get("fields")
         expected = (
@@ -331,23 +377,28 @@ def draft_case(
             if found is not None
             else {"answer": answer.get("text")}
         )
+    elif truth and not has_truth_problem(session, run.id):
+        expected, checks = truth_checks(truth, accepted_fields(attributes))
     else:
-        decided = decided_fields(run.attributes or {})
+        unreviewed = True
+        decided = decided_fields(attributes)
         expected = _decoded(decided) if decided else agent_output(session, run, roots)
     tags = list(dict.fromkeys(
         label.failure_mode for label in labels_of(session, run.id)
         if label.source == HUMAN and label.span_id is None
     ))  # fmt: skip
     # the recorded parts, again: not the ids, which a pattern may take for a secret
-    recorded = redactor.redact({"input": _input(asked), "expected": expected, "tags": tags})
+    recorded = redactor.redact({"input": _input(asked), "expected": expected, "tags": tags,
+                                "checks": checks})  # fmt: skip
     parts = cast("dict[str, Any]", recorded.value)
     expected = dict(sorted(parts["expected"].items()))  # JSONB keeps its own key order
     case: dict[str, Any] = {"id": case_id, "from_run": run.external_id, "tags": parts["tags"]}
-    if answer is None:
+    if unreviewed:
         case["unreviewed"] = True  # expected is what the agent did, not the right answer
     case |= {
         "input": parts["input"],
         "expected": expected,
-        "checks": [{"type": "equals", "field": k, "value": v} for k, v in expected.items()],
+        "checks": parts["checks"]
+        or [{"type": "equals", "field": k, "value": v} for k, v in expected.items()],
     }
     return Draft(case=case, suite=suite, local=run.source in LOCAL_SOURCES)

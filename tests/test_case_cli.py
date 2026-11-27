@@ -36,6 +36,18 @@ TRIAGER = {
     "triager.expected.milestone": "Week 3",
     "triager.grade": "wrong",
 }
+# A graded triager run as recorded since #14: decided, expected, and the accepted alternatives,
+# a list field's joined by ", " (issue-triage-agent grading.py)
+GRADED = {
+    "triager.decided.labels": ["evals", "infra"],
+    "triager.expected.labels": ["evals"],
+    "triager.accepted.labels": ["evals, infra", "(none)"],
+    "triager.decided.duplicate_of": "25",
+    "triager.expected.duplicate_of": "(none)",
+    "triager.decided.milestone": "Week 3",
+    "triager.expected.milestone": "Week 3",
+    "triager.grade": "wrong",
+}
 # How the triager records "nothing": span attributes can't hold null, so an empty decision,
 # an empty label list included, is the text "(none)"
 TRIAGER_NONE = {
@@ -91,6 +103,8 @@ def store(make_database: Callable[[], str]) -> Generator[tuple[str, dict[str, uu
         ids = {
             "triager": _record(session, "trace-tri", attributes=TRIAGER,
                                asked="Triage this issue.\n\nTitle: flaky eval"),
+            "graded": _record(session, "trace-graded", attributes=GRADED,
+                              asked="Triage this issue.\n\nTitle: graded"),
             "triager_none": _record(session, "trace-tri-none", attributes=TRIAGER_NONE,
                                     asked="Triage this issue.\n\nTitle: a question"),
             "plain": _record(session, "trace-plain", asked={"question": "sum 2 and 2"},
@@ -268,11 +282,11 @@ def test_a_case_from_an_unlabelled_run_expects_the_agents_output_marked_unreview
 ) -> None:
     from flight_recorder.evals.cases import draft_case
 
-    triager = draft_case(db, ids["triager"], suite="smoke", redactor=REDACTOR).case
+    no_truth = draft_case(db, ids["triager_none"], suite="smoke", redactor=REDACTOR).case
     plain = draft_case(db, ids["plain"], suite="smoke", redactor=REDACTOR).case
 
-    assert triager["expected"] == {"labels": ["evals", "infra"], "milestone": "Week 3"}
-    assert triager["unreviewed"] is True
+    assert no_truth["expected"] == {"duplicate_of": None, "labels": None, "milestone": "Week 3"}
+    assert no_truth["unreviewed"] is True
     assert plain["input"] == {"question": "sum 2 and 2"}  # a dict input as recorded
     assert plain["expected"] == {"answer": "5"}
     assert plain["unreviewed"] is True
@@ -735,3 +749,63 @@ def test_a_tool_call_whose_name_isnt_a_string_cant_stop_afr_case(
     result = cli("case", "new", "--from-run", str(runs[0]), "--suite", "smoke",
                  "--root", str(cases), "--yes")  # fmt: skip
     assert result.exit_code == 0, result.output
+
+
+# --- the recorded truth (#22) --------------------------------------------------------------
+
+
+def test_an_unlabelled_graded_run_expects_the_recorded_truth_with_its_accepted_answers(
+    db: Session, ids: dict[str, uuid.UUID]
+) -> None:
+    from flight_recorder.evals.cases import draft_case
+
+    case = draft_case(db, ids["graded"], suite="smoke", redactor=REDACTOR).case
+
+    assert "unreviewed" not in case
+    assert case["expected"] == {"duplicate_of": None, "labels": ["evals"], "milestone": "Week 3"}
+    assert case["checks"] == [
+        {"type": "equals", "field": "duplicate_of", "value": None},
+        {"type": "one_of", "field": "labels", "values": [["evals"], ["evals", "infra"], []]},
+        {"type": "equals", "field": "milestone", "value": "Week 3"},
+    ]
+
+
+def test_a_run_whose_truth_was_marked_bad_falls_back_to_the_decision(
+    db: Session, ids: dict[str, uuid.UUID], cli: Callable[..., Any]
+) -> None:
+    from flight_recorder.evals.cases import draft_case
+
+    cli("label", str(ids["graded"]), "--mode", "Truth_Debatable")  # a respelling of debatable-truth
+
+    case = draft_case(db, ids["graded"], suite="smoke", redactor=REDACTOR).case
+
+    assert case["unreviewed"] is True
+    assert case["expected"] == {"duplicate_of": "25", "labels": ["evals", "infra"],
+                                "milestone": "Week 3"}  # fmt: skip
+
+
+def test_a_human_answer_still_wins_over_the_recorded_truth(
+    db: Session, ids: dict[str, uuid.UUID], cli: Callable[..., Any]
+) -> None:
+    from flight_recorder.evals.cases import draft_case
+
+    cli("label", str(ids["graded"]), "--mode", "extra-label", "--answer", "labels=infra")
+
+    case = draft_case(db, ids["graded"], suite="smoke", redactor=REDACTOR).case
+
+    assert case["expected"]["labels"] == ["infra"]  # the answer, not the truth ["evals"]
+    assert case["expected"]["duplicate_of"] == "25"  # the answer keeps the other decisions
+    assert "unreviewed" not in case
+    assert all(c["type"] == "equals" for c in case["checks"])
+
+
+def test_truth_problem_matches_any_spelling_of_the_truth_modes_and_only_human_run_labels(
+    db: Session, ids: dict[str, uuid.UUID], cli: Callable[..., Any]
+) -> None:
+    from flight_recorder.store.labels import has_truth_problem
+
+    assert has_truth_problem(db, ids["graded"]) is False
+    cli("label", str(ids["graded"]), "--mode", "extra-label")
+    assert has_truth_problem(db, ids["graded"]) is False
+    cli("label", str(ids["graded"]), "--mode", "bad real truth")
+    assert has_truth_problem(db, ids["graded"]) is True
