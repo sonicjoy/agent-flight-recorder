@@ -6,6 +6,7 @@ from typing import Annotated
 import typer
 
 from flight_recorder import __version__
+from flight_recorder.cli.analyse import analyse as analyse_command
 from flight_recorder.cli.case import case_app
 from flight_recorder.cli.db import db_app
 from flight_recorder.cli.eval import eval_app
@@ -29,6 +30,7 @@ app.add_typer(runs_app, name="runs")
 app.add_typer(labels_app, name="labels")
 app.command()(label)
 app.command()(replay)
+app.command("analyse")(analyse_command)
 app.command()(embed)
 app.command()(search)
 app.command("search-check")(search_check)

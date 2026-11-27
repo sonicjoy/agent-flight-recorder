@@ -41,8 +41,9 @@ def new(
     ] = False,
     yes: Annotated[bool, typer.Option("--yes", help="Write without asking.")] = False,
 ) -> None:
-    """Write a run as an eval case: its input, the right answer from its labels (else what
-    the agent did, marked unreviewed), and an equals check per field. Prints it first."""
+    """Write a run as an eval case: its input, the right answer from its labels (else its
+    recorded truth, else what the agent did, marked unreviewed), and a check per field. Prints
+    it first."""
     from flight_recorder.evals.cases import (
         CaseError,
         check_id,

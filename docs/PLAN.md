@@ -15,7 +15,7 @@
 - [ ] Public repo where `docker compose up` plus `afr seed` shows the replay UI with demo runs in under five minutes
 - [ ] Records Claude Code sessions (hooks) and OpenTelemetry agent traces, with redaction before anything is stored
 - [ ] Eval suite for any agent (own harness, golden cases, LLM judge, red-team set); the triager's gates CI, and the analyst's shows the same tools work on a second agent
-- [ ] Analyst agent that clusters failures and drafts eval cases; MCP server that answers "why did run X fail?"
+- [ ] Analyst that groups failures by cause and drafts eval cases; MCP server that answers "why did run X fail?"
 - [ ] Deployed to Cloud Run and Cloud SQL with Terraform
 - [ ] README with architecture, design decisions and eval results; demo GIF; published write-up
 
@@ -51,7 +51,7 @@ flowchart LR
   OT["OpenTelemetry<br/>(triager, Agents SDKs)"] --> API
   API["FastAPI ingest<br/>normalise → redact"] --> DB[("Postgres + pgvector<br/>runs · spans · embeddings<br/>labels · eval results")]
   DB --> CLI["CLI<br/>list · replay · label · search · case"]
-  DB --> AN["Analyst agent<br/>(LangGraph)"]
+  DB --> AN["Analyst<br/>(groups failures, drafts cases)"]
   DB --> MCP["MCP server<br/>(local, stdio)"]
   DB --> UI["Replay UI<br/>(React + TS)"]
   CLI -->|writes cases| EV
@@ -69,7 +69,7 @@ The same steps for any agent, whether or not it has a truth dataset:
 1. **Record.** The agent exports OpenTelemetry, or is a Claude Code session.
 2. **Find failures.** Runs with an error status, or, when the agent knows its truth, runs it graded wrong (`<prefix>.grade` and `<prefix>.grade.<field>`). Otherwise, read runs and label what you see. Search finds runs by topic or decision, not by whether they were right.
 3. **Label.** `afr label` names each failure mode and, optionally, the right answer (#59). That answer is the truth an agent without a dataset never had.
-4. **Write cases.** `afr case new --from-run` turns a labelled run into a YAML case (#59); the analyst does it in batches, one cluster at a time (#22).
+4. **Write cases.** `afr case new --from-run` turns a labelled run into a YAML case (#59); the analyst (`afr analyse`) does it in batches, one group of same-cause failures at a time (#22).
 5. **Run the suite.** `afr eval` calls any agent and grades its output with generic checks against a baseline (#15); an LLM judge, itself evaluated with `afr eval`, comes with #17. An agent that exports OpenTelemetry records its eval runs too, so step 1 starts again.
 
 ### Data model (draft)
@@ -79,7 +79,7 @@ The same steps for any agent, whether or not it has a truth dataset:
 | `runs` | One agent run or Claude Code session: source, agent, status, start/end, total tokens and cost, attributes |
 | `spans` | Tree of steps within a run: kind (agent, llm, tool, step), parent, model, tokens, cost, latency, status, error, redacted input/output, raw attributes |
 | `embeddings` | 384-d vectors for run summaries and failed spans (pgvector HNSW) |
-| `labels` | Failure modes on runs, from you, the judge or the analyst, and optionally the right answer (#59) |
+| `labels` | Failure modes on runs, from you (the judge and the analyst don't write labels yet), and optionally the right answer (#59) |
 | `eval_results` | Each eval run: case, score, model, git SHA, time, for pass-rate trends. Unused until #34 loads `outputs.jsonl` files into it |
 
 Eval *cases* are YAML files in `evals/cases/`, not database rows, so they are reviewed in PRs like code. Cases from Claude Code sessions go to the git-ignored `evals/cases/local/` (#59).
@@ -94,7 +94,7 @@ src/flight_recorder/
   search/      embeddings and semantic search
   cli/         `afr` commands
   evals/       harness, judge
-  analyst/     LangGraph analyst agent
+  analyst/     the analyst: select, items, core, judgment, write (#22)
   mcp_server.py  MCP server for Claude Code (stdio)
 evals/cases/              the harness's smoke suite (YAML); local/ is git-ignored.
                           The triager's golden suite lives in its own repo
@@ -192,13 +192,13 @@ This is the heaviest week (about 20h with reading, so week 4 starts later), and 
 
 | Task | Issue | Est. |
 |---|---|---|
-| Analyst agent: cluster failures, draft eval cases | #22 | 3h |
+| Analyst: group failures, draft eval cases ([design](designs/analyst.md)) | #22 | 4h |
 | Evaluate the analyst as the second agent, against your labels | #23 | 1.5h |
 | MCP server | #24 | 1.5h |
 | API key auth before deploy | #25 | 1.5h |
 | Containerise the API (the MCP server runs locally over stdio, #24) | #26 | 0.5h |
 | Deploy with Terraform to Cloud Run and Cloud SQL | #27 | 2.5h |
-| Record the recorder's own agents (needed by #23; it covers the judge too, which #17 defers here) | #28 | 0.5h |
+| Record the recorder's own agents (not needed by #23 since the analyst design; after launch) | #28 | 0.5h |
 
 **Optional:** dbt basics on BigQuery, a weekend extra that's not part of this repo.
 
@@ -226,7 +226,7 @@ Cut in this order:
 1. Metrics dashboard (#34)
 2. Provider comparison (#21)
 3. Comparison with promptfoo or DeepEval (#20), stretch
-4. The analyst's own eval suite (#23), keeping its cluster agreement and accepted-case numbers; the any-agent claim then rests on the design and the analyst's metrics
+4. The analyst's own eval suite (#23), keeping its group agreement and accepted-case numbers; the any-agent claim then rests on the design and the analyst's metrics
 5. Terraform falls back to a documented `gcloud run deploy`, though keep Terraform if at all possible since job ads ask for it
 6. The replay UI shrinks to a run list plus a timeline, with no span detail panel
 
