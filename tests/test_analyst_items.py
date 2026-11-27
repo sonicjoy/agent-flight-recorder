@@ -117,3 +117,21 @@ def test_items_are_the_same_every_time_and_never_carry_unrecorded_text() -> None
             field = item["id"].split("#", 1)[1]
             assert item["signature"].split(":", 1)[0] == field
             assert attributes.get(f"p.grade.{field}", "wrong") == "wrong"
+
+
+def test_a_list_decision_matching_an_accepted_answer_to_an_empty_truth_is_not_wrong() -> None:
+    assert items({
+        "t.decided.labels": ["bug", "ui"], "t.expected.labels": "(none)",
+        "t.accepted.labels": ["bug, ui"],
+    }) == []  # fmt: skip
+
+
+def test_item_text_is_redacted_again_cut_and_shows_hidden_characters() -> None:
+    from flight_recorder.analyst.items import TEXT_CHARS, _text  # pyright: ignore[reportPrivateUsage]
+    from flight_recorder.redact import Redactor
+
+    token = "ghp_" + "Z9y8" * 9
+    text = _text(f"labels: decided {token}\u202e " + "x" * 2000, Redactor(b"k" * 32))
+
+    assert token not in text and "\u202e" not in text and "\\u202e" in text
+    assert len(text) == TEXT_CHARS

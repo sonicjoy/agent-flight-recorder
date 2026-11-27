@@ -17,10 +17,15 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from flight_recorder.evals.cases import CaseError, draft_case, problems, write_case
+from flight_recorder.evals.cases import CaseError, Draft, draft_case, problems, write_case
+from flight_recorder.evals.checks import same
+from flight_recorder.payloads import none_as_null
 from flight_recorder.redact import Redactor
+from flight_recorder.store.labels import decided_fields
+from flight_recorder.store.models import Run
 
 LOG_DIR = Path("evals/analyst-log")
+LOG_VERSION = "1"
 
 
 class WriteFailure(Exception):
@@ -37,6 +42,21 @@ class Written:
     paths: list[Path] = field(default_factory=list[Path])
     skipped: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
     """(run id, reason) for each representative not written."""
+
+
+def _expects_the_failure(session: Session, run_id: str, signature: str, draft: Draft) -> str | None:
+    """The field whose expected value is the agent's own wrong decision, the very failure the
+    group is about; None when the case expects something else. `afr label --answer` keeps
+    the agent's decision for every field the answer leaves out, so an answer that fixed
+    another field can still expect this one's mistake."""
+    field = signature.split(":", 1)[0]
+    if field == "error" or field not in draft.case["expected"]:
+        return None
+    run = session.get(Run, uuid.UUID(run_id))
+    decided = decided_fields(dict(run.attributes or {})) if run is not None else {}
+    if field not in decided:
+        return None
+    return field if same(draft.case["expected"][field], none_as_null(decided[field])) else None
 
 
 def write_groups(
@@ -61,12 +81,19 @@ def write_groups(
                 continue
             tags = list(dict.fromkeys([*draft.case["tags"], group["signature"], group["name"]]))
             draft = draft.with_case(draft.case | {"tags": tags})
-            if draft.path(root).exists():
+            try:
+                exists = draft.path(root).exists()
+            except CaseError as error:
+                raise WriteFailure(str(error), written) from error
+            if exists:
                 written.skipped.append((run_id, "a case for this run exists"))
             elif problems(draft.case):
                 written.skipped.append((run_id, "it holds redacted values; use afr case new"))
             elif not draft.case["checks"]:
                 written.skipped.append((run_id, "it has nothing to check"))
+            elif field := _expects_the_failure(session, run_id, group["signature"], draft):
+                written.skipped.append((run_id, f"its case would expect the agent's own {field}; "
+                                        "fix the answer with afr label --answer"))  # fmt: skip
             else:
                 try:
                     written.paths.append(write_case(root, draft))
@@ -80,10 +107,16 @@ def write_log(
     written: Written, now: datetime,
 ) -> Path:  # fmt: skip
     """The decisions log: parameters, every group with kept or not, each written case with the
-    sha256 of its text (so #23 can tell a case kept as written from an edited one)."""
+    sha256 of its text (so #23 can tell a case kept as written from an edited one). Never
+    overwrites an earlier log; the folder carries its own `.gitignore`, as logs name runs from
+    the store wherever afr runs. Raises OSError when the OS refuses."""
     log_dir.mkdir(parents=True, exist_ok=True)
-    path = log_dir / f"{now.astimezone(UTC):%Y%m%dT%H%M%SZ}.json"
+    ignore = log_dir / ".gitignore"
+    if not ignore.exists():
+        ignore.write_text("# afr analyse's decisions logs name runs from your store\n*\n",
+                          encoding="utf-8", newline="\n")  # fmt: skip
     record = {
+        "version": LOG_VERSION,
         "params": params,
         "groups": [g | {"kept": n in kept} for n, g in enumerate(groups, 1)],
         "written": [{"path": p.as_posix(),
@@ -91,5 +124,13 @@ def write_log(
                     for p in written.paths],
         "skipped": [{"run": run, "reason": reason} for run, reason in written.skipped],
     }  # fmt: skip
-    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n")
-    return path
+    stamp = f"{now.astimezone(UTC):%Y%m%dT%H%M%SZ}"
+    for n in range(100):
+        path = log_dir / (f"{stamp}.json" if n == 0 else f"{stamp}-{n}.json")
+        try:
+            with path.open("x", encoding="utf-8", newline="\n") as file:
+                file.write(json.dumps(record, indent=2) + "\n")
+        except FileExistsError:
+            continue
+        return path
+    raise FileExistsError(f"too many logs named {stamp} in {log_dir}")

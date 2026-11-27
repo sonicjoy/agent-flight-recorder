@@ -29,8 +29,9 @@ def _kept(answer: str, count: int) -> set[int] | None:
     """`1,3,4` as group numbers; empty keeps none; None for anything else."""
     if not answer.strip():
         return set()
+    parts = [part.strip() for part in answer.split(",")]
     try:
-        picked = {int(part) for part in answer.replace(" ", "").split(",") if part}
+        picked = {int(part) for part in parts if part}  # "1 0" is refused, not read as 10
     except ValueError:
         return None
     return picked if picked and all(1 <= n <= count for n in picked) else None
@@ -103,6 +104,9 @@ def analyse(
         params = {"model": str(parsed), "max_groups": MAX_GROUPS, "max_shown": MAX_SHOWN}
         result = run_core({"version": VERSION, "items": items, "params": params})
         groups: list[dict[str, Any]] = result["groups"]
+        for group in groups:  # a provider's error text is not ours to print or log as is
+            if group["error"]:
+                group["error"] = str(redactor.redact(group["error"]).value)
         run_of = {entry["id"]: entry["run"] for entry in items}
         for number, group in enumerate(groups, 1):
             head = Text(f"\n{number}. ", style="bold")
@@ -129,17 +133,26 @@ def analyse(
                              len(groups))) is None:  # fmt: skip
             out.print(f"give group numbers from 1 to {len(groups)}, comma-separated")
         chosen = [g for n, g in enumerate(groups, 1) if n in kept]
+        for group in chosen:
+            if not group["representatives"]:
+                out.print(render.text(f"group {group['name']} has no representatives (it wasn't "
+                                      "named), so it writes no case", "yellow"))  # fmt: skip
         try:
             written = write_groups(session, chosen, run_of, root=root, suite=suite,
                                    redactor=redactor)  # fmt: skip
             failure = None
         except WriteFailure as error:
             written, failure = error.written, error
-    log = write_log(LOG_DIR, params=params, groups=groups, kept=kept, written=written, now=now)
     for path in written.paths:
         out.print(render.text(f"wrote {path.as_posix()}"))
     for run_id, reason in written.skipped:
         out.print(render.text(f"skipped run {run_id[:8]}: {reason}", "dim"))
+    try:
+        log = write_log(LOG_DIR, params=params, groups=groups, kept=kept, written=written,
+                        now=now)  # fmt: skip
+    except OSError as error:
+        raise fail(f"can't write the decisions log in {LOG_DIR.as_posix()}: "
+                   f"{error.strerror or error}", 1) from None  # fmt: skip
     out.print(render.text(f"log: {log.as_posix()}"))
     if failure is not None:
         raise fail(str(failure), 1)

@@ -60,8 +60,9 @@ def analyse(input: dict[str, Any]) -> dict[str, Any]:
     for signature, members in kept:
         shown = _newest(members)[: params["max_shown"]]
         if params["model"] is None:
+            picked = shown[: judgment.MAX_REPRESENTATIVES]
             named: dict[str, Any] = {"name": signature, "cause": None, "error": None,
-                                     "representatives": [m["id"] for m in shown[:3]]}  # fmt: skip
+                                     "representatives": [m["id"] for m in picked]}  # fmt: skip
         else:
             named = judgment.judge_group(params["model"], signature, shown)
         groups.append({"signature": signature,

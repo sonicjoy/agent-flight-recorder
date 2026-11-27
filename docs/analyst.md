@@ -13,7 +13,7 @@ uv run afr analyse --agent issue-triager --attr triager.grade=wrong
 3. **Groups items by signature,** so every member of a group failed the same way. Plain code, no model: the same runs always give the same groups.
 4. **Names each group** with one call to a cheap model (at most 10 groups): a short name, one sentence on the cause, and 1 to 3 representative runs from the 5 newest members it was shown. A reply that breaks the rules, or a provider error, leaves that group unnamed with the reason shown; the others go on.
 5. **Asks which groups to keep** after printing each group and each representative's drafted case.
-6. **Writes a case per representative** of the kept groups, tagged with the group's signature and name, with `afr case`'s rules: an id from the run (`run-<8>`), never overwriting a case, refusing redacted placeholders. Skipped runs are listed with the reason.
+6. **Writes a case per representative** of the kept groups, tagged with the group's signature and name, with `afr case`'s rules: an id from the run (`run-<8>`), never overwriting a case, refusing redacted placeholders. It also skips a case that would expect the agent's own decision for the group's field: `afr label --answer` keeps the agent's value for every field you leave out, so fix that answer and run it again. Skipped runs are listed with the reason.
 
 A case expects the right answer: your answer from `afr label --answer` if there is one, else the run's recorded truth (with its accepted alternatives as `one_of`), else, marked `unreviewed`, what the agent did. `afr case new` uses the same rule.
 
@@ -21,11 +21,11 @@ To drop one case of a kept group, delete its file before you commit.
 
 ## The decisions log
 
-Each run writes `evals/analyst-log/<UTC time>.json` (git-ignored: it names runs from your store): the parameters, every group with its members and whether you kept it, each written case with the sha256 of its text, and each skip. #23 counts a case as accepted without edits when its file still has that hash.
+Each run writes `evals/analyst-log/<UTC time>.json` (the folder ignores itself with its own `.gitignore`, wherever you run afr: logs name runs from your store): the parameters, every group with its members and whether you kept it, each written case with the sha256 of its text, and each skip. #23 counts a case as accepted without edits when its file still has that hash.
 
 ## Safety and cost
 
 - Recorded run text goes to the model as data: escaped inside `<item>` blocks, with the judge's line that it isn't instructions. The model only names a group and picks among the ids it was shown; code writes every file.
-- The texts sent are redacted again with your current patterns and cut to 600 characters.
+- The texts sent are redacted again with your current patterns, with hidden characters shown as escapes, and cut to 600 characters. A group's signature (which, for an error run, holds the recorded span name) is redacted again and kept to one line of letters, digits and `_.:-`. A provider's error text is redacted before it is shown or logged.
 - At most 10 model calls per analysis, on the cheap model (`AFR_LLM_CHEAP_MODEL` unless `--model`): a fraction of a cent on `openai:gpt-6-luna`.
 - It runs on your machine with your key. The deployed recorder never calls a model.

@@ -393,3 +393,14 @@ def test_a_truth_check_passes_the_truth_and_the_accepted_and_fails_any_other_dec
         decided = None if decision == "(none)" else decision
         if not any(same(decided, a) for a in allowed):
             assert not any(r.passed for r in run_checks([check], {"f": decided}))
+
+
+def test_a_list_truth_of_nothing_reads_its_accepted_alternatives_as_lists() -> None:
+    """The triager records an empty list truth as `(none)`, a string: the agent's list decision
+    says the field is a list, so `bug, ui` is the list it would output, not one string."""
+    from flight_recorder.evals.cases import truth_checks
+
+    _, [check] = truth_checks({"labels": "(none)"}, {"labels": ["bug, ui"]},
+                              {"labels": ["evals"]})  # fmt: skip
+
+    assert check == {"type": "one_of", "field": "labels", "values": [None, ["bug", "ui"]]}

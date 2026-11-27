@@ -245,11 +245,10 @@ def _input(asked: Any) -> dict[str, Any]:
 
 
 def _decoded(fields: dict[str, Any]) -> dict[str, Any]:
-    """Recorded fields with the recorder's "nothing" (`(none)`: span attributes can't hold
-    null) as null, at the top level. Free text and agent output never go through this."""
-    from flight_recorder.payloads import NONE_TEXT
+    """Recorded fields with the recorder's "nothing" as null, at the top level."""
+    from flight_recorder.payloads import none_as_null
 
-    return {k: None if v == NONE_TEXT else v for k, v in fields.items()}
+    return {k: none_as_null(v) for k, v in fields.items()}
 
 
 def _as_expected(output: Any) -> dict[str, Any]:
@@ -298,21 +297,24 @@ def agent_output(session: Session, run: Run, roots: list[SpanNode]) -> dict[str,
     return {}
 
 
-def accepted_value(truth: Any, entry: Any) -> Any:
-    """One accepted alternative in the truth's shape: a list field's entry is one string
-    joined by ", " (the triager's format), and `(none)` is nothing."""
+def accepted_value(truth: Any, entry: Any, decided: Any = None) -> Any:
+    """One accepted alternative in the field's shape: a list field's entry is one string
+    joined by ", " (the triager's format), and `(none)` is nothing. A field is a list field
+    when its truth or the agent's decision is a list (a truth of nothing is recorded as
+    `(none)`, which says neither)."""
     from flight_recorder.payloads import NONE_TEXT
 
-    if isinstance(truth, list) and isinstance(entry, str):
+    if (isinstance(truth, list) or isinstance(decided, list)) and isinstance(entry, str):
         return [] if entry == NONE_TEXT else entry.split(", ")
     return None if entry == NONE_TEXT else entry
 
 
 def truth_checks(
-    truth: dict[str, Any], accepted: dict[str, list[Any]]
+    truth: dict[str, Any], accepted: dict[str, list[Any]], decided: dict[str, Any] | None = None
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """The expected fields and their checks from a recorded truth: `equals` the truth, or
-    `one_of` the truth then each accepted alternative not already listed."""
+    `one_of` the truth then each accepted alternative not already listed. `decided` (the
+    agent's decisions) tells a list field whose truth is nothing from a single-value one."""
     from flight_recorder.evals.checks import same
 
     expected = dict(sorted(_decoded(truth).items()))
@@ -320,7 +322,7 @@ def truth_checks(
     for field, value in expected.items():
         values = [value]
         for entry in accepted.get(field, []):
-            alternative = accepted_value(truth[field], entry)
+            alternative = accepted_value(truth[field], entry, (decided or {}).get(field))
             if not any(same(alternative, v) for v in values):
                 values.append(alternative)
         if len(values) == 1:
@@ -378,7 +380,8 @@ def draft_case(
             else {"answer": answer.get("text")}
         )
     elif truth and not has_truth_problem(session, run.id):
-        expected, checks = truth_checks(truth, accepted_fields(attributes))
+        expected, checks = truth_checks(truth, accepted_fields(attributes),
+                                        decided_fields(attributes))  # fmt: skip
     else:
         unreviewed = True
         decided = decided_fields(attributes)

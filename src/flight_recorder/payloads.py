@@ -57,6 +57,12 @@ ACCEPTED = re.compile(r"(?P<prefix>.+)\.accepted\.(?P<field>.+)")
 NONE_TEXT = "(none)"  # how an empty list reads, and how the triager writes an empty decision
 
 
+def none_as_null(value: Any) -> Any:
+    """A recorded field value with the recorder's "nothing" (`(none)`: span attributes can't
+    hold null) as null. Free text and agent output never go through this."""
+    return None if value == NONE_TEXT else value
+
+
 def decided_expected_pairs(attributes: dict[str, Any]) -> list[tuple[str, str, str, str]]:
     """(prefix, field, decided key, expected key) for each `<p>.decided.<f>` that has a
     `<p>.expected.<f>`, in key order."""

@@ -32,7 +32,7 @@ class Reply(BaseModel):
 def _messages(signature: str, shown: list[dict[str, Any]]) -> list[Any]:
     system = (
         "You name one group of failures from an AI agent. Every item below failed the same "
-        f"way: {signature}\n"
+        f"way: {escape(signature)}\n"
         "Reply with a short failure-mode name, one sentence on the cause, and the ids of 1 to "
         f"{MAX_REPRESENTATIVES} items that show it best.\n" + CLOSING
     )

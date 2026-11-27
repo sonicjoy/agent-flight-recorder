@@ -12,9 +12,7 @@ from sqlalchemy.orm import Session
 
 from flight_recorder.evals.cases import LOCAL_SOURCES
 from flight_recorder.store.labels import has_truth_problem
-from flight_recorder.store.read import RunFilter, RunSummary, find_runs
-
-EVERY_RUN = 100_000  # as `afr label --next`: selection is never cut at a page size
+from flight_recorder.store.read import EVERY_RUN, RunFilter, RunSummary, find_runs
 
 
 @dataclass(frozen=True)

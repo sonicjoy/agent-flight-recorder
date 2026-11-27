@@ -187,7 +187,7 @@ Groups an agent's failed runs by exactly how they went wrong and writes an eval 
 uv run afr analyse --agent issue-triager --attr triager.grade=wrong
 ```
 
-`--agent` is required. `--attr KEY=VALUE` (repeatable, as in `afr label --next`) adds runs matching every attribute to the error runs; `--suite` (default `drafts`) and `--root` (default `evals/cases`) say where cases go; `--model` names the model that names groups (default `AFR_LLM_CHEAP_MODEL`). It needs a terminal: it asks which groups to keep and never keeps any by itself. Exit codes: 0 done, including nothing kept; 1 no failed runs, or a case write failed (cases already written stay); 2 a bad option, no terminal, a bad model spec or missing key, or the store unreachable.
+`--agent` is required. `--attr KEY=VALUE` (repeatable, as in `afr label --next`) adds runs matching every attribute to the error runs; `--suite` (default `drafts`) and `--root` (default `evals/cases`) say where cases go; `--model` names the model that names groups (default `AFR_LLM_CHEAP_MODEL`). It needs a terminal: it asks which groups to keep and never keeps any by itself. Exit codes: 0 done, including nothing kept; 1 no failed runs, failed runs with no difference to group, a case write failed (cases already written stay, and the log lists them), or the log couldn't be written; 2 a bad option, no terminal, a bad model spec or missing key, or the store unreachable.
 
 ## `afr eval run` and `afr eval grade`
 

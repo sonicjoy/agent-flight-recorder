@@ -17,19 +17,18 @@ from sqlalchemy.orm import Session
 from flight_recorder.analyst.select import Failed
 from flight_recorder.evals.cases import accepted_value
 from flight_recorder.evals.checks import same
-from flight_recorder.payloads import NONE_TEXT, decided_expected_pairs, value_text
+from flight_recorder.payloads import NONE_TEXT, decided_expected_pairs, none_as_null, value_text
 from flight_recorder.redact import Redactor
+from flight_recorder.safe_text import clean
 from flight_recorder.search.summary import failure_line, root_failures
 from flight_recorder.store.labels import accepted_fields
 from flight_recorder.store.read import span_tree
 
 TEXT_CHARS = 600
 CLASS_CHARS = 40
+SIGNATURE_CHARS = 120
 DIGITS = re.compile(r"[0-9]")
-
-
-def _decoded(value: Any) -> Any:
-    return None if value == NONE_TEXT else value
+UNSAFE = re.compile(r"[^A-Za-z0-9_.:-]+")
 
 
 def _as_set(value: Any) -> set[str]:
@@ -67,7 +66,7 @@ def _wrong(attributes: dict[str, Any], prefix: str, field: str, decided: Any, ex
         return grade == "wrong"
     if same(decided, expected):
         return False
-    return not any(same(decided, accepted_value(expected, entry)) for entry in accepted)
+    return not any(same(decided, accepted_value(expected, entry, decided)) for entry in accepted)
 
 
 def graded_items(run: str, started: str, attributes: dict[str, Any]) -> list[dict[str, Any]]:
@@ -75,8 +74,8 @@ def graded_items(run: str, started: str, attributes: dict[str, Any]) -> list[dic
     accepted = accepted_fields(attributes)
     found: list[dict[str, Any]] = []
     for prefix, field, decided_key, expected_key in decided_expected_pairs(attributes):
-        decided = _decoded(attributes[decided_key])
-        expected = _decoded(attributes[expected_key])
+        decided = none_as_null(attributes[decided_key])
+        expected = none_as_null(attributes[expected_key])
         if not _wrong(attributes, prefix, field, decided, expected, accepted.get(field, [])):
             continue
         found.append({
@@ -96,8 +95,15 @@ def error_signature(kind: str, name: str, error: str | None) -> str:
     return f"error:{kind}:{name}:{found or 'unknown'}"
 
 
-def _clean(text: str, redactor: Redactor) -> str:
-    return str(redactor.redact(text).value)[:TEXT_CHARS]
+def _text(text: str, redactor: Redactor) -> str:
+    """What the model may see: hidden characters made visible, redacted again, cut."""
+    return str(redactor.redact(clean(text)).value)[:TEXT_CHARS]
+
+
+def safe_signature(text: str, redactor: Redactor) -> str:
+    """A signature fit for a prompt, a tag and the log: redacted again, one line of letters,
+    digits and `_.:-`, at most SIGNATURE_CHARS. An error's span name is recorded text."""
+    return UNSAFE.sub("_", str(redactor.redact(text).value))[:SIGNATURE_CHARS] or "unknown"
 
 
 def items_for(
@@ -120,5 +126,7 @@ def items_for(
                              "text": failure_line(node)})  # fmt: skip
         if not mine:
             empty += 1
-        found += [item | {"text": _clean(item["text"], redactor)} for item in mine]
+        found += [item | {"text": _text(item["text"], redactor),
+                          "signature": safe_signature(item["signature"], redactor)}
+                  for item in mine]  # fmt: skip
     return found, empty
