@@ -102,8 +102,9 @@ def write_groups(
             elif wrong := expects_a_wrong_value(session, run_id, draft):
                 written.skipped.append((run_id, f"its case would expect the agent's {wrong}, "
                                         "which the recorded truth marks wrong: correct the "
-                                        "answer with afr label --answer, or label the run "
-                                        "debatable-truth if the agent was right"))  # fmt: skip
+                                        "answer with afr label --answer; if the agent was "
+                                        "right, the truth is wrong, so write the case with "
+                                        "afr case new"))  # fmt: skip
             else:
                 try:
                     written.paths.append(write_case(root, draft))

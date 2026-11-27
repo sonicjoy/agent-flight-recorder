@@ -165,5 +165,27 @@ def test_a_signature_part_that_holds_a_secret_or_a_placeholder_becomes_redacted(
         "error:tool:~redacted:KeyError"
     )
     recorded = "error:tool:get [REDACTED:github_token:1a2b3c4d] now:KeyError"
-    assert safe_signature(recorded, redactor) == "error:tool:~redacted:KeyError"
+    assert safe_signature(recorded, redactor) == "error:tool:get%20~redacted%20now:KeyError"
+    issues, repo = (safe_signature(f"error:tool:fetch_{n} using {token}:KeyError", redactor)
+                    for n in ("issues", "repo"))  # fmt: skip
+    assert issues != repo  # the text around a secret still tells failures apart
     assert safe_signature("token:extra", redactor) == "token:extra"  # field and direction kept
+
+
+def test_an_error_items_name_and_text_are_redacted_whole_before_the_signature_splits() -> None:
+    """`password: hunter2xyz` spans a `:`: redacted part by part, neither part is a secret."""
+    from types import SimpleNamespace
+
+    from flight_recorder.analyst.items import error_item, safe_signature
+    from flight_recorder.redact import Redactor
+
+    redactor = Redactor(b"k" * 32)
+    node = SimpleNamespace(kind="tool", name="login password: hunter2xyz", status="error",
+                           error="password: hunter2xyz rejected", input=None,
+                           output=None)  # fmt: skip
+
+    item = error_item("r1", "2026-11-27T09:00:00+00:00", node, redactor)  # type: ignore[arg-type]
+    signature = safe_signature(item["signature"], redactor)
+
+    assert "hunter2xyz" not in item["signature"] and "hunter2xyz" not in signature
+    assert signature.startswith("error:tool:login%20password")

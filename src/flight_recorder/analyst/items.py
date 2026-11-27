@@ -23,7 +23,7 @@ from flight_recorder.redact import Redactor
 from flight_recorder.safe_text import PLACEHOLDER, clean
 from flight_recorder.search.summary import failure_line, root_failures
 from flight_recorder.store.labels import accepted_fields
-from flight_recorder.store.read import span_tree
+from flight_recorder.store.read import SpanNode, span_tree
 
 TEXT_CHARS = 600
 CLASS_CHARS = 40
@@ -111,21 +111,35 @@ def _encoded(part: str) -> str:
 
 def safe_signature(text: str, redactor: Redactor) -> str:
     """A signature fit for a prompt, a tag and the log (an error's span name is recorded text):
-    each `:`-separated part redacted again on its own, and replaced by `~redacted` when a
-    pattern matched it or it holds a placeholder from recording (a fingerprint would depend
-    on a machine's key, and encoded it would hide from `problems`), then encoded. Longer than
-    SIGNATURE_CHARS, it keeps a prefix and a hash of the whole, so different signatures stay
-    different."""
+    each `:`-separated part redacted again on its own (`items_for` redacts an error's span
+    name and text whole before they become parts, so a secret spanning a `:` is caught
+    there), each placeholder, from recording or from here, becoming `~redacted` (a
+    fingerprint would depend on a machine's key, and encoded it would hide from `problems`),
+    the rest encoded. Longer than SIGNATURE_CHARS, it keeps a prefix and a hash of the whole,
+    so different signatures stay different."""
     marked = PLACEHOLDER.sub("\0", text)  # a placeholder holds `:`; keep it in one part
     parts: list[str] = []
     for part in marked.split(":"):
-        again = str(redactor.redact(part).value)
-        parts.append(_encoded(part) if again == part and "\0" not in part else REDACTED_PART)
+        again = PLACEHOLDER.sub("\0", str(redactor.redact(part).value))
+        parts.append(REDACTED_PART.join(_encoded(piece) for piece in again.split("\0")))
     joined = ":".join(parts)
     if len(joined) > SIGNATURE_CHARS:
         digest = hashlib.sha256(joined.encode()).hexdigest()[:8]
         joined = f"{joined[: SIGNATURE_CHARS - 9]}~{digest}"
     return joined or "unknown"
+
+
+def error_item(run: str, started: str, node: SpanNode, redactor: Redactor) -> dict[str, Any]:
+    """An error run's one item. Its span name and error text are recorded text, redacted again
+    whole here, before the signature splits them at `:`."""
+
+    def again(value: str | None) -> str | None:
+        return None if value is None else str(redactor.redact(value).value)
+
+    name = again(node.name) or ""
+    return {"id": f"{run}#error", "run": run, "started": started,
+            "signature": error_signature(node.kind, name, again(node.error)),
+            "text": failure_line(node)}  # fmt: skip
 
 
 def items_for(
@@ -142,10 +156,7 @@ def items_for(
         if entry.run.state == "error" or "error" in entry.reasons:
             roots = root_failures(span_tree(session, uuid.UUID(run_id)))
             if roots:
-                node = roots[0]
-                mine.append({"id": f"{run_id}#error", "run": run_id, "started": started,
-                             "signature": error_signature(node.kind, node.name, node.error),
-                             "text": failure_line(node)})  # fmt: skip
+                mine.append(error_item(run_id, started, roots[0], redactor))
         if not mine:
             empty += 1
         found += [item | {"text": _text(item["text"], redactor),
